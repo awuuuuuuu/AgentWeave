@@ -1,0 +1,32 @@
+[project]
+name = "ragent"
+version = "0.1.0"
+description = "Enterprise-grade Agent+RAG system"
+requires-python = ">=3.11"
+dependencies = [
+    # ── Step 1: PDF 解析 ──────────────────────────────────────────────────────
+    "pymupdf>=1.24",                   # fitz：fast 策略文字提取 + 单页截取
+    "unstructured>=0.15",              # API 客户端（hi_res 走远端，本地不跑 DL）
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "python-dotenv>=1.0",              # conftest.py 加载 .env
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend/tests"]
+markers = [
+    "integration: tests requiring Unstructured API or local hi_res environment",
+]
