@@ -1,0 +1,161 @@
+# 文档解析器（Parsers）
+
+所有解析器的设计目标：**结构保留优先于文字完整性**。
+RAG 的检索质量高度依赖 chunk 的语义边界——一个正确切开的章节远胜于把全文塞进一个 chunk。
+
+---
+
+## 架构：注册表 + 策略模式
+
+```python
+@register_parser
+class PDFParser(BaseParser):
+    supported_extensions = (".pdf",)
+```
+
+`get_parser(".pdf")` 统一入口，新增格式只需加一个类，主流程零改动。
+未注册的扩展名自动路由到 `FallbackParser`，pipeline 不中断。
+
+所有 parser 在 `__init__.py` 集中导入，保证装饰器在首次 `import parsers` 时完成注册。
+
+---
+
+## PDF 解析器（`pdf_parser.py`）
+
+### 设计思想
+
+PDF 内部是"绝对坐标上的字符流"，没有语义标签。唯一能区分"这一页好不好"的信号，是提取出来的文字质量本身。
+
+### 三档策略
+
+| 策略 | 核心技术 | 适用场景 |
+|------|---------|---------|
+| `fast` | pymupdf 纯本地提取 | 普通文字 PDF，零外部依赖 |
+| `smart` | fitz 优先，按页智能降级 | 通用场景，自动处理混合内容 |
+| `hi_res` | 远端 Unstructured API | 复杂版面、扫描件、高精度要求 |
+
+### 智能按页路由（`smart` 策略核心）
+
+逐页分析，只对真正需要的页面调用远端Unstructured API，其余页面本地处理：
+
+```
+第 1 页：纯文字 → fitz 本地提取（<1ms）
+第 3 页：含图表 → 单页截取 → 远端 hi_res OCR
+第 5 页：空页/扫描 → 单页截取 → 远端 hi_res OCR
+```
+
+三重降级触发条件（任一满足即走远端）：
+
+```python
+page_has_image    # 光栅图面积超过页面 10%（排除 logo 等小图）
+not page_text     # 全页无文字（扫描页）
+_is_garbled(text) # 不可打印字符比例 > 25%（字体层编码损坏）
+```
+
+远端调用失败时自动退回本地 fitz 结果，不丢页、不中断。
+
+### section_path
+
+PDF 无语义结构，`section_path` 留空 `""`。后续可通过字体大小 + 加粗做启发式标题检测，但属优化项。
+
+---
+
+## Word 解析器（`word_parser.py`）
+
+### 设计思想
+
+Word 文档的结构信息藏在 `styleId` 里，而非用户看到的样式名称。
+用样式名（"标题 1"、"Heading 1"）匹配会被多语言 Office 击穿；用 `styleId`（`Heading1`）则语言无关。
+
+### 核心机制
+
+- **标题识别**：正则匹配 `styleId` 中的 `Heading(\d+)`，兼容所有语言版本的 Office
+- **section_path**：维护 `{level: heading_text}` 栈，每个 chunk 记录所属章节路径（如 `第一章 > 1.1 节`）
+- **表格降维**：首行加粗 → 键值对（`Product: Widget; Price: $9.99`）；无加粗表头 → 竖线拼接。比保留 HTML 更适合 LLM 理解
+
+### 为什么表格不保留 HTML
+
+Word 表格用 python-docx 提取后本就没有 HTML 结构，强行重建反而引入噪声。键值对格式让 LLM 直接读懂行列关系，无需解析标签。
+
+---
+
+## HTML 解析器（`html_parser.py`）
+
+### 设计思想
+
+网页的噪声密度远高于 Word/PDF：导航栏、广告、脚本、注释……RAG 不需要这些。
+清洗策略是"白名单思维"：只提取有意义的块级内容，其余静默丢弃。
+
+### 核心机制
+
+- **html5lib 后端**：容错最好，自动补全残缺标签，企业爬取的页面经常残缺
+- **噪声标签静默丢弃**：`nav / aside / form / script / style / header / footer` 等一律 `decompose()`
+- **叶子块过滤**：`div > p` 这种嵌套结构只提取叶子 `<p>`，避免文字重复
+- **表格保留 HTML 字符串**：HTML 表格结构丰富（colspan、rowspan），保留原始 HTML 供后续专用渲染器处理，同时附 `plain_text` 供检索用
+- **section_path**：与 Word 相同逻辑，从 `h1-h6` 栈构建
+
+### chardet 编码检测
+
+企业内网页面编码混乱（GBK、Big5、Latin-1），chardet 自动检测，三级 fallback 保证不崩溃。
+
+---
+
+## TXT 解析器（`txt_parser.py`）
+
+### 设计思想
+
+纯文本没有任何结构信号，唯一可用的边界是**空行**。
+按连续空行切块，每块作为一个 chunk，保留块内换行（行尾空白清理即可）。
+
+不压平换行的原因：TXT 文件里的换行往往有语义——列表的每一项、代码的每一行都是独立信息，压成一行会让 LLM 误读。
+
+`section_path` 留空，无结构信息可提取。
+
+---
+
+## Markdown 解析器（`markdown_parser.py`）
+
+### 设计思想
+
+Markdown 的结构信号比 TXT 丰富得多（`#` 标题），但有一个经典陷阱：
+代码块里的 注释`# comment` 不是标题。必须用状态机追踪代码块边界，才能正确区分。
+
+### 核心机制
+
+- **YAML frontmatter 提取**：`---` 块内的 `key: value` 写入每个 chunk 的 metadata，支持文档级元数据（author、date、tags 等）透传到向量库
+- **标题状态机**：维护 `heading_stack` 构建 `section_path`，逻辑与 Word/HTML 对齐
+- **代码块状态机**：` ``` ` / `~~~` 触发 `in_code_block` 标志，块内内容原样保留，不做标题匹配
+- **换行保留**：`"\n".join(lines)` 而非压平，Markdown 列表、代码块的缩进结构完整保留
+
+### frontmatter 解析的取舍
+
+只做简单 `key: value` 解析，不引入 PyYAML 依赖。复杂嵌套结构（列表值、多行值）直接跳过——对 RAG 来说，`title` / `author` / `date` 这类扁平字段已覆盖 90% 的使用场景。
+
+---
+
+## FallbackParser（`fallback_parser.py`）
+
+### 设计思想
+
+pipeline 遇到未知格式时不应崩溃，也不应产生垃圾数据。两个核心原则：
+
+1. **二进制嗅探优先**：检查前 8 KB 是否含 null byte（`\x00`）。含则判定为二进制，直接返回 `[]`，不尝试解码。防止 `.zip`、`.exe`、`.png` 等被 latin-1 解码成几 MB 乱码灌入向量库。
+
+2. **不注册到注册表**：`supported_extensions = ()`，调用方必须显式实例化或通过 `get_parser` 的兜底逻辑获取，不会抢占任何已知格式。
+
+---
+
+## 测试覆盖
+
+```
+backend/tests/parsers/
+├── conftest.py                 # PDF fixture（fitz 程序化构造，无外部文件依赖）
+├── fixtures/
+│   └── *.pdf                   # 真实文档，验证复杂版面
+├── test_pdf_parser.py          # 51 个测试（41 单元 + 10 集成）
+├── test_word_parser.py
+├── test_html_parser.py
+├── test_txt_parser.py
+├── test_markdown_parser.py
+└── test_fallback_parser.py     # 含二进制嗅探、注册表隔离测试
+```

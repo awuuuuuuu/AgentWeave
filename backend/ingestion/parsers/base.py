@@ -1,7 +1,10 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Union
@@ -69,11 +72,12 @@ def register_parser(cls: type[BaseParser]) -> type[BaseParser]:
 def get_parser(file_extension: str) -> BaseParser:
     """按文件扩展名返回对应 Parser 实例。
 
-    Raises:
-        ValueError: 不支持的文件类型
+    未注册的扩展名返回 FallbackParser，不抛异常，避免 pipeline 中断。
     """
+    from .fallback_parser import FallbackParser  
+
     ext = file_extension.lower()
     if ext not in _REGISTRY:
-        supported = ", ".join(sorted(_REGISTRY.keys()))
-        raise ValueError(f"Unsupported extension '{ext}'. Supported: {supported}")
+        logger.warning("未注册的文件类型 '%s'，使用 FallbackParser", ext)
+        return FallbackParser()
     return _REGISTRY[ext]()

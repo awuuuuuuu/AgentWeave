@@ -211,6 +211,7 @@ class PdfParser(BaseParser):
                 "source_file": filename,
                 "page_number": getattr(el.metadata, "page_number", None) or 0,
                 "content_type": content_type,
+                "section_path": "",
                 "element_id": getattr(el, "id", None),
                 "category": el.category,
                 "bbox": _extract_bbox(el),
