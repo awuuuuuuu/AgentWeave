@@ -4,9 +4,10 @@ version = "0.1.0"
 description = "Enterprise-grade Agent+RAG system"
 requires-python = ">=3.11"
 dependencies = [
-    # ── Step 1: PDF 解析 ──────────────────────────────────────────────────────
+    # ── Step 1: 文档摄入 ──────────────────────────────────────────────────────
     "pymupdf>=1.24",                   # fitz：fast 策略文字提取 + 单页截取
     "unstructured>=0.15",              # API 客户端（hi_res 走远端，本地不跑 DL）
+    "python-docx>=1.1",                # Word 文档解析
 ]
 
 [dependency-groups]
