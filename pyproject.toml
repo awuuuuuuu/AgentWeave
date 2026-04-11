@@ -8,6 +8,9 @@ dependencies = [
     "pymupdf>=1.24",                   # fitz：fast 策略文字提取 + 单页截取
     "unstructured>=0.15",              # API 客户端（hi_res 走远端，本地不跑 DL）
     "python-docx>=1.1",                # Word 文档解析
+    "beautifulsoup4>=4.12",
+    "html5lib>=1.1",
+    "chardet>=5.0",
 ]
 
 [dependency-groups]
