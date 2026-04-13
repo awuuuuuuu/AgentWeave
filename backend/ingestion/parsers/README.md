@@ -133,6 +133,40 @@ Markdown 的结构信号比 TXT 丰富得多（`#` 标题），但有一个经�
 
 ---
 
+## CSV 解析器（`csv_parser.py`）
+
+### 设计思想
+
+CSV 的核心难点不是读取，而是**不知道表头在哪里**。企业导出的 CSV 经常在真正的表头之前附带几行元信息（公司名、报告期、制表人），直接取第一行作为表头会把元信息当列名。
+
+### 核心机制
+
+- **启发式表头检测**：扫描前 10 行，优先选第一个非空列数 ≥ 2 的行；若后续某行非空列数超出当前最优 +1 则覆盖（参考 Dify）
+- **Preamble 提取**：表头之前的信息行解析为 `key: value` 字典，写入每个 chunk 的 metadata。支持三种格式：
+  - 单列冒号格式：`"公司名称：XX集团"` → `{"公司名称": "XX集团"}`
+  - 双列格式：`["报告期", "2024Q1"]` → `{"报告期": "2024Q1"}`
+  - 多列并排：`["制表人", "张三", "审核人", "李四"]` → 成对提取两个 kv
+- **分隔符嗅探**：`csv.Sniffer()` 自动检测逗号/分号/制表符
+- **UTF-8 BOM 处理**：Excel 导出的 CSV 经常带 BOM，优先剥离再解码
+- **每行一个 chunk**：格式 `字段: 值; 字段: 值`，空值字段跳过
+
+---
+
+## Excel 解析器（`excel_parser.py`）
+
+### 设计思想
+
+Excel 比 CSV 多两个结构维度：**多 Sheet** 和**合并单元格**。合并单元格的子单元格值为 None，如果不填充，LLM 拿到的每一行都缺少合并列的信息。
+
+### 核心机制
+
+- **Sheet 名作为 section_path**：每个 Sheet 独立处理，Sheet 名透传到每个 chunk 的 `section_path` 和 `sheet_name` 字段，检索时可按 Sheet 过滤
+- **合并单元格填充**：预扫描 `sheet.merged_cells.ranges`，构建 `(row, col) → value` 填充表，所有子单元格取主单元格的值。例：部门列合并 10 行"销售部"，填充后每行都能看到"销售部"
+- **与 CsvParser 共用逻辑**：表头检测（`_detect_header`）、Preamble 提取（`_extract_preamble`）、行转文本（`_row_to_text`）完全复用，保证行为一致
+
+
+---
+
 ## FallbackParser（`fallback_parser.py`）
 
 ### 设计思想
@@ -157,5 +191,7 @@ backend/tests/parsers/
 ├── test_html_parser.py
 ├── test_txt_parser.py
 ├── test_markdown_parser.py
+├── test_csv_parser.py          # 含分隔符嗅探、preamble 提取、编码检测
+├── test_excel_parser.py        # 含多 Sheet、合并单元格、preamble 提取
 └── test_fallback_parser.py     # 含二进制嗅探、注册表隔离测试
 ```
