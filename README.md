@@ -27,6 +27,14 @@
 | 8 | 前端完整界面 | 🔜 |
 | 9 | 可观测性 + 评估（LangSmith） | 🔜 |
 
+## 技术债 / TODO
+
+| 优先级 | 所属模块 | 描述 | 计划在哪步解决 |
+|--------|---------|------|--------------|
+| 中 | `ParentChildSplitter` | `parent_text` 直接存入子块 metadata，导致每个父块被复制 N 次写入向量库。重构方案：为父块生成 UUID `parent_id`，将 `{parent_id: parent_text}` 存入 Redis，子块只存 `parent_id`，检索时再查 KV | Step 3（Milvus 入库） |
+
+---
+
 ## 模块文档
 
 - [文档解析器](backend/ingestion/parsers/README.md) — PDF / Word / HTML / Markdown / TXT / Fallback
