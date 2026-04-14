@@ -9,21 +9,33 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Union
 
+_REQUIRED_METADATA_KEYS = ("source_file", "content_type", "section_path")
+
+
 @dataclass
 class ParsedChunk:
     """parse() 的最小返回单元。
 
-    RAGflow 返回的是元组或自定义 dict，格式因 Parser 而异。
-    我们统一用 dataclass，pipeline 层无需关心来自哪个 Parser。
+    所有 Parser 输出的 chunk 必须在 metadata 中携带以下字段：
+      source_file  : str  — 原始文件名
+      content_type : str  — "text" | "table" | "title" | "error"
+      section_path : str  — 所属章节路径（无结构的格式填 ""）
+
+    可选字段（有则携带，无则省略）：
+      page_number  : int  — PDF/Word 页码（从 1 开始）
+      sheet_name   : str  — Excel Sheet 名
     """
 
     text: str
     metadata: dict = field(default_factory=dict)
-    # metadata 建议字段：
-    #   page_number: int      — PDF/PPT 页码（从 1 开始）
-    #   section_title: str    — 所属章节标题
-    #   source_file: str      — 原始文件名
-    #   content_type: str     — "text" | "table" | "image_caption"
+
+    def __post_init__(self) -> None:
+        missing = [k for k in _REQUIRED_METADATA_KEYS if k not in self.metadata]
+        if missing:
+            raise ValueError(
+                f"ParsedChunk.metadata 缺少必填字段: {missing}。"
+                f"当前 metadata keys: {list(self.metadata.keys())}"
+            )
 
 
 class BaseParser(ABC):

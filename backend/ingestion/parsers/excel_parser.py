@@ -30,7 +30,7 @@ class ExcelParser(BaseParser):
             return _parse_excel(raw_bytes, filename)
         except Exception as exc:
             logger.warning("解析 Excel 文件 '%s' 失败: %s", filename, exc)
-            return [ParsedChunk(text="", metadata={"source_file": filename, "error": str(exc)})]
+            return [ParsedChunk(text="", metadata={"source_file": filename, "content_type": "error", "section_path": "", "error": str(exc)})]
 
 def _parse_excel(raw_bytes: bytes, filename: str) -> list[ParsedChunk]:
     import io

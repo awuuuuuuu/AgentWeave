@@ -39,7 +39,7 @@ class MarkdownParser(BaseParser):
             return _split_md(body, filename, frontmatter)
         except Exception as exc:
             logger.warning("解析 Markdown 文件 '%s' 失败: %s", filename, exc)
-            return [ParsedChunk(text="", metadata={"source_file": filename, "error": str(exc)})]
+            return [ParsedChunk(text="", metadata={"source_file": filename, "content_type": "error", "section_path": "", "error": str(exc)})]
 
 def _decode(raw: bytes) -> str:
     """chardet 检测编码，fallback utf-8 → latin-1。与 HtmlParser 保持一致。"""

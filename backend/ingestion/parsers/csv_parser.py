@@ -35,7 +35,7 @@ class CsvParser(BaseParser):
             return _parse_csv(text, filename)
         except Exception as exc:
             logger.warning("解析 CSV 文件 '%s' 失败: %s", filename, exc)
-            return [ParsedChunk(text="", metadata={"source_file": filename, "error": str(exc)})]
+            return [ParsedChunk(text="", metadata={"source_file": filename, "content_type": "error", "section_path": "", "error": str(exc)})]
 
 def _decode(raw: bytes) -> str:
     """chardet 检测编码，处理 UTF-8-BOM，fallback utf-8 → latin-1。"""

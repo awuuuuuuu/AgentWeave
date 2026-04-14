@@ -50,7 +50,7 @@ class HtmlParser(BaseParser):
             return _extract(soup, filename)
         except Exception as exc:
             logger.warning("解析 HTML 文件 '%s' 失败: %s", filename, exc)
-            return [ParsedChunk(text="", metadata={"source_file": filename, "error": str(exc)})]
+            return [ParsedChunk(text="", metadata={"source_file": filename, "content_type": "error", "section_path": "", "error": str(exc)})]
         
 def _extract(soup: BeautifulSoup, filename: str) -> list[ParsedChunk]:
     _clean(soup)

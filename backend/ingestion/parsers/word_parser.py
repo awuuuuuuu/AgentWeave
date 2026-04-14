@@ -40,7 +40,7 @@ class WordParser(BaseParser):
             return self._extract(doc, filename)
         except Exception as exc:
             logger.warning("解析 Word 文件 '%s' 失败: %s", filename, exc)
-            return [ParsedChunk(text="", metadata={"source_file": filename, "error": str(exc)})]
+            return [ParsedChunk(text="", metadata={"source_file": filename, "content_type": "error", "section_path": "", "error": str(exc)})]
 
     def _extract(self, doc: Document, filename: str) -> list[ParsedChunk]:
         chunks: list[ParsedChunk] = []

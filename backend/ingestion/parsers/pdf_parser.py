@@ -95,7 +95,7 @@ class PdfParser(BaseParser):
 
         except Exception as exc:
             logger.warning("解析 PDF 文件 '%s' 时发生全局崩溃: %s", filename, exc)
-            return [ParsedChunk(text="", metadata={"source_file": filename, "error": str(exc)})]
+            return [ParsedChunk(text="", metadata={"source_file": filename, "content_type": "error", "section_path": "", "error": str(exc)})]
 
     def _run_fast_pipeline(self, pdf_bytes: bytes, filename: str) -> list[ParsedChunk]:
         chunks = []

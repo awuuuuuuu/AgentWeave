@@ -45,7 +45,7 @@ class FallbackParser(BaseParser):
             )]
         except Exception as exc:
             logger.warning("FallbackParser 解析 '%s' 失败: %s", filename, exc)
-            return [ParsedChunk(text="", metadata={"source_file": filename, "error": str(exc), "parser": "fallback"})]
+            return [ParsedChunk(text="", metadata={"source_file": filename, "content_type": "error", "section_path": "", "error": str(exc), "parser": "fallback"})]
 
 
 def _is_binary(raw: bytes) -> bool:

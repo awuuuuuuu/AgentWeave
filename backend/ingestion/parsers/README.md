@@ -179,6 +179,40 @@ pipeline 遇到未知格式时不应崩溃，也不应产生垃圾数据。两�
 
 ---
 
+## 结构感知切分（与 Splitter 层的分工）
+
+Parser 层已完成所有的**结构感知工作**，Splitter 层只处理 token 长度约束。两层职责如下：
+
+| 层 | 职责 | 如何感知结构 |
+|----|------|-------------|
+| **Parser** | 按文档原生结构切块 | Word/HTML/Markdown 按标题层级；PDF 按页；Excel 按 Sheet |
+| **Splitter** | 把超长 chunk 切到 token 上限内 | 不感知结构，只看 `content_type` 和 token 数 |
+
+**关键设计**：Parser 输出的每个 chunk 已经在一个语义单元内（同一章节、同一页、同一 Sheet），Splitter 无法跨越这些边界——不是因为 Splitter 知道结构，而是 Parser 已经保证了边界。
+
+**`content_type` 路由**：Splitter 通过 `content_type` 字段做差异化处理：
+
+```python
+NO_SPLIT_TYPES = {"table", "title"}  # 表格和标题直接透传，不切分
+```
+
+- `table`：跨行切断表格会让 LLM 看到半张表，完全无法理解
+- `title`：标题通常很短，切分无意义；保留完整标题便于检索命中
+
+**强制 metadata 规范**：所有 Parser 输出的 chunk 必须携带三个字段，在 `ParsedChunk.__post_init__` 中校验：
+
+```python
+_REQUIRED_METADATA_KEYS = ("source_file", "content_type", "section_path")
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `source_file` | `str` | 原始文件名，用于溯源 |
+| `content_type` | `str` | `"text"` / `"table"` / `"title"` / `"error"` |
+| `section_path` | `str` | 章节路径，无结构格式填 `""` |
+
+---
+
 ## 测试覆盖
 
 ```
