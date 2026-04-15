@@ -8,9 +8,9 @@
 
 | 子模块 | 状态 |
 |--------|------|
-| Parsers（PDF / Word / HTML / Markdown / TXT / Fallback） | 🚧 建设中 |
-| Splitter（按语义边界切块，控制 chunk 大小与重叠） | 🔜 |
-| Embedding（文本 → 向量，OpenAI text-embedding-3-small） | 🔜 |
+| Parsers（PDF / Word / HTML / Markdown / TXT / Fallback） | ✅ 完成 |
+| Splitter（按语义边界切块，控制 chunk 大小与重叠） | ✅ 完成 |
+| Embedding（文本 → 向量，OpenAI text-embedding-3-small） | ✅ 完成 |
 | Milvus 写入（chunk + 向量 + metadata 入库） | 🔜 |
 | 摄入 Pipeline（串联以上四步，支持批量文件处理） | 🔜 |
 
@@ -32,12 +32,15 @@
 | 优先级 | 所属模块 | 描述 | 计划在哪步解决 |
 |--------|---------|------|--------------|
 | 中 | `ParentChildSplitter` | `parent_text` 直接存入子块 metadata，导致每个父块被复制 N 次写入向量库。重构方案：为父块生成 UUID `parent_id`，将 `{parent_id: parent_text}` 存入 Redis，子块只存 `parent_id`，检索时再查 KV | Step 3（Milvus 入库） |
+| 低 | `OpenAIEmbedder` | 无向量缓存，相同文本重复入库时仍调用 OpenAI API，产生重复 Token 费用。改造方案：用 `CachedEmbedder` 包装，按文本哈希查 Redis，命中直接返回向量 | Step 3（Redis 引入后） |
 
 ---
 
 ## 模块文档
 
 - [文档解析器](backend/ingestion/parsers/README.md) — PDF / Word / HTML / Markdown / TXT / Fallback
+- [文本切分器](backend/ingestion/splitter/README.md) — Recursive / Semantic / ParentChild
+- [向量化层](backend/ingestion/embedder/README.md) — OpenAIEmbedder，token 截断、批处理、指数退避重试
 
 ## 技术栈
 
