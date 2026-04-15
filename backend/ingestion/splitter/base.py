@@ -7,25 +7,31 @@ import tiktoken
 
 from ..parsers.base import ParsedChunk
 
-# 不切分的类型
-NO_SPLIT_TYPES = {"title", "table"}
+TABLE_HARD_LIMIT = 2048  # token 数超过此值的 table chunk 强制切分
+
 
 class BaseSplitter(ABC):
-    """
-    所有切分策略的抽象基类。
+    """所有切分策略的抽象基类。
 
     约定：
-    - table / title 类型直接透传，不切分
+    - title：恒定透传，不切分
+    - table：token 数 ≤ TABLE_HARD_LIMIT 时透传；超限则交给 _split_chunk 强制切分
     - sub-chunk 继承父 chunk 所有 metadata，追加 chunk_index / chunk_total
     """
 
-    def __init__(self, encoing_name: str = "cl100k_base") -> None:
-        self._enc = tiktoken.get_encoding(encoing_name)
-    
+    def __init__(self, encoding_name: str = "cl100k_base") -> None:
+        self._enc = tiktoken.get_encoding(encoding_name)
+
     def split(self, chunks: Sequence[ParsedChunk]) -> list[ParsedChunk]:
         result: list[ParsedChunk] = []
         for chunk in chunks:
-            result.extend(self._split_chunk(chunk))
+            ct = chunk.metadata.get("content_type")
+            if ct == "title":
+                result.append(chunk)
+            elif ct == "table" and self.count_tokens(chunk.text) <= TABLE_HARD_LIMIT:
+                result.append(chunk)
+            else:
+                result.extend(self._split_chunk(chunk))
         return result
     
     @abstractmethod

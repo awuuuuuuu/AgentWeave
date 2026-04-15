@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..parsers.base import ParsedChunk
-from .base import NO_SPLIT_TYPES, BaseSplitter
+from .base import BaseSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,6 @@ class SemanticSplitter(BaseSplitter):
         self.config = cfg
     
     def _split_chunk(self, chunk: ParsedChunk) -> list[ParsedChunk]:
-        if chunk.metadata.get("content_type") in NO_SPLIT_TYPES:
-            return [chunk]
-        
         if self.count_tokens(chunk.text) <= self.config.chunk_size:
             return [chunk]
         

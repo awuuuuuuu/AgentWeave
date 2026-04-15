@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..parsers.base import ParsedChunk
-from .base import NO_SPLIT_TYPES, BaseSplitter
+from .base import BaseSplitter
 
 _SEPARATORS = ["\n\n", "\n", "。", ".", "；", ";", " ", ""]
 
@@ -29,9 +29,6 @@ class RecursiveSplitter(BaseSplitter):
         self.config = cfg
 
     def _split_chunk(self, chunk: ParsedChunk) -> list[ParsedChunk]:
-        if chunk.metadata.get("content_type") in NO_SPLIT_TYPES:
-            return [chunk]
-
         if self.count_tokens(chunk.text) <= self.config.chunk_size:
             return [chunk]
         

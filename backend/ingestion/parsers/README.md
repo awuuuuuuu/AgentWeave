@@ -192,12 +192,14 @@ Parser 层已完成所有的**结构感知工作**，Splitter 层只处理 token
 
 **`content_type` 路由**：Splitter 通过 `content_type` 字段做差异化处理：
 
-```python
-NO_SPLIT_TYPES = {"table", "title"}  # 表格和标题直接透传，不切分
-```
+- `title`：标题极短，切分无意义；恒定透传
+- `table`：token 数 ≤ 2048 时透传（跨行切断表格会让 LLM 看到半张表）；超过 2048 token 强制切分，防止 `TokenLimitExceeded`
 
-- `table`：跨行切断表格会让 LLM 看到半张表，完全无法理解
-- `title`：标题通常很短，切分无意义；保留完整标题便于检索命中
+**`section_path` 的用途**：`section_path` 是给 **LLM 和用户**看的元信息，不是向量库过滤字段。
+
+- ✅ 正确用途：拼入 prompt 告知 LLM 结果来源（"此内容来自《Q3报告》第三章 3.2节"）；前端引用展示
+- ❌ 不适合：作为 Milvus scalar filter——不同文档的标题文字完全不同，跨文档精确匹配没有意义
+- 如需按文档范围过滤，使用 `source_file` 字段
 
 **强制 metadata 规范**：所有 Parser 输出的 chunk 必须携带三个字段，在 `ParsedChunk.__post_init__` 中校验：
 

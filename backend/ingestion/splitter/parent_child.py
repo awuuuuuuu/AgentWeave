@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..parsers.base import ParsedChunk
-from .base import NO_SPLIT_TYPES, BaseSplitter
+from .base import BaseSplitter
 from .recursive import RecursiveConfig, RecursiveSplitter
 
 @dataclass
@@ -51,9 +51,6 @@ class ParentChildSplitter(BaseSplitter):
         )
 
     def _split_chunk(self, chunk: ParsedChunk) -> list[ParsedChunk]:
-        if chunk.metadata.get("content_type") in NO_SPLIT_TYPES:
-            return [chunk]
-        
         parent_chunks = self._parent_splitter.split([chunk])
 
         results: list[ParsedChunk] = []

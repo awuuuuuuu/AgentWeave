@@ -11,10 +11,13 @@ Splitter 层只有一个职责：**把 Parser 输出的超长 chunk 切到 token
 文档
   └─ Parser（结构感知）
         ├─ 按标题层级切块（Word / HTML / Markdown）
-        ├─ 按页切块（PDF）
+        ├─ PDF fast：按页提取（跨页段落会截断，已知局限）
+        │  PDF smart/hi_res：Unstructured API 语义切块，不按页断开
         └─ 按 Sheet 切块（Excel）
               └─ Splitter（token 约束）
-                    ├─ table / title → 直接透传，不切
+                    ├─ title → 恒定透传，不切
+                    ├─ table ≤ 2048 token → 透传
+                    ├─ table > 2048 token → 强制切分（防止 TokenLimitExceeded）
                     └─ text → 超出 chunk_size 则切分
 ```
 
@@ -26,7 +29,7 @@ Splitter 层只有一个职责：**把 Parser 输出的超长 chunk 切到 token
 
 | 约定 | 说明 |
 |------|------|
-| `content_type` 路由 | `table` / `title` 直接返回，不切 |
+| `content_type` 路由 | `title` 恒定透传；`table` ≤ 2048 token 透传，超限强制切分 |
 | metadata 继承 | 子 chunk 继承父 chunk 全部 metadata |
 | `chunk_index` / `chunk_total` | 切分后追加到每个子 chunk 的 metadata |
 | token 计数 | 统一使用 tiktoken `cl100k_base` |

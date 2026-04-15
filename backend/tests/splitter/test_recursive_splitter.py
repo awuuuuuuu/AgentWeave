@@ -44,9 +44,17 @@ class TestContentTypeRouting:
     def _long_text(self, n: int = 600) -> str:
         return " ".join(["word"] * n)
 
-    def test_table_not_split(self):
+    def test_table_not_split_when_within_hard_limit(self):
+        # 600 tokens < TABLE_HARD_LIMIT(2048)，透传
         chunks = make_recursive(chunk_size=50).split([make_chunk(self._long_text(), content_type="table")])
         assert len(chunks) == 1
+
+    def test_table_split_when_exceeds_hard_limit(self):
+        # 3000 words >> TABLE_HARD_LIMIT(2048)，强制切分
+        from ingestion.splitter.base import TABLE_HARD_LIMIT
+        huge_table = " ".join(["row"] * (TABLE_HARD_LIMIT + 1000))
+        chunks = make_recursive(chunk_size=512).split([make_chunk(huge_table, content_type="table")])
+        assert len(chunks) > 1
 
     def test_title_not_split(self):
         chunks = make_recursive(chunk_size=50).split([make_chunk(self._long_text(), content_type="title")])
