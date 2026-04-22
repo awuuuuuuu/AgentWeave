@@ -114,15 +114,25 @@ class TestUpsertBasic:
         assert row["extra_meta"]["chunk_index"] == 1
 
     def test_top_level_meta_not_duplicated_in_extra(self):
-        """source_file / content_type / section_path 不重复存入 extra_meta。"""
+        """source_file / content_type / section_path / chunk_index_in_doc 不重复存入 extra_meta。"""
         client = make_mock_client()
         store = _store(client)
-        ec = make_embedded()
+        ec = make_embedded(chunk_index_in_doc=3)
         store.upsert([ec], knowledge_base_id="kb1")
         row = client.upsert.call_args[1]["data"][0]
         assert "source_file" not in row["extra_meta"]
         assert "content_type" not in row["extra_meta"]
         assert "section_path" not in row["extra_meta"]
+        assert "chunk_index_in_doc" not in row["extra_meta"]
+
+    def test_chunk_index_in_doc_stored_as_top_level(self):
+        """chunk_index_in_doc 写入顶层 chunk_index_in_doc 字段。"""
+        client = make_mock_client()
+        store = _store(client)
+        ec = make_embedded(chunk_index_in_doc=7)
+        store.upsert([ec], knowledge_base_id="kb1")
+        row = client.upsert.call_args[1]["data"][0]
+        assert row["chunk_index_in_doc"] == 7
 
 
 # ── error chunk 跳过 ──────────────────────────────────────────────────────────
@@ -284,3 +294,62 @@ class TestCollectionInit:
 
         MilvusStore(config=MilvusStoreConfig(), client=client)
         client.create_collection.assert_called_once()
+
+    def test_schema_migration_raises_not_drops(self):
+        """schema 过期（缺少任意必要字段）时应抛出 RuntimeError，而不是自动删库。"""
+        client = make_mock_client()
+        client.has_collection.return_value = True
+        # describe_collection 返回缺少多个字段的旧 schema
+        client.describe_collection.return_value = {
+            "fields": [
+                {"name": "chunk_id"},
+                {"name": "text"},
+                {"name": "vector"},
+                # 故意缺少 sparse_vector / chunk_index_in_doc 等新字段
+            ]
+        }
+        cfg = MilvusStoreConfig(enable_bm25=True)
+        with pytest.raises(RuntimeError, match="schema 已过期"):
+            MilvusStore(config=cfg, client=client)
+        client.drop_collection.assert_not_called()
+
+    def test_schema_migration_not_triggered_when_bm25_disabled_and_base_complete(self):
+        """enable_bm25=False 时，基础字段完整则不触发 migration（sparse_vector 缺失无关紧要）。"""
+        client = make_mock_client()
+        client.has_collection.return_value = True
+        # describe_collection 返回无 sparse_vector 的 schema，但基础字段完整
+        client.describe_collection.return_value = {
+            "fields": [
+                {"name": "chunk_id"},
+                {"name": "knowledge_base_id"},
+                {"name": "source_file"},
+                {"name": "content_type"},
+                {"name": "section_path"},
+                {"name": "embed_model"},
+                {"name": "chunk_index_in_doc"},
+                {"name": "text"},
+                {"name": "extra_meta"},
+                {"name": "vector"},
+                # 故意没有 sparse_vector
+            ]
+        }
+        cfg = MilvusStoreConfig(enable_bm25=False)
+        MilvusStore(config=cfg, client=client)  # 不应抛出
+        client.drop_collection.assert_not_called()
+
+    def test_schema_migration_raises_when_bm25_disabled_but_base_field_missing(self):
+        """enable_bm25=False 时，基础字段缺失（如 chunk_index_in_doc）仍应报错。"""
+        client = make_mock_client()
+        client.has_collection.return_value = True
+        client.describe_collection.return_value = {
+            "fields": [
+                {"name": "chunk_id"},
+                {"name": "text"},
+                {"name": "vector"},
+                # 缺少 chunk_index_in_doc 等基础字段
+            ]
+        }
+        cfg = MilvusStoreConfig(enable_bm25=False)
+        with pytest.raises(RuntimeError, match="schema 已过期"):
+            MilvusStore(config=cfg, client=client)
+        client.drop_collection.assert_not_called()
