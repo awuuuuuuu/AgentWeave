@@ -18,7 +18,7 @@
 
 | Step | 模块 | 状态 |
 |------|------|------|
-| 2 | 混合检索 + 重排序（BM25 + 向量 + Reranker） | 🔜 |
+| 2 | 混合检索 + 重排序（BM25 + 向量 + Reranker） | ✅ 完成 |
 | 3 | RAG Chain + API + 前端基础 | 🔜 |
 | 4 | 工具体系 | 🔜 |
 | 5 | 记忆模块 | 🔜 |
@@ -42,6 +42,7 @@
 
 ## 模块文档
 
+- [混合检索系统](backend/retrieval/README.md) — 数据流、双路并发融合、Reranker、Milvus BM25
 - [文档摄入系统总览](backend/ingestion/README.md) — 数据流、模块结构、层间契约
   - [Parser 层](backend/ingestion/parsers/README.md) — PDF / Word / HTML / Markdown / TXT / Fallback
   - [Splitter 层](backend/ingestion/splitter/README.md) — Recursive / Semantic / ParentChild
@@ -160,6 +161,33 @@ RecursiveSplitter 在实现时处理了两个容易被忽略的边界问题：
 ### 10. Milvus Schema：顶层字段 + Partition Key 多租户隔离
 
 不同于 Dify 把所有 metadata 打包进单个 JSON 字段（无法建标量索引）、也不同于 RAGflow 给每个字段单独建索引（维护成本高），RAGent 采用中间路线：高频过滤字段（`source_file`、`content_type`）提升为顶层 VARCHAR 字段并建 INVERTED 索引，其余非结构化 metadata 存入 `extra_meta` JSON。按 `knowledge_base_id` 作为 Partition Key 分区，天然支持多知识库数据隔离，同时规避 Dify 的 Collection-per-dataset 方案在 Milvus 10K collection 上限的扩展瓶颈。
+
+### 11. 混合检索：Weighted Sum 而非 RRF，保留双路原始分数
+
+业界常用 Reciprocal Rank Fusion（RRF）做多路融合，但 RRF 只使用排名、丢弃原始分数，无法反映"某路完全没命中"的情况。RAGent 选择 **Weighted Sum**：
+
+```
+fusion_score = α × norm(vector_score) + (1-α) × norm(bm25_score)
+```
+
+`RetrievedChunk` 同时携带 `vector_score`、`bm25_score`、`fusion_score`、`rerank_score` 四个字段，无需重查库即可在日志和调试界面中定位问题。
+
+归一化采用 **Query-level min-max**（在本次查询候选集内部计算），而非全局归一化——BM25 分数无上界，全局 min/max 无意义。
+
+### 12. 双路检索并发，不串行等待
+
+向量检索和 BM25 检索完全独立，串行执行纯属浪费。`HybridRetriever._fuse()` 同时发起两路：
+
+- **同步路径**：模块级 `ThreadPoolExecutor(max_workers=2)`，一个 worker 跑 Vector，一个跑 BM25，总耗时降至较慢一路
+- **异步路径**：`aretrieve()` 用 `asyncio.gather` 并发两路，FastAPI 路由无阻塞
+
+线程池为模块级常量，不在每次调用时重建，避免线程池创建开销。
+
+### 13. Milvus 内置 BM25 Function，零摄入改造
+
+BM25 使用 Milvus 2.5 的内置 Function，在 insert 时自动将 `text` 转为稀疏向量存入 `sparse_vector`，查询时同样自动转换。Python 侧只传原始字符串，摄入 pipeline 完全不动。
+
+对比 Python 侧 `BM25EmbeddingFunction`：需要预计算稀疏向量并修改摄入 pipeline，且线上/线下模型不一致时会产生检索偏差。内置 Function 从根本上消除了这一风险。
 
 ---
 
