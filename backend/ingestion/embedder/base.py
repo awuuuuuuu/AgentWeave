@@ -67,6 +67,13 @@ class BaseEmbedder(ABC):
 
         return cast(list[EmbeddedChunk], results)
     
+    def embed_query(self, query: str) -> list[float]:
+        """将单条查询文本向量化，供检索层使用。"""
+        result = self._embed_texts([query])
+        if not result or not result[0]:
+            raise ValueError(f"embed_query 返回空向量，query={query!r:.50}")
+        return result[0]
+
     @abstractmethod
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         """子类实现：接收 ≤ batch_size 条纯文本，返回等长向量列表"""

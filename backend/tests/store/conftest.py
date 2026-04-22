@@ -50,7 +50,27 @@ def make_embedded(
 
 
 def make_mock_client() -> MagicMock:
-    """返回一个模拟 MilvusClient，has_collection 默认返回 True（跳过建表）。"""
+    """返回一个模拟 MilvusClient，has_collection 默认返回 True（跳过建表）。
+
+    describe_collection 返回包含 sparse_vector 的 schema，使 _needs_migration() 返回 False，
+    避免触发 schema 过期报错。
+    """
     client = MagicMock()
     client.has_collection.return_value = True
+    client.describe_collection.return_value = {
+        "fields": [
+            # 包含 _REQUIRED_FIELDS 中的全部字段，使 _needs_migration() 返回 False
+            {"name": "chunk_id"},
+            {"name": "knowledge_base_id"},
+            {"name": "source_file"},
+            {"name": "content_type"},
+            {"name": "section_path"},
+            {"name": "embed_model"},
+            {"name": "chunk_index_in_doc"},
+            {"name": "text"},
+            {"name": "extra_meta"},
+            {"name": "vector"},
+            {"name": "sparse_vector"},
+        ]
+    }
     return client
