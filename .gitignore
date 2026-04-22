@@ -16,6 +16,9 @@ wheels/
 # Claude Code
 .claude/
 
+# codex
+.codex/
+
 # 调试产物
 debug_*.pdf
 
