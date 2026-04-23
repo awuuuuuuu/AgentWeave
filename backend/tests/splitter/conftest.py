@@ -5,12 +5,10 @@ Splitter 测试共享工具
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ingestion.parsers.base import ParsedChunk
 from ingestion.splitter import RecursiveConfig, RecursiveSplitter

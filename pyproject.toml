@@ -16,12 +16,21 @@ dependencies = [
     "openai>=2.31.0",
     "pymilvus>=2.5",
     "sentence-transformers>=5.4.1",
+    "langgraph>=1.1.9",
+    "langchain-core>=1.3.0",
+    "fastapi>=0.136.0",
+    "uvicorn>=0.45.0",
+    "python-multipart>=0.0.26",
+    "pydantic-settings>=2.14.0",
+    "python-dotenv>=1.2.2",
+    "langchain-openai>=1.1.16",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "httpx>=0.27",                     # FastAPI AsyncClient HTTP 层测试
     "ruff>=0.4",
     "python-dotenv>=1.0",              # conftest.py 加载 .env
 ]
@@ -36,6 +45,7 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["backend/tests"]
+pythonpath = ["backend"]
 markers = [
     "integration: tests requiring Unstructured API or local hi_res environment",
 ]

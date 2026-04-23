@@ -6,7 +6,7 @@ from langgraph.graph import START, END, StateGraph
 
 from ingestion.embedder.openai_embedder import OpenAIEmbedder
 from ingestion.store.milvus_store import MilvusStoreConfig
-from model_router.providers.openai_provider import create_llm
+from llms.providers.openai_provider import create_llm
 from retrieval.hybrid_retriever import HybridRetriever, HybridRetrieverConfig
 from retrieval.reranker import Reranker, RerankerConfig
 
@@ -59,7 +59,7 @@ class RAGChain:
         return cls(graph, cfg)
     
     @classmethod
-    def _build_graph(retriever, reranker, llm, max_context_tokens: int) -> StateGraph:
+    def _build_graph(cls, retriever, reranker, llm, max_context_tokens: int) -> StateGraph:
         g = StateGraph(GraphState)
 
         g.add_node("retrieve", make_retrieve_node(retriever, reranker))

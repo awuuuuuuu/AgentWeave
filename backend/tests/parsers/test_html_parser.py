@@ -6,12 +6,10 @@ HtmlParser 测试套件
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ingestion.parsers.base import ParsedChunk, get_parser
 from ingestion.parsers.html_parser import HtmlParser, _build_section_path, _clean_text, _decode

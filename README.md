@@ -19,7 +19,7 @@
 | Step | 模块 | 状态 |
 |------|------|------|
 | 2 | 混合检索 + 重排序（BM25 + 向量 + Reranker） | ✅ 完成 |
-| 3 | RAG Chain + API + 前端基础 | 🔜 |
+| 3 | RAG Chain + API + 前端基础 | 🚧 建设中 |
 | 4 | 工具体系 | 🔜 |
 | 5 | 记忆模块 | 🔜 |
 | 6 | LangGraph Agent 编排 | 🔜 |
@@ -42,6 +42,7 @@
 
 ## 模块文档
 
+- [RAG Chain](backend/rag/README.md) — 数据流、引用溯源、Context token 预算、SSE 流式
 - [混合检索系统](backend/retrieval/README.md) — 数据流、双路并发融合、Reranker、Milvus BM25
 - [文档摄入系统总览](backend/ingestion/README.md) — 数据流、模块结构、层间契约
   - [Parser 层](backend/ingestion/parsers/README.md) — PDF / Word / HTML / Markdown / TXT / Fallback
@@ -189,15 +190,33 @@ BM25 使用 Milvus 2.5 的内置 Function，在 insert 时自动将 `text` 转�
 
 对比 Python 侧 `BM25EmbeddingFunction`：需要预计算稀疏向量并修改摄入 pipeline，且线上/线下模型不一致时会产生检索偏差。内置 Function 从根本上消除了这一风险。
 
+### 14. 单次 LangGraph 执行同时流式输出 token 和引用（Step 3）
+
+RAG Chain 的 SSE 流式响应需要同时产出逐字 token 和最终引用元数据。朴素实现会调用两次 LangGraph（一次 stream tokens，一次 invoke 取引用），消耗双倍 LLM 费用。
+
+RAGent 的 `astream_full()` 使用 `astream_events(version="v2")` 在单次 graph 执行中：
+- 捕获 `on_chat_model_stream` 事件 → 产出 `("token", str)` 给前端逐字渲染
+- 捕获 `on_chain_end` 事件（含完整 GraphState）→ 产出 `("result", dict)` 含引用元数据
+
+SSE 路由消费此 async generator，每次 yield 前 `await request.is_disconnected()` 检测断线，`asyncio.CancelledError` 显式 re-raise，异常时发送 `{"type":"error"}` 事件，`[DONE]` 在 `finally` 块保证必达。
+
+无文档命中时，LangGraph 条件边直接路由到 `fallback_node` 返回硬编码回复，不调用 LLM，避免 `NO_CONTEXT` 占位字符串混入 data 标签造成 data/instruction 污染。
+
+### 15. 引用格式选型：`[N]` + regex 提取，借鉴 RAGflow
+
+RAGflow 使用 `[ID:N]` 引用格式，并在 LLM 零引用时用嵌入相似度做 fallback 修复。RAGent 简化为 `[N]`，System prompt 约束引用编号必须放在**句号之前**（"…内容 [1]。"格式），regex 提取 + 出界编号过滤已足够可靠。`has_context=True` 但答案无引用时记录 warning 便于可观测性追踪。fallback 嵌入修复留作 Step 9 改进项。
+
+ContextBuilder 采用 Dify 的 `<context>` XML 标签隔离注入内容，并在其中嵌入 RAGflow 风格的 `[N] 来源：file | section` 前缀，兼顾结构清晰与引用追踪。
+
 ---
 
 ## 技术栈
 
-- **LLM**：claude-sonnet-4-6 / claude-haiku-4-5
+- **LLM**：gpt-4o / gpt-4o-mini（OpenAI）
 - **Embedding**：text-embedding-3-small（OpenAI）
 - **向量库**：Milvus（Docker 本地）
 - **关系库**：PostgreSQL（Supabase）
 - **缓存**：Redis（Docker 本地）
-- **前端**：Next.js 14 + shadcn/ui + Tailwind
+- **前端**：Next.js 16 + Tailwind CSS（shadcn/ui 计划 Step 8 引入）
 - **运行时**：Python 3.11+、uv
 - **测试**：pytest 8+

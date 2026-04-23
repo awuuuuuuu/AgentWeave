@@ -16,7 +16,6 @@ WordParser 测试套件
 from __future__ import annotations
 
 import io
-import sys
 from pathlib import Path
 
 import pytest
@@ -25,7 +24,6 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ingestion.parsers.base import ParsedChunk, get_parser
 from ingestion.parsers.word_parser import WordParser, _build_section_path, _table_to_text
