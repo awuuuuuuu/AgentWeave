@@ -37,7 +37,7 @@ class Reranker:
         chunks: list[RetrievedChunk],
         top_k: int | None = None
     ) -> list[RetrievedChunk]:
-        """对候选集进行 cross-encoder 精排，返回按 rerank_score 降序排列的结果"""
+        """对候选集进行 cross-encoder 精排，返回按 rerank_score 降序排列的前 top_k 个结果"""
         if not chunks:
             return []
         
