@@ -24,6 +24,13 @@ dependencies = [
     "pydantic-settings>=2.14.0",
     "python-dotenv>=1.2.2",
     "langchain-openai>=1.1.16",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    "alembic>=1.13",
+    "celery>=5.3",
+    "redis>=5.0",
 ]
 
 [dependency-groups]
