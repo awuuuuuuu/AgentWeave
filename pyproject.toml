@@ -27,10 +27,11 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "python-jose[cryptography]>=3.3",
-    "passlib[bcrypt]>=1.7",
     "alembic>=1.13",
     "celery>=5.3",
     "redis>=5.0",
+    "pydantic[email]>=2.12.5",
+    "bcrypt>=4.0",
 ]
 
 [dependency-groups]

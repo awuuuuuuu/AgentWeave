@@ -209,6 +209,30 @@ RAGflow 使用 `[ID:N]` 引用格式，并在 LLM 零引用时用嵌入相似度
 
 ContextBuilder 采用 Dify 的 `<context>` XML 标签隔离注入内容，并在其中嵌入 RAGflow 风格的 `[N] 来源：file | section` 前缀，兼顾结构清晰与引用追踪。
 
+### 16. fetch + ReadableStream 替代 EventSource，支持 POST + 主动取消（Step 3）
+
+浏览器原生 `EventSource` 只支持 GET 请求，无法携带 JSON body（query + kb_id），且不支持 `AbortController` 取消。`@microsoft/fetch-event-source` 虽然解决了这些问题，但引入了额外依赖和复杂的重连配置。
+
+RAGent 直接使用 `fetch` + `ReadableStream`：`resp.body!.getReader()` 逐块读取字节流，`TextDecoder` 解码，按 `\n\n` 切割事件块，取 `data:` 行解析 JSON。整体实现约 40 行，零额外依赖。停止生成时调用 `AbortController.abort()`，`fetch` 立即中断，后端 SSE 路由通过 `await request.is_disconnected()` 检测断线停止 LLM 流式输出。
+
+### 17. requestAnimationFrame 批量 token 合并，避免每 token 触发 setState（Step 3）
+
+流式输出时，LLM 可能以极高频率（每 5~20ms）产出一个 token。若每个 token 直接调用 `setState`，会触发等量次数的 React re-render，在长文回答中导致明显卡顿。
+
+RAGent 使用 `tokenBufRef`（`useRef<string>`）暂存收到的 token，配合 `rafRef`（`useRef<number>`）做 `requestAnimationFrame` 调度：只在浏览器下一帧渲染前才将缓冲区 flush 到 `setState`。同一帧内收到的多个 token 合并为一次 render，将 setState 调用次数从 O(token数) 降至 O(帧数，约 60fps)。
+
+### 18. 智能自动滚动：用户上翻时停止跟随，回到底部按钮（Step 3）
+
+朴素实现在每个 token 到来时无条件调用 `scrollIntoView`，若用户向上翻看历史内容，会被强制拉回底部，体验极差（参考 Open-WebUI 的滚动管理设计）。
+
+RAGent 的方案：`onScroll` 事件实时计算 `scrollHeight - scrollTop - clientHeight`，距底部 `< 120px` 时标记 `isNearBottom=true`。只有 `isNearBottom` 时才执行自动滚动，流式输出期间使用 `behavior: "instant"` 避免平滑滚动动画造成视觉抖动。用户主动上翻后（`isNearBottom=false`），显示"回到底部"悬浮按钮，点击后重置标记并滚到底。
+
+### 19. ReactMarkdown 自定义渲染器实现内联引用跳转，不引入 rehype-raw（Step 3）
+
+将 `[N]` 文本转为可点击的上标引用按钮，常见做法是用 `rehype-raw` 允许 HTML 字符串注入，但这引入了 XSS 风险，且需要后端输出 HTML。
+
+RAGent 在 ReactMarkdown 的 `components` 中自定义 `p` 和 `li` 的渲染函数，递归遍历 React children，将匹配 `/\[(\d+)\]/g` 的文本节点拆分为普通文本 + `<sup><button>` 引用元素。引用编号和来源存储在组件 state（`activeRef`），点击后高亮 `CitationList` 中对应的引用卡片。全程纯 React 节点操作，无 HTML 字符串注入，无额外依赖。
+
 ---
 
 ## 技术栈
