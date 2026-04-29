@@ -19,7 +19,7 @@ async def get_kb(kb_id: str, user_id: str, session: AsyncSession) -> KnowledgeBa
     """返回KB, 不存在或者不属于该用户时抛出 ValueError"""
     kb = await session.scalar(
         select(KnowledgeBase).where(
-            KnowledgeBase.id == kb.id,
+            KnowledgeBase.id == kb_id,
             KnowledgeBase.user_id == user_id
         )
     )
