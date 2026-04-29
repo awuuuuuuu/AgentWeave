@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes.auth import router as auth_router
 from api.routes.chat import router as chat_router
+from api.routes.knowledge import router as kb_router
 from api.settings import APISettings
 from rag.chain import RAGChain
 
@@ -36,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(kb_router)
 app.include_router(chat_router)
 
 @app.get("/health")
