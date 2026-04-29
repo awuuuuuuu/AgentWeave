@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import bcrypt
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import User
@@ -19,13 +20,13 @@ def _verify_password(plain: str, hashed: str) -> bool:
 
 async def register(req: RegisterRequest, session: AsyncSession) -> TokenResponse:
     """注册新用户，返回 token 对。邮箱已存在时抛出 ValueError。"""
-    existing = await session.scalar(select(User).where(User.email == req.email))
-    if existing is not None:
-        raise ValueError("Email already registered")
-
     user = User(email=req.email, hashed_password=_hash_password(req.password))
     session.add(user)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise ValueError("Email already registered")
     await session.refresh(user)
 
     return TokenResponse(

@@ -40,7 +40,9 @@ def decode_token(token: str, expected_type: str) -> str:
         raise ValueError(f"Invalid token: {e}") from e
     if payload.get("type") != expected_type:
         raise ValueError(f"Wrong token type: expected {expected_type}")
+    
     user_id: str | None = payload.get("sub")
     if not user_id:
         raise ValueError("Token missing sub claim")
+    
     return user_id

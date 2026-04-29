@@ -9,12 +9,14 @@ from auth.jwt import create_access_token, decode_token
 from auth.schemas import (
     AccessTokenResponse,
     LoginRequest,
+    RefreshRequest,
     RegisterRequest,
     TokenResponse,
     UserResponse,
 )
 from db.models import User
 from db.session import get_session
+from sqlalchemy import select
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -36,13 +38,15 @@ async def login(req: LoginRequest, session: AsyncSession = Depends(get_session))
 
 
 @router.post("/refresh", response_model=AccessTokenResponse)
-async def refresh(body: dict, session: AsyncSession = Depends(get_session)) -> AccessTokenResponse:
-    token = body.get("refresh_token", "")
+async def refresh(req: RefreshRequest, session: AsyncSession = Depends(get_session)) -> AccessTokenResponse:
     try:
-        user_id = decode_token(token, expected_type="refresh")
+        user_id = decode_token(req.refresh_token, expected_type="refresh")
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
-    return AccessTokenResponse(access_token=create_access_token(user_id))
+    user = await session.scalar(select(User).where(User.id == user_id))
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return AccessTokenResponse(access_token=create_access_token(user.id))
 
 
 @router.get("/me", response_model=UserResponse)

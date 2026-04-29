@@ -10,13 +10,15 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/
 from auth.schemas import RegisterRequest
 from auth import service as auth_service
 from db.models import User
+from sqlalchemy.exc import IntegrityError
 
 
-def _mock_session(scalar_return=None):
+def _mock_session(scalar_return=None, commit_raises=None):
     session = AsyncMock()
     session.scalar = AsyncMock(return_value=scalar_return)
     session.add = MagicMock()
-    session.commit = AsyncMock()
+    session.commit = AsyncMock(side_effect=commit_raises)
+    session.rollback = AsyncMock()
     session.refresh = AsyncMock()
     return session
 
@@ -24,14 +26,14 @@ def _mock_session(scalar_return=None):
 class TestRegister:
     @pytest.mark.asyncio
     async def test_new_user_gets_tokens(self):
-        session = _mock_session(scalar_return=None)
+        session = _mock_session()
 
         def _set_id(user):
             user.id = "generated-uuid"
 
         session.refresh.side_effect = _set_id
 
-        req = RegisterRequest(email="alice@example.com", password="secret123")
+        req = RegisterRequest(email="alice@example.com", password="Secret123")
         result = await auth_service.register(req, session)
 
         assert result.access_token
@@ -42,12 +44,12 @@ class TestRegister:
 
     @pytest.mark.asyncio
     async def test_duplicate_email_raises(self):
-        existing = User(email="alice@example.com", hashed_password="hash")
-        session = _mock_session(scalar_return=existing)
+        session = _mock_session(commit_raises=IntegrityError(None, None, Exception()))
 
-        req = RegisterRequest(email="alice@example.com", password="secret123")
+        req = RegisterRequest(email="alice@example.com", password="Secret123")
         with pytest.raises(ValueError, match="already registered"):
             await auth_service.register(req, session)
+        session.rollback.assert_awaited_once()
 
 
 class TestLogin:

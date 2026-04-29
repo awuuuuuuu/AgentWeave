@@ -115,13 +115,17 @@ class MilvusStore:
         knowledge_base_id: str,
         source_file: str
     ) -> None:
-        """
-        删除指定知识库的某个源文件的所有chunk
-        """
-        expr = (
+        """删除指定知识库的某个源文件的所有 chunk。"""
+        self._delete_by_expr(
             f'{_F_KB_ID} == "{knowledge_base_id}" '
             f'and {_F_SOURCE_FILE} == "{source_file}"'
         )
+
+    def delete_by_kb(self, knowledge_base_id: str) -> None:
+        """删除整个知识库在 Milvus 中的所有 chunk（软删除后的异步清理）。"""
+        self._delete_by_expr(f'{_F_KB_ID} == "{knowledge_base_id}"')
+
+    def _delete_by_expr(self, expr: str) -> None:
         while True:
             rows = self._client.query(
                 collection_name=self._cfg.collection_name,

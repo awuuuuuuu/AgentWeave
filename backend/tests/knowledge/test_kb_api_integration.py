@@ -19,7 +19,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "integration-test-secret")
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 _TEST_EMAIL = "integration_test_kb@ragent.dev"
-_TEST_PASSWORD = "Test1234!"
+_TEST_PASSWORD = "Test1234"
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .session import Base
@@ -59,6 +59,7 @@ class KnowledgeBase(Base):
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -88,6 +89,7 @@ class Document(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )

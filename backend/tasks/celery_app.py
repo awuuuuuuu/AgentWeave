@@ -19,7 +19,7 @@ celery_app = Celery(
     "ragent",
     broker=_BROKER_URL,
     backend=_BACKEND_URL,
-    include=["task.ingest"]
+    include=["tasks.ingest", "tasks.cleanup"]
 )
 
 celery_app.conf.update(

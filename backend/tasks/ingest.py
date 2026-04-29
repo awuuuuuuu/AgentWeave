@@ -69,19 +69,22 @@ def ingest_document(
     except Exception as exc:
         logger.exception("摄入失败: %s (kb=%s)", original_filename, kb_id)
 
-        # 标记 ERROR 状态（新建独立 engine，不复用已 dispose 的）
-        async def _mark_error() -> None:
-            from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-            engine = create_async_engine(_DATABASE_URL, pool_pre_ping=True, pool_size=1)
-            session = AsyncSession(engine, expire_on_commit=False)
-            try:
-                await update_document_status(
-                    doc_id, DocumentStatus.ERROR, session, error_message=str(exc)
-                )
-            finally:
-                await session.close()
-                await engine.dispose()
-        asyncio.run(_mark_error())
+        is_final_failure = self.request.retries >= self.max_retries
+        if is_final_failure:
+            # 只有用完所有重试次数才标 ERROR
+            async def _mark_error() -> None:
+                from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+                engine = create_async_engine(_DATABASE_URL, pool_pre_ping=True, pool_size=1)
+                session = AsyncSession(engine, expire_on_commit=False)
+                try:
+                    await update_document_status(
+                        doc_id, DocumentStatus.ERROR, session, error_message=str(exc)
+                    )
+                finally:
+                    await session.close()
+                    await engine.dispose()
+            asyncio.run(_mark_error())
+
         raise self.retry(exc=exc)
     
     return {"doc_id": doc_id, "kb_id": kb_id, "filename": original_filename, "status": "ready"}

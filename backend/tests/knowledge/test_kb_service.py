@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
@@ -77,8 +77,10 @@ class TestDeleteKB:
     async def test_deletes_existing(self):
         kb = KnowledgeBase(id="kb1", name="KB1", user_id="u1")
         session = _mock_session(scalar_return=kb)
-        await kb_service.delete_kb("kb1", "u1", session)
-        session.delete.assert_awaited_once_with(kb)
+        with patch("tasks.cleanup.cleanup_kb") as mock_cleanup:
+            mock_cleanup.delay = MagicMock()
+            await kb_service.delete_kb("kb1", "u1", session)
+        assert kb.is_deleted is True
         session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio

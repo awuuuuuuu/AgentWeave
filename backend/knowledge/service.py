@@ -10,17 +10,20 @@ async def list_kbs(
     user_id: str, session: AsyncSession, limit: int = 50, offset: int = 0
 ) -> list[KnowledgeBase]:
     result = await session.scalars(
-        select(KnowledgeBase).where(KnowledgeBase.user_id == user_id)
-        .offset(offset).limit(limit)
+        select(KnowledgeBase).where(
+            KnowledgeBase.user_id == user_id,
+            KnowledgeBase.is_deleted == False,  # noqa: E712
+        ).offset(offset).limit(limit)
     )
     return list(result.all())
 
 async def get_kb(kb_id: str, user_id: str, session: AsyncSession) -> KnowledgeBase:
-    """返回KB, 不存在或者不属于该用户时抛出 ValueError"""
+    """返回KB, 不存在或已删除或不属于该用户时抛出 ValueError"""
     kb = await session.scalar(
         select(KnowledgeBase).where(
             KnowledgeBase.id == kb_id,
-            KnowledgeBase.user_id == user_id
+            KnowledgeBase.user_id == user_id,
+            KnowledgeBase.is_deleted == False,  # noqa: E712
         )
     )
     if kb is None:
@@ -47,17 +50,33 @@ async def update_kb(
     return kb
 
 async def delete_kb(kb_id: str, user_id: str, session: AsyncSession) -> None:
+    """软删除 KB，异步清理 Milvus chunks + MinIO 对象。"""
     kb = await get_kb(kb_id, user_id, session)
-    await session.delete(kb)
+    kb.is_deleted = True
+    # 同时软删除旗下所有文档
+    docs = await session.scalars(
+        select(Document).where(Document.kb_id == kb_id, Document.is_deleted == False)  # noqa: E712
+    )
+    object_keys = []
+    for doc in docs.all():
+        doc.is_deleted = True
+        if doc.object_key:
+            object_keys.append(doc.object_key)
     await session.commit()
+
+    # 异步清理 Milvus + MinIO
+    from tasks.cleanup import cleanup_kb
+    cleanup_kb.delay(kb_id, object_keys)
 
 async def list_documents(
     kb_id: str, user_id: str, session: AsyncSession, limit: int = 100, offset: int = 0
 ) -> list[Document]:
     await get_kb(kb_id, user_id, session)
     result = await session.scalars(
-        select(Document).where(Document.kb_id == kb_id)
-        .offset(offset).limit(limit)
+        select(Document).where(
+            Document.kb_id == kb_id,
+            Document.is_deleted == False,  # noqa: E712
+        ).offset(offset).limit(limit)
     )
     return list(result.all())
 
@@ -67,8 +86,9 @@ async def get_document(
     await get_kb(kb_id, user_id, session)
     doc = await session.scalar(
         select(Document).where(
-            Document.id == doc_id, 
-            Document.kb_id == kb_id
+            Document.id == doc_id,
+            Document.kb_id == kb_id,
+            Document.is_deleted == False,  # noqa: E712
         )
     )
     if doc is None:
