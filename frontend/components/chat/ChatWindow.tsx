@@ -169,7 +169,7 @@ export default function ChatWindow() {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-gray-50">
+    <div className="flex h-full flex-col bg-gray-50">
       {/* 消息列表 */}
       <div
         ref={scrollContainerRef}
