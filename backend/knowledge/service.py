@@ -111,6 +111,19 @@ async def create_document(
     await session.refresh(doc)
     return doc
 
+async def delete_document(
+    doc_id: str, kb_id: str, user_id: str, session: AsyncSession
+) -> None:
+    """软删除文档，异步清理 MinIO 对象和 Milvus chunks。"""
+    doc = await get_document(doc_id, kb_id, user_id, session)
+    doc.is_deleted = True
+    await session.commit()
+
+    from tasks.cleanup import cleanup_kb
+    object_keys = [doc.object_key] if doc.object_key else []
+    cleanup_kb.delay(kb_id, object_keys)
+
+
 async def update_document_status(
     doc_id: str,
     status: DocumentStatus,

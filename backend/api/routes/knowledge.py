@@ -115,8 +115,21 @@ async def get_document(
     return DocumentResponse.model_validate(doc)
 
 
-@router.post("/{kb_id}/documets/upload", response_model=UploadResponse)
-async def upload_doument(
+@router.delete("/{kb_id}/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    kb_id: str,
+    doc_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    try:
+        await kb_service.delete_document(doc_id, kb_id, current_user.id, session)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.post("/{kb_id}/documents/upload", response_model=UploadResponse)
+async def upload_document(
     kb_id: str,
     file: UploadFile,
     current_user: User = Depends(get_current_user),
