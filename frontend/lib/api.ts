@@ -1,12 +1,207 @@
 /**
- * SSE 流式问答 API 封装。
- *
- * 使用 fetch + ReadableStream 而非 EventSource：
- * - EventSource 仅支持 GET，不能携带 JSON body
- * - fetch 可完整控制请求头和 body
+ * API 客户端
+ * - Auth：注册/登录/token 存储/自动 refresh
+ * - SSE 流式问答：fetch + ReadableStream
+ * - 知识库 CRUD + 文档上传
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+// ── Token 存储 ─────────────────────────────────────────────────────────────
+
+export const tokenStorage = {
+  getAccess: (): string | null =>
+    typeof window !== "undefined" ? localStorage.getItem("access_token") : null,
+  getRefresh: (): string | null =>
+    typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null,
+  set: (access: string, refresh: string) => {
+    localStorage.setItem("access_token", access);
+    localStorage.setItem("refresh_token", refresh);
+    // middleware 鉴权用 cookie（SameSite=Lax，不设 HttpOnly 以便 JS 读取）
+    document.cookie = `access_token=${access}; path=/; SameSite=Lax`;
+  },
+  clear: () => {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    document.cookie = "access_token=; path=/; max-age=0";
+  },
+};
+
+// ── 带鉴权的 fetch，401 时自动续期 ────────────────────────────────────────
+
+let _isRefreshing = false;
+let _refreshQueue: Array<(token: string | null) => void> = [];
+
+async function _tryRefresh(): Promise<string | null> {
+  const refresh = tokenStorage.getRefresh();
+  if (!refresh) return null;
+
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refresh }),
+  });
+  if (!res.ok) { tokenStorage.clear(); return null; }
+  const data = await res.json();
+  localStorage.setItem("access_token", data.access_token);
+  document.cookie = `access_token=${data.access_token}; path=/; SameSite=Lax`;
+  return data.access_token as string;
+}
+
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+const ERROR_DICT: Record<string, string> = {
+  "Invalid email or password": "邮箱或密码错误",
+  "Email already registered": "该邮箱已注册",
+  "User not found": "用户不存在",
+};
+
+async function _parseError(res: Response, fallback: string): Promise<string> {
+  const data = await res.json().catch(() => ({}));
+  const detail = data.detail ?? fallback;
+  return ERROR_DICT[detail] ?? detail;
+}
+
+export async function apiFetch(
+  path: string,
+  init: RequestInit = {},
+  { expectJson = true }: { expectJson?: boolean } = {}
+): Promise<Response> {
+  const token = tokenStorage.getAccess();
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  let res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+
+  if (res.status !== 401) {
+    if (!res.ok && expectJson) {
+      const msg = await _parseError(res, `请求失败 (${res.status})`);
+      throw new ApiError(res.status, msg);
+    }
+    return res;
+  }
+
+  // 并发请求共用同一次 refresh
+  if (_isRefreshing) {
+    const newToken = await new Promise<string | null>((resolve) => {
+      _refreshQueue.push(resolve);
+    });
+    if (!newToken) return res;
+    headers.set("Authorization", `Bearer ${newToken}`);
+    const retried = await fetch(`${API_BASE}${path}`, { ...init, headers });
+    if (!retried.ok && expectJson) {
+      const msg = await _parseError(retried, `请求失败 (${retried.status})`);
+      throw new ApiError(retried.status, msg);
+    }
+    return retried;
+  }
+
+  _isRefreshing = true;
+  const newToken = await _tryRefresh();
+  _isRefreshing = false;
+  _refreshQueue.forEach((cb) => cb(newToken));
+  _refreshQueue = [];
+
+  if (!newToken) { window.location.href = "/login"; return res; }
+  headers.set("Authorization", `Bearer ${newToken}`);
+  res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  if (!res.ok && expectJson) {
+    const msg = await _parseError(res, `请求失败 (${res.status})`);
+    throw new ApiError(res.status, msg);
+  }
+  return res;
+}
+
+// ── Auth API ───────────────────────────────────────────────────────────────
+
+export interface AuthTokens {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
+export async function apiRegister(email: string, password: string): Promise<AuthTokens> {
+  return apiFetch("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  }).then((r) => r.json());
+}
+
+export async function apiLogin(email: string, password: string): Promise<AuthTokens> {
+  return apiFetch("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  }).then((r) => r.json());
+}
+
+// ── Knowledge Base API ─────────────────────────────────────────────────────
+
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string | null;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function apiListKBs(): Promise<KnowledgeBase[]> {
+  return apiFetch("/kb").then((r) => r.json());
+}
+
+export async function apiCreateKB(name: string, description?: string): Promise<KnowledgeBase> {
+  return apiFetch("/kb", { method: "POST", body: JSON.stringify({ name, description }) }).then((r) => r.json());
+}
+
+export async function apiDeleteKB(id: string): Promise<void> {
+  await apiFetch(`/kb/${id}`, { method: "DELETE" }, { expectJson: false });
+}
+
+export interface KBDocument {
+  id: string;
+  kb_id: string;
+  filename: string;
+  status: "pending" | "processing" | "ready" | "error";
+  error_message: string | null;
+  task_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function apiListDocuments(kbId: string): Promise<KBDocument[]> {
+  return apiFetch(`/kb/${kbId}/documents`).then((r) => r.json());
+}
+
+export async function apiDeleteDocument(kbId: string, docId: string): Promise<void> {
+  await apiFetch(`/kb/${kbId}/documents/${docId}`, { method: "DELETE" }, { expectJson: false });
+}
+
+export async function apiUploadDocument(
+  kbId: string,
+  file: File
+): Promise<{ document_id: string; task_id: string; filename: string; status: string }> {
+  const token = tokenStorage.getAccess();
+  const form = new FormData();
+  form.append("file", file);
+  // 上传不设 Content-Type，让浏览器自动填 multipart/form-data boundary
+  const res = await fetch(`${API_BASE}/kb/${kbId}/documents/upload`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? "上传失败");
+  }
+  return res.json();
+}
+
+// ── SSE 流式问答 ───────────────────────────────────────────────────────────
 
 export interface Citation {
   ref: number;
