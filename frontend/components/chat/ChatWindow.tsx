@@ -6,12 +6,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { streamChat } from "@/lib/api";
-import type { Citation } from "@/lib/api";
+import { streamChat, apiListKBs } from "@/lib/api";
+import type { Citation, KnowledgeBase } from "@/lib/api";
 import MessageItem from "./MessageItem";
 import type { Message } from "./MessageItem";
-
-const KB_ID = process.env.NEXT_PUBLIC_KB_ID ?? "default";
+import { ChevronDown } from "lucide-react";
 
 let _idCounter = 0;
 const nextId = () => String(++_idCounter);
@@ -24,12 +23,21 @@ export default function ChatWindow() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
+  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
+  const [selectedKbId, setSelectedKbId] = useState<string>("");
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const tokenBufRef = useRef("");
   const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    apiListKBs().then((list) => {
+      setKbs(list);
+      if (list.length > 0) setSelectedKbId(list[0].id);
+    }).catch(() => null);
+  }, []);
 
   // 监听用户手动滚动，判断是否贴近底部
   const handleScroll = useCallback(() => {
@@ -78,7 +86,7 @@ export default function ChatWindow() {
 
   const send = useCallback(async () => {
     const query = input.trim();
-    if (!query || streaming) return;
+    if (!query || streaming || !selectedKbId) return;
 
     setInput("");
     setStreaming(true);
@@ -107,7 +115,7 @@ export default function ChatWindow() {
 
     try {
       for await (const event of streamChat(
-        { query, knowledge_base_id: KB_ID, top_k: 5 },
+        { query, knowledge_base_id: selectedKbId, top_k: 5 },
         ctrl.signal
       )) {
         if (event.type === "token") {
@@ -143,7 +151,7 @@ export default function ChatWindow() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [input, streaming, scheduleFlush, flushTokenBuf]);
+  }, [input, streaming, selectedKbId, scheduleFlush, flushTokenBuf]);
 
   const setCitations = (id: string, citations: Citation[]) => {
     setMessages((prev) =>
@@ -168,8 +176,36 @@ export default function ChatWindow() {
     }
   };
 
+  const selectedKb = kbs.find((kb) => kb.id === selectedKbId);
+
   return (
     <div className="flex h-full flex-col bg-gray-50">
+      {/* KB 选择器 */}
+      <div className="shrink-0 border-b bg-white px-4 py-2.5 flex items-center gap-2">
+        <span className="text-xs text-muted-foreground shrink-0">知识库</span>
+        <div className="relative">
+          <select
+            value={selectedKbId}
+            onChange={(e) => setSelectedKbId(e.target.value)}
+            disabled={streaming || kbs.length === 0}
+            className="appearance-none h-7 pl-3 pr-7 rounded-md border bg-background text-sm font-medium focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed min-w-[180px]"
+          >
+            {kbs.length === 0 ? (
+              <option value="">暂无知识库</option>
+            ) : (
+              kbs.map((kb) => (
+                <option key={kb.id} value={kb.id}>{kb.name}</option>
+              ))
+            )}
+          </select>
+          <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground" />
+        </div>
+        {selectedKb?.description && (
+          <span className="text-xs text-muted-foreground truncate max-w-[300px]" title={selectedKb.description}>
+            {selectedKb.description}
+          </span>
+        )}
+      </div>
       {/* 消息列表 */}
       <div
         ref={scrollContainerRef}
@@ -228,7 +264,7 @@ export default function ChatWindow() {
           ) : (
             <button
               onClick={send}
-              disabled={!input.trim()}
+              disabled={!input.trim() || !selectedKbId}
               className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
             >
               发送

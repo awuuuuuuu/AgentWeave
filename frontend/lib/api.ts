@@ -141,11 +141,26 @@ export async function apiLogin(email: string, password: string): Promise<AuthTok
 
 // ── Knowledge Base API ─────────────────────────────────────────────────────
 
+export interface KBRetrievalSettings {
+  retrieval_mode: "vector" | "fulltext" | "hybrid";
+  use_rerank: boolean;
+  top_k: number;
+  score_threshold: number;
+  hybrid_mode: "weighted" | "rerank";
+  vector_weight: number;
+}
+
 export interface KnowledgeBase {
   id: string;
   name: string;
   description: string | null;
   user_id: string;
+  retrieval_mode: "vector" | "fulltext" | "hybrid";
+  use_rerank: boolean;
+  top_k: number;
+  score_threshold: number;
+  hybrid_mode: "weighted" | "rerank";
+  vector_weight: number;
   created_at: string;
   updated_at: string;
 }
@@ -154,12 +169,26 @@ export async function apiListKBs(): Promise<KnowledgeBase[]> {
   return apiFetch("/kb").then((r) => r.json());
 }
 
+export async function apiGetKB(id: string): Promise<KnowledgeBase> {
+  return apiFetch(`/kb/${id}`).then((r) => r.json());
+}
+
 export async function apiCreateKB(name: string, description?: string): Promise<KnowledgeBase> {
   return apiFetch("/kb", { method: "POST", body: JSON.stringify({ name, description }) }).then((r) => r.json());
 }
 
 export async function apiDeleteKB(id: string): Promise<void> {
   await apiFetch(`/kb/${id}`, { method: "DELETE" }, { expectJson: false });
+}
+
+export async function apiUpdateKBRetrievalSettings(
+  id: string,
+  settings: KBRetrievalSettings
+): Promise<KnowledgeBase> {
+  return apiFetch(`/kb/${id}/retrieval-settings`, {
+    method: "PATCH",
+    body: JSON.stringify(settings),
+  }).then((r) => r.json());
 }
 
 export interface KBDocument {
@@ -181,14 +210,27 @@ export async function apiDeleteDocument(kbId: string, docId: string): Promise<vo
   await apiFetch(`/kb/${kbId}/documents/${docId}`, { method: "DELETE" }, { expectJson: false });
 }
 
+export interface UploadSettings {
+  splitter_type: "recursive" | "parent_child";
+  chunk_size: number;
+  chunk_overlap: number;
+  separators: string[];   // 自定义分隔符，空数组 = 使用默认
+}
+
 export async function apiUploadDocument(
   kbId: string,
-  file: File
+  file: File,
+  settings: UploadSettings = { splitter_type: "recursive", chunk_size: 512, chunk_overlap: 64, separators: [] }
 ): Promise<{ document_id: string; task_id: string; filename: string; status: string }> {
   const token = tokenStorage.getAccess();
   const form = new FormData();
   form.append("file", file);
-  // 上传不设 Content-Type，让浏览器自动填 multipart/form-data boundary
+  form.append("splitter_type", settings.splitter_type);
+  form.append("chunk_size", String(settings.chunk_size));
+  form.append("chunk_overlap", String(settings.chunk_overlap));
+  if (settings.separators.length > 0) {
+    form.append("separators", JSON.stringify(settings.separators));
+  }
   const res = await fetch(`${API_BASE}/kb/${kbId}/documents/upload`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -197,6 +239,41 @@ export async function apiUploadDocument(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail ?? "上传失败");
+  }
+  return res.json();
+}
+
+export interface ChunkPreviewItem {
+  index: number;
+  text: string;
+  content_type: string;
+  page_number: number | null;
+  section_path: string;
+  token_count: number;
+}
+
+export async function apiPreviewChunks(
+  kbId: string,
+  file: File,
+  settings: UploadSettings
+): Promise<ChunkPreviewItem[]> {
+  const token = tokenStorage.getAccess();
+  const form = new FormData();
+  form.append("file", file);
+  form.append("splitter_type", settings.splitter_type);
+  form.append("chunk_size", String(settings.chunk_size));
+  form.append("chunk_overlap", String(settings.chunk_overlap));
+  if (settings.separators.length > 0) {
+    form.append("separators", JSON.stringify(settings.separators));
+  }
+  const res = await fetch(`${API_BASE}/kb/${kbId}/documents/preview`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? "预览失败");
   }
   return res.json();
 }
@@ -234,12 +311,11 @@ export async function* streamChat(
   req: ChatRequest,
   signal?: AbortSignal
 ): AsyncGenerator<StreamEvent> {
-  const resp = await fetch(`${API_BASE}/chat/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-    signal,
-  });
+  const resp = await apiFetch(
+    "/chat/stream",
+    { method: "POST", body: JSON.stringify(req), signal },
+    { expectJson: false }
+  );
 
   if (!resp.ok) {
     const detail = await resp.json().catch(() => ({ detail: resp.statusText }));

@@ -2,6 +2,83 @@
 
 企业级 Agent + RAG 系统。
 
+## 本地运行
+
+### 前置依赖
+
+- Python 3.11+、[uv](https://github.com/astral-sh/uv)
+- Node.js 18+
+- Docker（运行 Milvus、Redis）
+- PostgreSQL（Supabase 或本地）
+- MinIO（本地或云端）
+
+### 后端
+
+```bash
+# 在项目根目录执行（不要在 backend/ 内执行）
+
+# 安装依赖
+uv sync
+
+# 启动 FastAPI
+PYTHONPATH=backend uv run uvicorn api.main:app --reload --port 8000
+
+# 启动 Celery Worker（Windows 用 --pool=solo，Linux/Mac 可去掉）
+PYTHONPATH=backend uv run celery -A tasks.celery_app worker --loglevel=info --pool=solo
+
+# 数据库迁移
+PYTHONPATH=backend uv run alembic upgrade head
+```
+
+### 前端
+
+```bash
+cd frontend
+
+# 安装依赖
+npm install
+
+# 启动开发服务器（默认 http://localhost:3000）
+npm run dev
+```
+
+### 环境变量
+
+后端在项目根目录创建 `.env`：
+
+```env
+# OpenAI
+OPENAI_API_KEY=sk-...
+
+# PostgreSQL
+DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+
+# JWT
+JWT_SECRET_KEY=your-secret-key
+
+# MinIO
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=ragent
+MINIO_SECURE=false
+
+# Redis / Celery
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+
+# Milvus
+MILVUS_URI=http://localhost:19530
+```
+
+前端在 `frontend/` 目录创建 `.env.local`：
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+---
+
 ## 开发进度
 
 **Step 1 — 文档摄入**
@@ -20,7 +97,7 @@
 |------|------|------|
 | 2 | 混合检索 + 重排序（BM25 + 向量 + Reranker） | ✅ 完成 |
 | 3 | RAG Chain + API + 前端基础 | ✅ 完成 |
-| 4 | Auth + 知识库管理 + 文件上传 | 🔜 |
+| 4 | Auth + 知识库管理 + 文件上传 | 🚧 后端完成 |
 | 5 | 工具体系 | 🔜 |
 | 6 | 记忆模块 | 🔜 |
 | 7 | LangGraph Agent 编排 | 🔜 |
@@ -38,6 +115,7 @@
 | 高 | `IngestionPipeline` | 当前为同步串行处理，单文件阻塞整个 pipeline。改造方案：引入 Celery 异步任务队列，每个文件作为独立 Celery task，支持多 worker 并发摄入 | Step 3（API 层引入后） |
 | 中 | `IngestionPipeline` | 无进度追踪，无法从外部感知"已处理 N/M 个文件"。改造方案：在 DB 增加摄入任务表，记录文件级状态（PENDING / PROCESSING / DONE / FAILED）和 0~1 数值进度，前端轮询 | Step 3（API 层引入后） |
 | 低 | `IngestionPipeline` | 无并发控制，多用户同时触发摄入时会争抢 Embedder / Milvus 连接。改造方案：asyncio semaphore 或 ThreadPoolExecutor 限制同时处理文件数 | Step 3（API 层引入后） |
+| 中 | `auth/jwt.py` | JWT 无法主动失效（登出/改密场景）。改造方案：在 `create_refresh_token` 加 `jti` 字段（`uuid4()`），`POST /auth/logout` 将 jti 写入 Redis 黑名单（TTL = token 剩余有效期），`decode_token` 查黑名单命中则拒绝。实现位置：`session/tenant_isolation.py` + `auth/jwt.py` | Step 8（Redis 会话管理引入后） |
 
 ---
 
@@ -226,6 +304,30 @@ RAGent 使用 `tokenBufRef`（`useRef<string>`）暂存收到的 token，配合 
 朴素实现在每个 token 到来时无条件调用 `scrollIntoView`，若用户向上翻看历史内容，会被强制拉回底部，体验极差（参考 Open-WebUI 的滚动管理设计）。
 
 RAGent 的方案：`onScroll` 事件实时计算 `scrollHeight - scrollTop - clientHeight`，距底部 `< 120px` 时标记 `isNearBottom=true`。只有 `isNearBottom` 时才执行自动滚动，流式输出期间使用 `behavior: "instant"` 避免平滑滚动动画造成视觉抖动。用户主动上翻后（`isNearBottom=false`），显示"回到底部"悬浮按钮，点击后重置标记并滚到底。
+
+### 20. 文件上传竞态条件修复：先建记录再入队（Step 4）
+
+上传接口的朴素实现是先 `ingest_document.delay()` 再 `create_document()`，但 Celery Worker 在高并发下会在数据库记录创建前就开始执行任务，通过 `task_id` 反查文档时得到 `None`，导致 PROCESSING/READY/ERROR 状态更新全部变成 no-op，文档永远停在 pending。
+
+RAGent 反转执行顺序：`create_document()` 先写入 DB 拿到 `doc_id`，再将 `doc_id` 直接作为参数传入 `ingest_document.delay(doc_id=...)`，Worker 无需反查数据库，从根本上消除竞态。
+
+### 21. Celery 摄入重试：仅末次失败标 ERROR，重试中保持 PROCESSING（Step 4）
+
+网络抖动或外部 API 临时故障时，朴素实现在每次异常后立即将文档状态写为 ERROR，随后触发 retry。前端轮询到的状态是 ERROR，但任务实际还在重试中，状态语义混乱。
+
+RAGent 通过 `self.request.retries >= self.max_retries` 判断是否为最终失败，中间重试保持 PROCESSING 状态不变，仅在用尽所有重试次数后才写 ERROR。前端看到的状态始终与任务生命周期语义一致。
+
+### 22. 软删除 + 幂等异步清理，保证外部数据源最终一致（Step 4）
+
+硬删除知识库时若同步清理 Milvus，一旦 Milvus 超时，整个 HTTP 请求失败，但 PostgreSQL 记录已删，产生孤立的向量数据。
+
+RAGent 对 `KnowledgeBase` 和 `Document` 使用软删除（`is_deleted=True`），API 立即返回，异步 Celery 任务 `cleanup_kb` 负责清理 MinIO 对象和 Milvus chunks。`_delete_minio_objects` 对 `NoSuchKey` 静默跳过，`MilvusStore.delete_by_kb` 查不到数据时直接结束循环，整个清理流程幂等——Celery retry 重跑时不产生虚假报错。
+
+### 23. TOCTOU 竞态修复：register 依赖 DB 唯一约束而非先查后写（Step 4）
+
+先 `SELECT` 邮箱是否存在再 `INSERT` 的经典模式在高并发下存在 TOCTOU（Time-of-Check-Time-of-Use）竞态：两个请求同时通过存在性检查，都尝试插入，第二条在数据库层报 `IntegrityError`，但业务层已无法感知。
+
+RAGent 直接 `INSERT`，捕获 SQLAlchemy `IntegrityError` 后 `rollback()` 并转换为 `ValueError`，依赖数据库 UNIQUE 约束作为唯一事实来源，彻底消除竞态。
 
 ### 19. ReactMarkdown 自定义渲染器实现内联引用跳转，不引入 rehype-raw（Step 3）
 
