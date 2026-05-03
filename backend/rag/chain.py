@@ -85,7 +85,12 @@ class RAGChain:
         self,
         query: str,
         knowledge_base_id: str,
-        top_k: int = 5
+        top_k: int = 5,
+        retrieval_mode: str = "hybrid",
+        use_rerank: bool = True,
+        score_threshold: float = 0.0,
+        hybrid_mode: str = "weighted",
+        vector_weight: float = 0.7,
     ) -> dict:
         """
         同步调用, 返回完整结果
@@ -95,28 +100,38 @@ class RAGChain:
         """
 
         result: GraphState = self._graph.invoke(
-            _init_state(query, knowledge_base_id, top_k)
+            _init_state(query, knowledge_base_id, top_k, retrieval_mode, use_rerank, score_threshold, hybrid_mode, vector_weight)
         )
         return _format_result(result)
-    
+
     async def ainvoke(
         self,
         query: str,
         knowledge_base_id: str,
-        top_k: int = 5
+        top_k: int = 5,
+        retrieval_mode: str = "hybrid",
+        use_rerank: bool = True,
+        score_threshold: float = 0.0,
+        hybrid_mode: str = "weighted",
+        vector_weight: float = 0.7,
     ) -> dict:
         """异步调用(不流式), 返回完整结果"""
         result: GraphState = await self._graph.ainvoke(
-            _init_state(query, knowledge_base_id, top_k)
+            _init_state(query, knowledge_base_id, top_k, retrieval_mode, use_rerank, score_threshold, hybrid_mode, vector_weight)
         )
         return _format_result(result)
-    
+
 
     async def astream_full(
         self,
         query: str,
         knowledge_base_id: str,
         top_k: int = 5,
+        retrieval_mode: str = "hybrid",
+        use_rerank: bool = True,
+        score_threshold: float = 0.0,
+        hybrid_mode: str = "weighted",
+        vector_weight: float = 0.7,
     ) -> AsyncIterator[tuple[str, object]]:
         """
         异步流式调用
@@ -129,7 +144,7 @@ class RAGChain:
         final_state: GraphState | None = None
 
         async for event in self._graph.astream_events(
-            _init_state(query, knowledge_base_id, top_k),
+            _init_state(query, knowledge_base_id, top_k, retrieval_mode, use_rerank, score_threshold, hybrid_mode, vector_weight),
             version="v2"
         ):
             kind = event["event"]
@@ -153,11 +168,25 @@ class RAGChain:
 
 
 
-def _init_state(query: str, knowledge_base_id: str, top_k: int) -> dict:
+def _init_state(
+    query: str,
+    knowledge_base_id: str,
+    top_k: int,
+    retrieval_mode: str = "hybrid",
+    use_rerank: bool = True,
+    score_threshold: float = 0.0,
+    hybrid_mode: str = "weighted",
+    vector_weight: float = 0.7,
+) -> dict:
     return {
         "query": query,
         "knowledge_base_id": knowledge_base_id,
         "top_k": top_k,
+        "retrieval_mode": retrieval_mode,
+        "use_rerank": use_rerank,
+        "score_threshold": score_threshold,
+        "hybrid_mode": hybrid_mode,
+        "vector_weight": vector_weight,
         "chunks": [],
         "context": "",
         "citations": [],

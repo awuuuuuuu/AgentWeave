@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, status, UploadFile
+from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.dependencies import get_current_user
@@ -13,9 +14,11 @@ from knowledge import service as kb_service
 from knowledge.schemas import (
     KBCreate,
     KBResponse,
+    KBRetrievalSettings,
     KBUpdate,
     DocumentResponse,
-    UploadResponse
+    UploadResponse,
+    ChunkPreviewItem,
 )
 
 from storage import minio_client
@@ -68,6 +71,19 @@ async def update_kb(
 ) -> KBResponse:
     try:
         kb = await kb_service.update_kb(kb_id, req, current_user.id, session)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return KBResponse.model_validate(kb)
+
+@router.patch("/{kb_id}/retrieval-settings", response_model=KBResponse)
+async def update_retrieval_settings(
+    kb_id: str,
+    req: KBRetrievalSettings,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> KBResponse:
+    try:
+        kb = await kb_service.update_kb_retrieval_settings(kb_id, req, current_user.id, session)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return KBResponse.model_validate(kb)
@@ -132,6 +148,10 @@ async def delete_document(
 async def upload_document(
     kb_id: str,
     file: UploadFile,
+    splitter_type: Literal["recursive", "parent_child"] = Form("recursive"),
+    chunk_size: int = Form(512),
+    chunk_overlap: int = Form(64),
+    separators: str = Form(""),          # JSON 数组字符串，由前端 JSON.stringify 传入
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ) -> UploadResponse:
@@ -159,7 +179,21 @@ async def upload_document(
     doc = await kb_service.create_document(
         kb_id, original_filename, task_id="pending", session=session, object_key=object_key
     )
-    task = ingest_document.delay(object_key, kb_id, original_filename, doc.id)
+    import json as _json
+    parsed_separators: list[str] | None = None
+    if separators:
+        try:
+            parsed_separators = _json.loads(separators)
+        except (ValueError, TypeError):
+            pass
+
+    task = ingest_document.delay(
+        object_key, kb_id, original_filename, doc.id,
+        splitter_type=splitter_type,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=parsed_separators,
+    )
 
     # 回填 task_id
     doc.task_id = task.id
@@ -171,3 +205,89 @@ async def upload_document(
         filename=doc.filename,
         status=doc.status,
     )
+
+
+@router.post("/{kb_id}/documents/preview", response_model=list[ChunkPreviewItem])
+async def preview_document(
+    kb_id: str,
+    file: UploadFile,
+    splitter_type: Literal["recursive", "parent_child"] = Form("recursive"),
+    chunk_size: int = Form(512),
+    chunk_overlap: int = Form(64),
+    separators: str = Form(""),          # JSON 数组字符串，空串代表使用默认值
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[ChunkPreviewItem]:
+    """解析 + 分段预览，不做 embedding 也不写 Milvus。"""
+    try:
+        await kb_service.get_kb(kb_id, current_user.id, session)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"File type '{ext}' not supported.",
+        )
+
+    import json as _json
+    import shutil
+    import tempfile
+    from fastapi.concurrency import run_in_threadpool
+
+    _MAX_PREVIEW_CHUNKS = 50
+
+    custom_separators: list[str] | None = None
+    if separators:
+        try:
+            custom_separators = _json.loads(separators)
+        except (ValueError, TypeError):
+            pass
+
+    def _parse_and_split() -> list[ChunkPreviewItem]:
+        import os as _os
+        from ingestion.parsers.base import get_parser
+        import ingestion.parsers  # noqa: F401 – triggers @register_parser decorators
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+
+        try:
+            from ingestion.parsers.pdf_parser import PdfParser
+            parser = get_parser(ext)
+            # Preview 只看分段结构，不需要 OCR；PDF 固定 fast 策略避免 API 依赖
+            parse_kwargs = {"strategy": "fast"} if isinstance(parser, PdfParser) else {}
+            raw_chunks = parser.parse(tmp_path, **parse_kwargs)
+
+            if splitter_type == "parent_child":
+                from ingestion.splitter.parent_child import ParentChildSplitter, ParentChildConfig
+                splitter = ParentChildSplitter(ParentChildConfig(
+                    parent_chunk_size=chunk_size,
+                    child_chunk_size=max(chunk_size // 4, 64),
+                    child_overlap=max(chunk_overlap // 4, 8),
+                ))
+            else:
+                from ingestion.splitter.recursive import RecursiveSplitter, RecursiveConfig
+                cfg = RecursiveConfig(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+                if custom_separators:
+                    cfg.separators = custom_separators
+                splitter = RecursiveSplitter(cfg)
+
+            chunks = splitter.split(raw_chunks)[:_MAX_PREVIEW_CHUNKS]
+            return [
+                ChunkPreviewItem(
+                    index=i,
+                    text=c.text,
+                    content_type=c.metadata.get("content_type", "text"),
+                    page_number=c.metadata.get("page_number"),
+                    section_path=c.metadata.get("section_path", ""),
+                    token_count=splitter.count_tokens(c.text),
+                )
+                for i, c in enumerate(chunks)
+            ]
+        finally:
+            _os.unlink(tmp_path)
+
+    return await run_in_threadpool(_parse_and_split)

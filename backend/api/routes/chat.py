@@ -5,10 +5,15 @@ import json
 import logging
 import re
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.schemas.chat import ChatRequest, ChatResponse, Citation
+from auth.dependencies import get_current_user
+from db.models import User
+from db.session import get_session
+import knowledge.service as kb_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -32,12 +37,30 @@ def _sanitize(query: str) -> str:
     return query
 
 
+
 @router.post("", response_model=ChatResponse)
-async def chat(req: ChatRequest, request: Request) -> ChatResponse:
+async def chat(
+    req: ChatRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ChatResponse:
     """同步 RAG 问答，返回完整答案和引用列表"""
     query = _sanitize(req.query)
     try:
-        result = await _get_chain(request).ainvoke(query, req.knowledge_base_id, req.top_k)
+        kb = await kb_service.get_kb(req.knowledge_base_id, current_user.id, session)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        result = await _get_chain(request).ainvoke(
+            query, req.knowledge_base_id,
+            top_k=kb.top_k,
+            retrieval_mode=kb.retrieval_mode,
+            use_rerank=kb.use_rerank,
+            score_threshold=kb.score_threshold,
+            hybrid_mode=kb.hybrid_mode,
+            vector_weight=kb.vector_weight,
+        )
     except Exception as exc:
         logger.exception("chat error: query=%r", query[:80])
         raise HTTPException(status_code=500, detail="问答服务暂时不可用，请稍后重试") from exc
@@ -47,7 +70,12 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     )
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
+async def chat_stream(
+    req: ChatRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
     """
     SSE 流式问答。
 
@@ -59,10 +87,21 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     query = _sanitize(req.query)
     chain = _get_chain(request)
 
+    try:
+        kb = await kb_service.get_kb(req.knowledge_base_id, current_user.id, session)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
     async def event_gen():
         try:
             async for kind, data in chain.astream_full(
-                query, req.knowledge_base_id, req.top_k
+                query, req.knowledge_base_id,
+                top_k=kb.top_k,
+                retrieval_mode=kb.retrieval_mode,
+                use_rerank=kb.use_rerank,
+                score_threshold=kb.score_threshold,
+                hybrid_mode=kb.hybrid_mode,
+                vector_weight=kb.vector_weight,
             ):
                 if await request.is_disconnected():
                     logger.warning("客户端已断开，提前终止生成: query=%r", query[:40])

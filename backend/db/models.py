@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .session import Base
@@ -60,6 +60,15 @@ class KnowledgeBase(Base):
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 检索设置（per-KB，查询时覆盖全局默认值）
+    retrieval_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="hybrid")
+    use_rerank: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    top_k: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    score_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # hybrid 子模式："weighted"（权重融合）或 "rerank"（Rerank精排）
+    hybrid_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="weighted")
+    # hybrid weighted 模式下语义向量权重（关键词权重 = 1 - vector_weight）
+    vector_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )

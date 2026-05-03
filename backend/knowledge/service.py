@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Document, DocumentStatus, KnowledgeBase
-from .schemas import KBCreate, KBUpdate
+from .schemas import KBCreate, KBRetrievalSettings, KBUpdate
 
 async def list_kbs(
     user_id: str, session: AsyncSession, limit: int = 50, offset: int = 0
@@ -45,6 +45,18 @@ async def update_kb(
         kb.name = req.name
     if req.description is not None:
         kb.description = req.description
+    await session.commit()
+    await session.refresh(kb)
+    return kb
+
+async def update_kb_retrieval_settings(
+    kb_id: str, req: KBRetrievalSettings, user_id: str, session: AsyncSession
+) -> KnowledgeBase:
+    kb = await get_kb(kb_id, user_id, session)
+    kb.retrieval_mode = req.retrieval_mode
+    kb.use_rerank = req.use_rerank
+    kb.top_k = req.top_k
+    kb.score_threshold = req.score_threshold
     await session.commit()
     await session.refresh(kb)
     return kb

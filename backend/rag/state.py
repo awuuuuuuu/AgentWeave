@@ -18,6 +18,12 @@ class GraphState(TypedDict):
     query: str
     knowledge_base_id: str
     top_k: int
+    # per-KB 检索设置（由 chat route 注入）
+    retrieval_mode: str          # "vector" | "fulltext" | "hybrid"
+    use_rerank: bool
+    score_threshold: float
+    hybrid_mode: str             # "weighted" | "rerank"（仅 hybrid 模式生效）
+    vector_weight: float         # hybrid weighted 模式下语义权重，关键词权重 = 1 - vector_weight
     # retrieve 节点输出
     chunks: list[RetrievedChunk]
     # build_context 节点输出

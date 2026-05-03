@@ -75,16 +75,19 @@ class HybridRetriever(BaseRetriever):
         query: str,
         knowledge_base_id: str,
         top_k: int = 5,
-        filter_expr: str | None = None
+        filter_expr: str | None = None,
+        alpha: float | None = None,
     ) -> list[RetrievedChunk]:
-        """异步检索：双路 aretrieve 并发执行，总耗时取决于较慢的一路"""
+        """异步检索：双路 aretrieve 并发执行，总耗时取决于较慢的一路。
+        alpha: 语义权重覆盖，None 则使用 config 默认值。
+        """
         results = await self._afuse(query, knowledge_base_id, top_k,
-                                    self._cfg.candidate_multiplier, filter_expr)
+                                    self._cfg.candidate_multiplier, filter_expr, alpha)
         if not results and self._cfg.fallback_multiplier > self._cfg.candidate_multiplier:
             logger.warning("HybridRetriever: 零结果，扩大候选数重试（multiplier=%d）",
                            self._cfg.fallback_multiplier)
             results = await self._afuse(query, knowledge_base_id, top_k,
-                                        self._cfg.fallback_multiplier, filter_expr)
+                                        self._cfg.fallback_multiplier, filter_expr, alpha)
         return results[:top_k]
     
 
@@ -114,7 +117,8 @@ class HybridRetriever(BaseRetriever):
         knowledge_base_id: str,
         top_k: int,
         multiplier: int,
-        filter_expr: str | None = None
+        filter_expr: str | None = None,
+        alpha: float | None = None,
     ) -> list[RetrievedChunk]:
         """异步双路并发融合，用 asyncio.gather 同时跑 vector + BM25"""
         fetch_k = top_k * multiplier
@@ -122,12 +126,13 @@ class HybridRetriever(BaseRetriever):
             self._vector.aretrieve(query, knowledge_base_id, fetch_k, filter_expr),
             self._bm25.aretrieve(query, knowledge_base_id, fetch_k, filter_expr)
         )
-        return self._merge_and_score(vec_results, bm25_results)
+        return self._merge_and_score(vec_results, bm25_results, alpha=alpha)
 
     def _merge_and_score(
         self,
         vec_results: list[RetrievedChunk],
-        bm25_results: list[RetrievedChunk]
+        bm25_results: list[RetrievedChunk],
+        alpha: float | None = None,
     ) -> list[RetrievedChunk]:
         """合并双路结果，Query-level 归一后进行 Weighted Sum 融合"""
         merged: dict[str, RetrievedChunk] = {}
@@ -148,7 +153,7 @@ class HybridRetriever(BaseRetriever):
         vec_norm = _normalize([c.vector_score for c in chunks])
         bm25_norm = _normalize([c.bm25_score for c in chunks])
 
-        alpha = self._cfg.alpha
+        alpha = alpha if alpha is not None else self._cfg.alpha
         for chunk, vec_score, bm25_score in zip(chunks, vec_norm, bm25_norm):
             chunk.fusion_score = alpha * vec_score + (1 - alpha) * bm25_score
             chunk.retrieval_method = "hybrid"

@@ -10,6 +10,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from prompts.rag_answer import RAG_PROMPT
 from retrieval.hybrid_retriever import HybridRetriever
 from retrieval.reranker import Reranker
+from retrieval.base import BaseRetriever
 from .context_builder import ContextBuilder
 from .state import GraphState
 
@@ -26,33 +27,71 @@ _FALLBACK_ANSWER = "根据现有文档，我无法找到与您问题相关的信
 # Node factories（使用闭包返回可注册到 StateGraph 的节点函数）
 # ---------------------------------------------------------------------------
 def make_retrieve_node(
-    retriever: HybridRetriever,
+    hybrid_retriever: HybridRetriever,
     reranker: Reranker | None,
     rerank_fetch: int = 20
 ) -> Callable[[GraphState], dict]:
     """
-    构建 retrieve 节点
+    构建 retrieve 节点。
 
-    使用 reranker 时先取 rerank_fetch 条候选，再精排到 top_k
-    不使用 reranker 时直接取 top_k
+    per-KB 设置从 state 读取：
+      - retrieval_mode: "vector" | "fulltext" | "hybrid"
+      - use_rerank: bool（需要 reranker 实例存在才生效）
+      - score_threshold: float（过滤低分 chunk）
     """
     async def retrieve_node(state: GraphState) -> dict:
         top_k = state["top_k"]
-        fetch_k = rerank_fetch if reranker is not None else top_k
+        mode = state.get("retrieval_mode", "hybrid")
+        threshold = state.get("score_threshold", 0.0)
+        hybrid_mode = state.get("hybrid_mode", "weighted")
+        vector_weight = state.get("vector_weight", 0.7)
 
-        chunks = await retriever.aretrieve(
-            query=state["query"],
-            knowledge_base_id=state["knowledge_base_id"],
-            top_k=fetch_k
-        )
+        # hybrid rerank 子模式：先双路召回再精排
+        # 其他情况：use_rerank 控制是否精排
+        if mode == "hybrid" and hybrid_mode == "rerank":
+            use_rr = reranker is not None
+        else:
+            use_rr = state.get("use_rerank", True) and reranker is not None
 
-        if reranker is not None:
+        fetch_k = rerank_fetch if use_rr else top_k
+
+        if mode == "vector":
+            chunks = await hybrid_retriever._vector.aretrieve(
+                query=state["query"],
+                knowledge_base_id=state["knowledge_base_id"],
+                top_k=fetch_k,
+            )
+            for c in chunks:
+                c.fusion_score = c.vector_score
+        elif mode == "fulltext":
+            chunks = await hybrid_retriever._bm25.aretrieve(
+                query=state["query"],
+                knowledge_base_id=state["knowledge_base_id"],
+                top_k=fetch_k,
+            )
+            for c in chunks:
+                c.fusion_score = c.bm25_score
+        else:  # hybrid
+            # weighted 模式用 vector_weight 作为 alpha；rerank 模式用等权融合后精排
+            alpha = vector_weight if hybrid_mode == "weighted" else 0.5
+            chunks = await hybrid_retriever.aretrieve(
+                query=state["query"],
+                knowledge_base_id=state["knowledge_base_id"],
+                top_k=fetch_k,
+                alpha=alpha,
+            )
+
+        if use_rr:
             chunks = await asyncio.to_thread(
                 reranker.rerank, state["query"], chunks, top_k
             )
         else:
             chunks = chunks[:top_k]
-        
+
+        # score_threshold 过滤（仅 vector/hybrid 模式有效；BM25 分数无上界，fulltext 跳过）
+        if threshold > 0.0 and mode != "fulltext":
+            chunks = [c for c in chunks if c.fusion_score >= threshold]
+
         return {"chunks": chunks}
 
     return retrieve_node
