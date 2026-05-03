@@ -1,4 +1,8 @@
-"""API HTTP 层测试（全 mock，不依赖真实 Milvus / OpenAI）。
+"""API HTTP 层测试（全 mock，不依赖真实 Milvus / OpenAI / DB）。
+
+chat 和 chat/stream 现在需要 JWT + DB（查 KB 检索设置），
+通过 app.dependency_overrides 注入 mock user / session，
+再 patch knowledge.service.get_kb 返回带检索设置的假 KB 对象。
 
 运行：
     uv run pytest backend/tests/api/test_api.py -v
@@ -11,6 +15,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+
+
+# ---------------------------------------------------------------------------
+# Mock KB 对象（带检索设置字段）
+# ---------------------------------------------------------------------------
+
+def _make_mock_kb(kb_id: str = "kb1") -> MagicMock:
+    kb = MagicMock()
+    kb.id = kb_id
+    kb.retrieval_mode = "hybrid"
+    kb.use_rerank = True
+    kb.top_k = 5
+    kb.score_threshold = 0.0
+    return kb
 
 
 # ---------------------------------------------------------------------------
@@ -59,18 +77,33 @@ def _make_broken_chain(exc: Exception) -> MagicMock:
 
 @pytest_asyncio.fixture
 async def client():
-    """注入正常 mock chain 的 AsyncClient。
+    """注入 mock chain + 覆盖鉴权/DB 依赖的 AsyncClient。
 
-    ASGITransport 不触发 FastAPI lifespan，直接向 app.state 注入 mock chain。
-    fixture 为 function scope，每个测试独立重置 state，测试间互不污染。
+    - get_current_user → 返回 mock User（不走 JWT 验证）
+    - get_session → 返回 mock session（不走 DB）
+    - knowledge.service.get_kb → 返回 mock KB（不走 DB 查询）
     """
     from api.main import app
+    from auth.dependencies import get_current_user
+    from db.session import get_session
+
+    mock_user = MagicMock()
+    mock_user.id = "mock-user-id"
+
+    mock_session = MagicMock()
 
     app.state.rag_chain = _make_chain()
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as ac:
-        yield ac
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    app.dependency_overrides[get_session] = lambda: mock_session
+
+    with patch("api.routes.chat.kb_service.get_kb", new_callable=AsyncMock) as mock_get_kb:
+        mock_get_kb.return_value = _make_mock_kb()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            yield ac
+
+    app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +135,7 @@ class TestChatSync:
         assert data["citations"][0]["ref"] == 1
 
     async def test_200_no_citations(self, client):
-        """fallback 路径：引用列表为空时仍返回 200。"""
-        from api.main import app  # app 是模块级单例，直接覆盖 state
+        from api.main import app
         app.state.rag_chain = _make_chain(answer="知识库中未找到相关内容。", citations=[])
         resp = await client.post(
             "/chat", json={"query": "完全无关的查询", "knowledge_base_id": "kb1"}
@@ -143,13 +175,52 @@ class TestChatSync:
         )
         assert resp.status_code == 500
 
+    async def test_chat_passes_kb_settings_to_chain(self, client):
+        """chain.ainvoke 被调用时应收到来自 KB 的检索参数。"""
+        from api.main import app
+        chain = _make_chain()
+        app.state.rag_chain = chain
+
+        with patch("api.routes.chat.kb_service.get_kb", new_callable=AsyncMock) as mock_get_kb:
+            kb = _make_mock_kb()
+            kb.retrieval_mode = "vector"
+            kb.use_rerank = False
+            kb.top_k = 3
+            kb.score_threshold = 0.2
+            mock_get_kb.return_value = kb
+
+            resp = await client.post(
+                "/chat", json={"query": "测试查询", "knowledge_base_id": "kb1"}
+            )
+        assert resp.status_code == 200
+        call_kwargs = chain.ainvoke.call_args
+        assert call_kwargs.kwargs["retrieval_mode"] == "vector"
+        assert call_kwargs.kwargs["use_rerank"] is False
+        assert call_kwargs.kwargs["top_k"] == 3
+        assert call_kwargs.kwargs["score_threshold"] == 0.2
+
+    async def test_404_when_kb_not_found(self, client):
+        """KB 不存在时 chat 返回 404。"""
+        from api.main import app
+        app.state.rag_chain = _make_chain()
+
+        with patch(
+            "api.routes.chat.kb_service.get_kb",
+            new_callable=AsyncMock,
+            side_effect=ValueError("Knowledge base not found"),
+        ):
+            resp = await client.post(
+                "/chat", json={"query": "测试", "knowledge_base_id": "nonexistent"}
+            )
+        assert resp.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # POST /chat/stream（SSE 流式）
 # ---------------------------------------------------------------------------
 
 def _parse_sse_events(raw: str) -> list[str | dict]:
-    """解析 SSE 响应体，返回各事件的数据（[DONE] 返回原字符串，JSON 返回 dict）。"""
+    """解析 SSE 响应体，返回各事件的数据。"""
     events = []
     for line in raw.splitlines():
         if not line.startswith("data: "):
@@ -183,7 +254,6 @@ class TestChatStream:
         assert len(token_events) > 0
         assert len(citation_events) == 1
         assert "[DONE]" in events
-        # 顺序：citations 在 [DONE] 之前
         assert events.index(citation_events[0]) < events.index("[DONE]")
 
     async def test_token_content_not_empty(self, client):
@@ -194,7 +264,7 @@ class TestChatStream:
         events = _parse_sse_events(resp.text)
         token_events = [e for e in events if isinstance(e, dict) and e.get("type") == "token"]
         for ev in token_events:
-            assert ev["content"]  # 不能是空字符串
+            assert ev["content"]
 
     async def test_400_on_injection_query(self, client):
         resp = await client.post(
@@ -218,19 +288,50 @@ class TestChatStream:
             "/chat/stream",
             json={"query": "什么是 RAG", "knowledge_base_id": "kb1"},
         )
-        assert resp.status_code == 200   # SSE 本身 200，错误在事件体中
+        assert resp.status_code == 200
         events = _parse_sse_events(resp.text)
         error_events = [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
         assert len(error_events) == 1
         assert "[DONE]" in events
-        # error 在 [DONE] 之前
         assert events.index(error_events[0]) < events.index("[DONE]")
 
     async def test_done_always_last(self, client):
-        """[DONE] 必须是最后一个事件。"""
         resp = await client.post(
             "/chat/stream",
             json={"query": "什么是 RAG", "knowledge_base_id": "kb1"},
         )
         events = _parse_sse_events(resp.text)
         assert events[-1] == "[DONE]"
+
+    async def test_stream_passes_kb_settings_to_chain(self, client):
+        """astream_full 被调用时应收到来自 KB 的检索参数。"""
+        from api.main import app
+
+        captured: dict = {}
+
+        async def _capturing_stream(*args, **kwargs):
+            captured.update(kwargs)
+            yield ("token", "ok")
+            yield ("result", {"citations": []})
+
+        chain = MagicMock()
+        chain.astream_full = _capturing_stream
+        app.state.rag_chain = chain
+
+        with patch("api.routes.chat.kb_service.get_kb", new_callable=AsyncMock) as mock_get_kb:
+            kb = _make_mock_kb()
+            kb.retrieval_mode = "fulltext"
+            kb.use_rerank = False
+            kb.top_k = 8
+            kb.score_threshold = 0.1
+            mock_get_kb.return_value = kb
+
+            await client.post(
+                "/chat/stream",
+                json={"query": "测试", "knowledge_base_id": "kb1"},
+            )
+
+        assert captured.get("retrieval_mode") == "fulltext"
+        assert captured.get("use_rerank") is False
+        assert captured.get("top_k") == 8
+        assert captured.get("score_threshold") == 0.1

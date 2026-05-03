@@ -16,7 +16,15 @@ _DATABASE_URL = os.environ["DATABASE_URL"]
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
 def ingest_document(
-    self, object_key: str, kb_id: str, original_filename: str, doc_id: str
+    self,
+    object_key: str,
+    kb_id: str,
+    original_filename: str,
+    doc_id: str,
+    splitter_type: str = "recursive",
+    chunk_size: int = 512,
+    chunk_overlap: int = 64,
+    separators: list[str] | None = None,   # 分隔符列表，None 代表使用默认分隔符
 ) -> dict:
     """
     Celery 摄入任务：从 MinIO 下载 → 解析 → embedding → 写入 Milvus
@@ -43,11 +51,30 @@ def ingest_document(
             ext = os.path.splitext(original_filename)[1].lower()
             local_path = download_to_tempfile(object_key, suffix=ext)
 
+            # 根据参数构造 splitter
+            logger.info(
+                "摄入参数: splitter=%s, chunk_size=%d, chunk_overlap=%d, separators=%r (doc=%s)",
+                splitter_type, chunk_size, chunk_overlap, separators, doc_id,
+            )
+            if splitter_type == "parent_child":
+                from ingestion.splitter.parent_child import ParentChildSplitter, ParentChildConfig
+                splitter = ParentChildSplitter(ParentChildConfig(
+                    parent_chunk_size=chunk_size,
+                    child_chunk_size=max(chunk_size // 4, 64),
+                    child_overlap=max(chunk_overlap // 4, 8),
+                ))
+            else:
+                from ingestion.splitter.recursive import RecursiveSplitter, RecursiveConfig
+                cfg = RecursiveConfig(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+                if separators:
+                    cfg.separators = separators
+                splitter = RecursiveSplitter(cfg)
+
             # 摄入 pipeline
             cfg = RAGChainSettings()
             embedder = OpenAIEmbedder()
             store = MilvusStore(MilvusStoreConfig(uri=cfg.milvus_uri))
-            pipeline = IngestionPipeline(embedder=embedder, store=store)
+            pipeline = IngestionPipeline(embedder=embedder, store=store, splitter=splitter)
             pipeline.run([local_path], knowledge_base_id=kb_id)
 
             await update_document_status(doc_id, DocumentStatus.READY, session)
