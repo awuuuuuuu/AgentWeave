@@ -214,7 +214,8 @@ export interface UploadSettings {
   splitter_type: "recursive" | "parent_child";
   chunk_size: number;
   chunk_overlap: number;
-  separators: string[];   // 自定义分隔符，空数组 = 使用默认
+  separators: string[];         // 父块/递归分隔符，空数组 = 使用默认
+  child_separators?: string[];  // 子块分隔符（仅 parent_child 模式），undefined = 使用默认
 }
 
 export async function apiUploadDocument(
@@ -230,6 +231,9 @@ export async function apiUploadDocument(
   form.append("chunk_overlap", String(settings.chunk_overlap));
   if (settings.separators.length > 0) {
     form.append("separators", JSON.stringify(settings.separators));
+  }
+  if (settings.child_separators && settings.child_separators.length > 0) {
+    form.append("child_separators", JSON.stringify(settings.child_separators));
   }
   const res = await fetch(`${API_BASE}/kb/${kbId}/documents/upload`, {
     method: "POST",
@@ -265,6 +269,9 @@ export async function apiPreviewChunks(
   form.append("chunk_overlap", String(settings.chunk_overlap));
   if (settings.separators.length > 0) {
     form.append("separators", JSON.stringify(settings.separators));
+  }
+  if (settings.child_separators && settings.child_separators.length > 0) {
+    form.append("child_separators", JSON.stringify(settings.child_separators));
   }
   const res = await fetch(`${API_BASE}/kb/${kbId}/documents/preview`, {
     method: "POST",

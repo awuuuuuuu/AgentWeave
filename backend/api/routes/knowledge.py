@@ -152,6 +152,7 @@ async def upload_document(
     chunk_size: int = Form(512),
     chunk_overlap: int = Form(64),
     separators: str = Form(""),          # JSON 数组字符串，由前端 JSON.stringify 传入
+    child_separators: str = Form(""),    # 子块分隔符（仅 parent_child 模式）
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ) -> UploadResponse:
@@ -180,19 +181,22 @@ async def upload_document(
         kb_id, original_filename, task_id="pending", session=session, object_key=object_key
     )
     import json as _json
-    parsed_separators: list[str] | None = None
-    if separators:
+
+    def _parse_separators(raw: str) -> list[str] | None:
+        if not raw:
+            return None
         try:
-            parsed_separators = _json.loads(separators)
+            return _json.loads(raw)
         except (ValueError, TypeError):
-            pass
+            return None
 
     task = ingest_document.delay(
         object_key, kb_id, original_filename, doc.id,
         splitter_type=splitter_type,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        separators=parsed_separators,
+        separators=_parse_separators(separators),
+        child_separators=_parse_separators(child_separators),
     )
 
     # 回填 task_id
@@ -215,6 +219,7 @@ async def preview_document(
     chunk_size: int = Form(512),
     chunk_overlap: int = Form(64),
     separators: str = Form(""),          # JSON 数组字符串，空串代表使用默认值
+    child_separators: str = Form(""),    # 子块分隔符（仅 parent_child 模式）
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[ChunkPreviewItem]:
@@ -238,12 +243,16 @@ async def preview_document(
 
     _MAX_PREVIEW_CHUNKS = 50
 
-    custom_separators: list[str] | None = None
-    if separators:
+    def _parse_json_sep(raw: str) -> list[str] | None:
+        if not raw:
+            return None
         try:
-            custom_separators = _json.loads(separators)
+            return _json.loads(raw)
         except (ValueError, TypeError):
-            pass
+            return None
+
+    custom_separators = _parse_json_sep(separators)
+    custom_child_separators = _parse_json_sep(child_separators)
 
     def _parse_and_split() -> list[ChunkPreviewItem]:
         import os as _os
@@ -267,6 +276,8 @@ async def preview_document(
                     parent_chunk_size=chunk_size,
                     child_chunk_size=max(chunk_size // 4, 64),
                     child_overlap=max(chunk_overlap // 4, 8),
+                    parent_separators=custom_separators or None,
+                    child_separators=custom_child_separators or None,
                 ))
             else:
                 from ingestion.splitter.recursive import RecursiveSplitter, RecursiveConfig

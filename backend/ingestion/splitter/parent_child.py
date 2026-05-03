@@ -12,6 +12,8 @@ class ParentChildConfig:
     child_chunk_size: int = 128
     child_overlap: int = 16
     encoding_name: str = "cl100k_base"
+    parent_separators: list[str] | None = None  # None = 使用 RecursiveSplitter 默认分隔符
+    child_separators: list[str] | None = None   # None = 使用 RecursiveSplitter 默认分隔符
 
 class ParentChildSplitter(BaseSplitter):
     """
@@ -34,21 +36,23 @@ class ParentChildSplitter(BaseSplitter):
         super().__init__(cfg.encoding_name)
         self.config = cfg
 
-        self._parent_splitter = RecursiveSplitter(
-            RecursiveConfig(
-                chunk_size=cfg.parent_chunk_size,
-                chunk_overlap=0,
-                encoding_name=cfg.encoding_name
-            )
+        parent_cfg = RecursiveConfig(
+            chunk_size=cfg.parent_chunk_size,
+            chunk_overlap=0,
+            encoding_name=cfg.encoding_name,
         )
+        if cfg.parent_separators:
+            parent_cfg.separators = cfg.parent_separators
+        self._parent_splitter = RecursiveSplitter(parent_cfg)
 
-        self._child_splitter = RecursiveSplitter(
-            RecursiveConfig(
-                chunk_size=cfg.child_chunk_size,
-                chunk_overlap=cfg.child_overlap,
-                encoding_name=cfg.encoding_name
-            )
+        child_cfg = RecursiveConfig(
+            chunk_size=cfg.child_chunk_size,
+            chunk_overlap=cfg.child_overlap,
+            encoding_name=cfg.encoding_name,
         )
+        if cfg.child_separators:
+            child_cfg.separators = cfg.child_separators
+        self._child_splitter = RecursiveSplitter(child_cfg)
 
     def _split_chunk(self, chunk: ParsedChunk) -> list[ParsedChunk]:
         parent_chunks = self._parent_splitter.split([chunk])

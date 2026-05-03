@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  apiUploadDocument, apiPreviewChunks, apiGetKB, apiUpdateKBRetrievalSettings, apiListDocuments,
+  apiUploadDocument, apiPreviewChunks, apiGetKB, apiUpdateKBRetrievalSettings,
   type UploadSettings, type ChunkPreviewItem, type KnowledgeBase, type KBRetrievalSettings,
 } from "@/lib/api";
 import { uploadState } from "@/lib/upload-state";
@@ -17,11 +17,14 @@ import { uploadState } from "@/lib/upload-state";
 // 默认分隔符：存真实字符（不是转义字面量），发给后端 JSON.stringify 后能正确还原
 const DEFAULT_SEPARATORS = ["\n\n", "\n", "。", ".", "；", " "];
 
+const DEFAULT_CHILD_SEPARATORS = ["\n"];
+
 const DEFAULT_SETTINGS: UploadSettings = {
   splitter_type: "recursive",
   chunk_size: 512,
   chunk_overlap: 64,
   separators: DEFAULT_SEPARATORS,
+  child_separators: DEFAULT_CHILD_SEPARATORS,
 };
 
 /** 真实字符 → 可读显示，如 "\n\n" → "\\n\\n" */
@@ -83,11 +86,13 @@ export default function UploadPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
-  const [isRetrievalLocked, setIsRetrievalLocked] = useState(false);
 
-  // separator input state
+  // separator input state — parent / recursive
   const [sepInput, setSepInput] = useState("");
   const [sepVisible, setSepVisible] = useState(false);
+  // separator input state — child (parent_child mode only)
+  const [childSepInput, setChildSepInput] = useState("");
+  const [childSepVisible, setChildSepVisible] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -98,10 +103,7 @@ export default function UploadPage() {
       return;
     }
     setFile(f);
-    Promise.all([
-      apiGetKB(id),
-      apiListDocuments(id),
-    ]).then(([data, docs]) => {
+    apiGetKB(id).then((data) => {
       setKb(data);
       setRetrieval({
         retrieval_mode: data.retrieval_mode,
@@ -111,7 +113,6 @@ export default function UploadPage() {
         hybrid_mode: data.hybrid_mode,
         vector_weight: data.vector_weight,
       });
-      setIsRetrievalLocked(docs.length > 0);
     }).catch(() => null);
   }, []);
 
@@ -136,7 +137,7 @@ export default function UploadPage() {
     setUploading(true);
     try {
       await Promise.all([
-        isRetrievalLocked ? Promise.resolve() : apiUpdateKBRetrievalSettings(id, retrieval),
+        apiUpdateKBRetrievalSettings(id, retrieval),
         apiUploadDocument(id, file, settings),
       ]);
       uploadState.clear();
@@ -163,6 +164,20 @@ export default function UploadPage() {
 
   function removeSeparator(sep: string) {
     setSettings((s) => ({ ...s, separators: s.separators.filter((x) => x !== sep) }));
+  }
+
+  function addChildSeparator() {
+    const raw = childSepInput.trim();
+    if (!raw) return;
+    const val = parseSepInput(raw);
+    const current = settings.child_separators ?? DEFAULT_CHILD_SEPARATORS;
+    if (current.includes(val)) return;
+    setSettings((s) => ({ ...s, child_separators: [...(s.child_separators ?? DEFAULT_CHILD_SEPARATORS), val] }));
+    setChildSepInput("");
+  }
+
+  function removeChildSeparator(sep: string) {
+    setSettings((s) => ({ ...s, child_separators: (s.child_separators ?? DEFAULT_CHILD_SEPARATORS).filter((x) => x !== sep) }));
   }
 
   return (
@@ -303,7 +318,6 @@ export default function UploadPage() {
                           }
                           className="h-9"
                         />
-                        <p className="text-xs text-muted-foreground">建议 256–1024</p>
                       </div>
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between">
@@ -322,7 +336,6 @@ export default function UploadPage() {
                           }
                           className="h-9"
                         />
-                        <p className="text-xs text-muted-foreground">相邻段共享 token</p>
                       </div>
                     </div>
                   </div>
@@ -359,6 +372,57 @@ export default function UploadPage() {
                     {/* Parent */}
                     <div className="space-y-2">
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">父块用作上下文</p>
+
+                      {/* 父块分段标识符 */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm font-medium">分段标识符</Label>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => { setSepInput(""); setSepVisible(true); }}
+                              className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md border border-dashed text-xs text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+                            >
+                              <Plus size={10} />添加
+                            </button>
+                            <button
+                              onClick={() => setSettings((s) => ({ ...s, separators: DEFAULT_SEPARATORS }))}
+                              className="inline-flex items-center px-2 py-0.5 rounded-md border border-dashed text-xs text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+                            >
+                              重置默认
+                            </button>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {settings.separators.map((sep) => (
+                            <span key={sep} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-muted text-xs font-mono border">
+                              {displaySep(sep)}
+                              <button onClick={() => removeSeparator(sep)} className="text-muted-foreground hover:text-foreground">
+                                <X size={10} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                        {sepVisible && (
+                          <div className="flex gap-2">
+                            <Input
+                              autoFocus
+                              value={sepInput}
+                              placeholder="输入标识符，如 \n\n，回车添加"
+                              className="h-8 text-sm font-mono"
+                              onChange={(e) => setSepInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") { e.preventDefault(); addSeparator(); setSepVisible(false); }
+                                if (e.key === "Escape") { setSepVisible(false); setSepInput(""); }
+                              }}
+                            />
+                            <Button size="sm" variant="outline" className="h-8 px-2.5 shrink-0"
+                              onClick={() => { addSeparator(); setSepVisible(false); }}>
+                              <Plus size={14} />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between">
                           <Label htmlFor="parent-size" className="text-sm font-medium">分段最大长度</Label>
@@ -376,20 +440,71 @@ export default function UploadPage() {
                           }
                           className="h-9"
                         />
-                        <p className="text-xs text-muted-foreground">建议 512–2048，提供充足上下文</p>
                       </div>
                     </div>
+
+                    <hr className="border-border" />
 
                     {/* Child */}
                     <div className="space-y-2">
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">子块用于检索</p>
+
+                      {/* 子块分段标识符 */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm font-medium">分段标识符</Label>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => { setChildSepInput(""); setChildSepVisible(true); }}
+                              className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md border border-dashed text-xs text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+                            >
+                              <Plus size={10} />添加
+                            </button>
+                            <button
+                              onClick={() => setSettings((s) => ({ ...s, child_separators: DEFAULT_CHILD_SEPARATORS }))}
+                              className="inline-flex items-center px-2 py-0.5 rounded-md border border-dashed text-xs text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors"
+                            >
+                              重置默认
+                            </button>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(settings.child_separators ?? DEFAULT_CHILD_SEPARATORS).map((sep) => (
+                            <span key={sep} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-muted text-xs font-mono border">
+                              {displaySep(sep)}
+                              <button onClick={() => removeChildSeparator(sep)} className="text-muted-foreground hover:text-foreground">
+                                <X size={10} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                        {childSepVisible && (
+                          <div className="flex gap-2">
+                            <Input
+                              autoFocus
+                              value={childSepInput}
+                              placeholder="输入标识符，如 \n，回车添加"
+                              className="h-8 text-sm font-mono"
+                              onChange={(e) => setChildSepInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") { e.preventDefault(); addChildSeparator(); setChildSepVisible(false); }
+                                if (e.key === "Escape") { setChildSepVisible(false); setChildSepInput(""); }
+                              }}
+                            />
+                            <Button size="sm" variant="outline" className="h-8 px-2.5 shrink-0"
+                              onClick={() => { addChildSeparator(); setChildSepVisible(false); }}>
+                              <Plus size={14} />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1.5">
                           <Label className="text-sm font-medium">分段最大长度</Label>
                           <div className="h-9 flex items-center px-3 rounded-md border bg-muted/50 text-sm tabular-nums text-muted-foreground">
                             {Math.max(Math.floor(settings.chunk_size / 4), 64)} tokens
                           </div>
-                          <p className="text-xs text-muted-foreground">父块 ÷ 4，自动</p>
                         </div>
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between">
@@ -408,7 +523,6 @@ export default function UploadPage() {
                             }
                             className="h-9"
                           />
-                          <p className="text-xs text-muted-foreground">子块间重叠</p>
                         </div>
                       </div>
                     </div>
@@ -431,19 +545,9 @@ export default function UploadPage() {
 
           {/* ── 检索设置 ── */}
           <section>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                检索设置
-              </h3>
-              {isRetrievalLocked && (
-                <button
-                  className="text-xs text-primary hover:underline"
-                  onClick={() => router.push(`/knowledge/${id}?name=${encodeURIComponent(kbName)}&tab=settings`)}
-                >
-                  在设置中修改
-                </button>
-              )}
-            </div>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              检索设置
+            </h3>
             {!kb ? (
               <Skeleton className="h-[220px] rounded-xl" />
             ) : (
@@ -456,11 +560,9 @@ export default function UploadPage() {
                       className={`rounded-xl border-2 overflow-hidden transition-all ${
                         isSelected
                           ? "border-primary"
-                          : isRetrievalLocked
-                          ? "border-border opacity-50"
                           : "border-border hover:border-primary/40 cursor-pointer"
                       }`}
-                      onClick={() => !isRetrievalLocked && !isSelected && setRetrieval((r) => ({ ...r, retrieval_mode: mode }))}
+                      onClick={() => !isSelected && setRetrieval((r) => ({ ...r, retrieval_mode: mode }))}
                     >
                       {/* 卡片头 */}
                       <div className="flex items-center gap-3 px-4 py-3">
@@ -495,11 +597,11 @@ export default function UploadPage() {
                               {(["weighted", "rerank"] as const).map((hm) => (
                                 <button
                                   key={hm}
-                                  onClick={(e) => { e.stopPropagation(); if (!isRetrievalLocked) setRetrieval((r) => ({ ...r, hybrid_mode: hm })); }}
+                                  onClick={(e) => { e.stopPropagation(); setRetrieval((r) => ({ ...r, hybrid_mode: hm })); }}
                                   className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left transition-all ${
                                     retrieval.hybrid_mode === hm
                                       ? "border-primary bg-primary/5"
-                                      : `border-border ${isRetrievalLocked ? "opacity-40 cursor-not-allowed" : "hover:border-primary/40 cursor-pointer"}`
+                                      : "border-border hover:border-primary/40 cursor-pointer"
                                   }`}
                                 >
                                   <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center ${retrieval.hybrid_mode === hm ? "border-primary" : "border-muted-foreground/40"}`}>
@@ -518,7 +620,7 @@ export default function UploadPage() {
 
                           {/* hybrid weighted: 语义/关键词权重滑动条 */}
                           {mode === "hybrid" && retrieval.hybrid_mode === "weighted" && (
-                            <div className={`space-y-2 ${isRetrievalLocked ? "opacity-40" : ""}`}>
+                            <div className="space-y-2">
                               <div className="flex items-center justify-between text-xs">
                                 <span className="text-primary font-medium">语义 {(retrieval.vector_weight * 100).toFixed(0)}%</span>
                                 <span className="text-muted-foreground font-medium">{((1 - retrieval.vector_weight) * 100).toFixed(0)}% 关键词</span>
@@ -526,9 +628,8 @@ export default function UploadPage() {
                               <input
                                 type="range" min={0} max={1} step={0.05}
                                 value={retrieval.vector_weight}
-                                disabled={isRetrievalLocked}
                                 onChange={(e) => setRetrieval((r) => ({ ...r, vector_weight: Number(e.target.value) }))}
-                                className="w-full h-1.5 rounded-full cursor-pointer disabled:cursor-not-allowed"
+                                className="w-full h-1.5 rounded-full cursor-pointer"
                                 style={{ accentColor: "hsl(var(--primary))" }}
                               />
                             </div>
@@ -541,13 +642,10 @@ export default function UploadPage() {
                               <button
                                 role="switch"
                                 aria-checked={retrieval.use_rerank}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (!isRetrievalLocked) setRetrieval((r) => ({ ...r, use_rerank: !r.use_rerank }));
-                                }}
-                                className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
+                                onClick={(e) => { e.stopPropagation(); setRetrieval((r) => ({ ...r, use_rerank: !r.use_rerank })); }}
+                                className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors cursor-pointer ${
                                   retrieval.use_rerank ? "bg-primary" : "bg-input"
-                                } ${isRetrievalLocked ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+                                }`}
                               >
                                 <span className={`pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform my-0.5 ${
                                   retrieval.use_rerank ? "translate-x-4" : "translate-x-0.5"
@@ -558,35 +656,35 @@ export default function UploadPage() {
 
                           {/* Top K + Score 阈值 */}
                           <div className="grid grid-cols-2 gap-4">
-                            <div className={`space-y-2 ${isRetrievalLocked ? "opacity-40" : ""}`}>
+                            <div className="space-y-2">
                               <div className="flex items-center justify-between">
                                 <Label className="text-sm font-medium">Top K</Label>
-                                <Input type="number" min={1} max={20} step={1} value={retrieval.top_k} disabled={isRetrievalLocked}
+                                <Input type="number" min={1} max={20} step={1} value={retrieval.top_k}
                                   onChange={(e) => setRetrieval((r) => ({ ...r, top_k: Math.max(1, Math.min(20, Number(e.target.value))) }))}
                                   className="h-7 w-14 text-center text-sm px-1" />
                               </div>
-                              <input type="range" min={1} max={20} step={1} value={retrieval.top_k} disabled={isRetrievalLocked}
+                              <input type="range" min={1} max={20} step={1} value={retrieval.top_k}
                                 onChange={(e) => setRetrieval((r) => ({ ...r, top_k: Number(e.target.value) }))}
-                                className="w-full h-1.5 rounded-full cursor-pointer disabled:cursor-not-allowed"
+                                className="w-full h-1.5 rounded-full cursor-pointer"
                                 style={{ accentColor: "hsl(var(--primary))" }} />
                             </div>
-                            <div className={`space-y-2 ${isRetrievalLocked ? "opacity-40" : ""}`}>
+                            <div className="space-y-2">
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-1.5">
                                   <Label className="text-sm font-medium">Score 阈值</Label>
                                   <button role="switch" aria-checked={retrieval.score_threshold > 0}
-                                    onClick={(e) => { e.stopPropagation(); if (!isRetrievalLocked) setRetrieval((r) => ({ ...r, score_threshold: r.score_threshold > 0 ? 0 : 0.5 })); }}
-                                    className={`relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors ${retrieval.score_threshold > 0 ? "bg-primary" : "bg-input"} ${isRetrievalLocked ? "cursor-not-allowed" : "cursor-pointer"}`}>
+                                    onClick={(e) => { e.stopPropagation(); setRetrieval((r) => ({ ...r, score_threshold: r.score_threshold > 0 ? 0 : 0.5 })); }}
+                                    className={`relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors cursor-pointer ${retrieval.score_threshold > 0 ? "bg-primary" : "bg-input"}`}>
                                     <span className={`pointer-events-none block h-3 w-3 rounded-full bg-white shadow-sm transition-transform my-0.5 ${retrieval.score_threshold > 0 ? "translate-x-3.5" : "translate-x-0.5"}`} />
                                   </button>
                                 </div>
                                 <Input type="number" min={0} max={1} step={0.05} value={retrieval.score_threshold}
-                                  disabled={isRetrievalLocked || retrieval.score_threshold === 0}
+                                  disabled={retrieval.score_threshold === 0}
                                   onChange={(e) => setRetrieval((r) => ({ ...r, score_threshold: Math.max(0, Math.min(1, Number(e.target.value))) }))}
                                   className="h-7 w-14 text-center text-sm px-1 disabled:opacity-40" />
                               </div>
                               <input type="range" min={0} max={1} step={0.05} value={retrieval.score_threshold}
-                                disabled={isRetrievalLocked || retrieval.score_threshold === 0}
+                                disabled={retrieval.score_threshold === 0}
                                 onChange={(e) => setRetrieval((r) => ({ ...r, score_threshold: Number(e.target.value) }))}
                                 className="w-full h-1.5 rounded-full cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                                 style={{ accentColor: "hsl(var(--primary))" }} />
@@ -597,19 +695,6 @@ export default function UploadPage() {
                     </div>
                   );
                 })}
-
-                {isRetrievalLocked && (
-                  <p className="text-xs text-muted-foreground pt-1">
-                    首次文档入库后检索设置已锁定，可
-                    <button
-                      className="text-primary hover:underline mx-0.5"
-                      onClick={() => router.push(`/knowledge/${id}?name=${encodeURIComponent(kbName)}&tab=settings`)}
-                    >
-                      前往知识库设置
-                    </button>
-                    修改。
-                  </p>
-                )}
               </div>
             )}
           </section>

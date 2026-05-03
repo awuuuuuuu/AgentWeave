@@ -24,7 +24,8 @@ def ingest_document(
     splitter_type: str = "recursive",
     chunk_size: int = 512,
     chunk_overlap: int = 64,
-    separators: list[str] | None = None,   # 分隔符列表，None 代表使用默认分隔符
+    separators: list[str] | None = None,        # 父块/递归分隔符，None 代表使用默认分隔符
+    child_separators: list[str] | None = None,  # 子块分隔符（仅 parent_child 模式）
 ) -> dict:
     """
     Celery 摄入任务：从 MinIO 下载 → 解析 → embedding → 写入 Milvus
@@ -62,6 +63,8 @@ def ingest_document(
                     parent_chunk_size=chunk_size,
                     child_chunk_size=max(chunk_size // 4, 64),
                     child_overlap=max(chunk_overlap // 4, 8),
+                    parent_separators=separators or None,
+                    child_separators=child_separators or None,
                 ))
             else:
                 from ingestion.splitter.recursive import RecursiveSplitter, RecursiveConfig
