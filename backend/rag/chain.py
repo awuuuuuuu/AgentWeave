@@ -33,7 +33,21 @@ class RAGChain:
     # ------------------------------------------------------------------
 
     @classmethod
+    def from_components(
+        cls,
+        retriever: HybridRetriever,
+        reranker: Reranker | None,
+        settings: RAGChainSettings | None = None,
+    ) -> "RAGChain":
+        """使用外部已初始化的组件构建 RAGChain，避免重复创建连接。"""
+        cfg = settings or RAGChainSettings()
+        llm = create_llm(model=cfg.llm_model, max_tokens=cfg.output_reserve_tokens)
+        graph = cls._build_graph(retriever, reranker, llm, cfg.max_context_tokens)
+        return cls(graph, cfg)
+
+    @classmethod
     def from_settings(cls, settings: RAGChainSettings | None = None) -> "RAGChain":
+        """独立构建所有组件（测试/脚本用）。生产环境优先用 from_components。"""
         cfg = settings or RAGChainSettings()
 
         store_cfg = MilvusStoreConfig(uri=cfg.milvus_uri)
@@ -48,13 +62,14 @@ class RAGChain:
 
         reranker: Reranker | None = None
         if cfg.use_reranker:
-            reranker = Reranker(RerankerConfig(model_name=cfg.reranker_model))
+            reranker = Reranker(RerankerConfig(
+                reranker_type=cfg.reranker_type,
+                model_name=cfg.reranker_model,
+                api_key=cfg.dashscope_api_key,
+                base_url=cfg.dashscope_base_url
+            ))
 
-        llm = create_llm(
-            model=cfg.llm_model,
-            max_tokens=cfg.output_reserve_tokens
-        )
-
+        llm = create_llm(model=cfg.llm_model, max_tokens=cfg.output_reserve_tokens)
         graph = cls._build_graph(retriever, reranker, llm, cfg.max_context_tokens)
         return cls(graph, cfg)
     

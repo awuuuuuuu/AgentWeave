@@ -70,6 +70,29 @@ class HybridRetriever(BaseRetriever):
 
         return results[:top_k]
 
+    async def aretrieve_by_mode(
+        self,
+        query: str,
+        knowledge_base_id: str,
+        mode: str,
+        top_k: int,
+        hybrid_mode: str = "weighted",
+        vector_weight: float = 0.7,
+    ) -> list[RetrievedChunk]:
+        """按 KB 检索模式分发到对应子检索器，返回候选集 (注意：未 rerank,未裁剪到 top_k)"""
+        if mode == "vector":
+            chunks = await self._vector.aretrieve(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k)
+            for c in chunks:
+                c.fusion_score = c.vector_score
+        elif mode == "fulltext":
+            chunks = await self._bm25.aretrieve(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k)
+            for c in chunks:
+                c.fusion_score = c.bm25_score
+        else:
+            alpha = vector_weight if hybrid_mode == "weighted" else 0.5
+            chunks = await self.aretrieve(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k, alpha=alpha)
+        return chunks
+
     async def aretrieve(
         self,
         query: str,
