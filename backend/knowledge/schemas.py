@@ -34,6 +34,12 @@ class KBResponse(BaseModel):
     score_threshold: float
     hybrid_mode: str
     vector_weight: float
+    # 分段模式（首次上传后锁定）
+    splitter_type: str | None
+    chunk_size: int | None
+    chunk_overlap: int | None
+    separators: list[str] | None
+    child_separators: list[str] | None
     created_at: datetime
     updated_at: datetime
 
@@ -64,3 +70,41 @@ class ChunkPreviewItem(BaseModel):
     page_number: int | None
     section_path: str
     token_count: int
+
+class ChunkItem(BaseModel):
+    chunk_id: str
+    chunk_index: int
+    text: str
+    content_type: str
+    section_path: str
+    extra_meta: dict
+
+class ChunkListResponse(BaseModel):
+    items: list[ChunkItem]
+    total: int
+    page: int
+    page_size: int
+
+class HitTestingRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+
+class HitTestingRecord(BaseModel):
+    chunk_id: str
+    score: float
+    text: str
+    source_file: str
+    section_path: str
+    content_type: str
+
+class HitTestingLogItem(BaseModel):
+    id: str
+    query: str
+    result_count: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+class HitTestingResponse(BaseModel):
+    query: str
+    records: list[HitTestingRecord]
+    log_item: HitTestingLogItem  # 直接返回落库后的日志，前端乐观更新无需重拉

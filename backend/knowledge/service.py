@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Document, DocumentStatus, KnowledgeBase
+from db.models import Document, DocumentStatus, HitTestingLog, KnowledgeBase
 from .schemas import KBCreate, KBRetrievalSettings, KBUpdate
 
 async def list_kbs(
@@ -74,6 +74,8 @@ async def delete_kb(kb_id: str, user_id: str, session: AsyncSession) -> None:
         doc.is_deleted = True
         if doc.object_key:
             object_keys.append(doc.object_key)
+    # 删除召回测试记录（软删除不触发 CASCADE，需显式清理）
+    await session.execute(delete(HitTestingLog).where(HitTestingLog.kb_id == kb_id))
     await session.commit()
 
     # 异步清理 Milvus + MinIO

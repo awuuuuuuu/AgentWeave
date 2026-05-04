@@ -72,6 +72,8 @@ class IngestionPipeline:
         self,
         files: list[Union[str, Path]],
         knowledge_base_id: str,
+        source_name: str | None = None,
+        document_id: str = "",
     ) -> IngestionResult:
         """
         批量摄入文件
@@ -79,6 +81,8 @@ class IngestionPipeline:
         Args:
             files:              文件路径列表
             knowledge_base_id:  目标知识库 ID
+            source_name:        覆盖 source_file 字段（原始文件名，替换临时路径）
+            document_id:        关联的 Document 记录 ID，写入 Milvus 供后续过滤
 
         Returns:
             IngestionResult 汇总统计
@@ -91,7 +95,7 @@ class IngestionPipeline:
             path = Path(file_path)
             logger.info("[%d/%d] 开始处理: %s", idx, len(files), path.name)
             
-            result = self._process_with_retry(path, knowledge_base_id)
+            result = self._process_with_retry(path, knowledge_base_id, source_name, document_id)
             file_results.append(result)
 
             if result.succeeded:
@@ -108,7 +112,9 @@ class IngestionPipeline:
     def _process_with_retry(
         self,
         path: Path,
-        knowledge_base_id: str
+        knowledge_base_id: str,
+        source_name: str | None = None,
+        document_id: str = "",
     ) -> FileResult:
         """单个文件的处理流"""
         last_error = ""
@@ -116,7 +122,7 @@ class IngestionPipeline:
             is_last = attempt == self._cfg.max_retries
             try:
                 start = time.monotonic()
-                chunks_written = self._process_file(path, knowledge_base_id)
+                chunks_written = self._process_file(path, knowledge_base_id, source_name, document_id)
                 return FileResult(
                     filename=path.name,
                     succeeded=True,
@@ -136,7 +142,13 @@ class IngestionPipeline:
             error=last_error
         )
     
-    def _process_file(self, path: Path, knowledge_base_id: str) -> str:
+    def _process_file(
+        self,
+        path: Path,
+        knowledge_base_id: str,
+        source_name: str | None = None,
+        document_id: str = "",
+    ) -> str:
         """
         单文件的四层处理链，返回写入的 chunk 数量
         """
@@ -151,7 +163,12 @@ class IngestionPipeline:
         if not raw_chunks:
             logger.debug("%s 解析结果为空，跳过", path.name)
             return 0
-        
+
+        # 用原始文件名覆盖 source_file（parser 默认用临时文件名）
+        if source_name:
+            for c in raw_chunks:
+                c.metadata["source_file"] = source_name
+
         # 2. Splitter
         split_chunks = self._splitter.split(raw_chunks)
 
@@ -159,6 +176,6 @@ class IngestionPipeline:
         embedded = self._embedder.embed(split_chunks)
 
         # 4. Store
-        written = self._store.upsert(embedded, knowledge_base_id=knowledge_base_id)
+        written = self._store.upsert(embedded, knowledge_base_id=knowledge_base_id, document_id=document_id)
 
         return written

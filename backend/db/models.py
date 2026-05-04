@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .session import Base
@@ -69,6 +69,12 @@ class KnowledgeBase(Base):
     hybrid_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="weighted")
     # hybrid weighted 模式下语义向量权重（关键词权重 = 1 - vector_weight）
     vector_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    # 分段模式（首次上传后锁定）：None = 尚未设置，"recursive" / "parent_child"
+    splitter_type: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    chunk_size: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    chunk_overlap: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    separators: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    child_separators: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -99,6 +105,7 @@ class Document(Base):
     task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    doc_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -107,3 +114,24 @@ class Document(Base):
     )
 
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+
+
+class HitTestingLog(Base):
+    """召回测试查询记录"""
+
+    __tablename__ = "hit_testing_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    kb_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 召回快照：[{chunk_id, score, text, source_file}]，供 RAGAS 离线评估用
+    retrieved_chunks: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )

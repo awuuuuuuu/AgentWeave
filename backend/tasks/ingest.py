@@ -78,7 +78,12 @@ def ingest_document(
             embedder = OpenAIEmbedder()
             store = MilvusStore(MilvusStoreConfig(uri=cfg.milvus_uri))
             pipeline = IngestionPipeline(embedder=embedder, store=store, splitter=splitter)
-            pipeline.run([local_path], knowledge_base_id=kb_id)
+            pipeline.run(
+                [local_path],
+                knowledge_base_id=kb_id,
+                source_name=original_filename,
+                document_id=doc_id,
+            )
 
             await update_document_status(doc_id, DocumentStatus.READY, session)
         
