@@ -18,7 +18,8 @@ _DEFAULT_COLLECTION = "ragent_chunks"
 # Milvus 数据库的 Schema
 _F_CHUNK_ID       = "chunk_id"           # VARCHAR 主键，确定性 hash
 _F_KB_ID          = "knowledge_base_id"  # VARCHAR，Partition Key（分区键）
-_F_SOURCE_FILE    = "source_file"        # VARCHAR，scalar index（标量索引）
+_F_DOC_ID         = "document_id"        # VARCHAR，关联 PG documents.id（标量索引）
+_F_SOURCE_FILE    = "source_file"        # VARCHAR，原始文件名（标量索引）
 _F_CONTENT_TYPE   = "content_type"       # VARCHAR，scalar index（标量索引）
 _F_SECTION_PATH   = "section_path"       # VARCHAR
 _F_EMBED_MODEL    = "embed_model"        # VARCHAR
@@ -33,7 +34,7 @@ _TOP_LEVEL_META_KEYS = {"source_file", "content_type", "section_path", "chunk_in
 
 # 基础必填字段（与 BM25 无关）
 _REQUIRED_FIELDS_BASE = {
-    _F_CHUNK_ID, _F_KB_ID, _F_SOURCE_FILE, _F_CONTENT_TYPE,
+    _F_CHUNK_ID, _F_KB_ID, _F_DOC_ID, _F_SOURCE_FILE, _F_CONTENT_TYPE,
     _F_SECTION_PATH, _F_EMBED_MODEL, _F_CHUNK_INDEX,
     _F_TEXT, _F_EXTRA_META, _F_VECTOR,
 }
@@ -85,13 +86,14 @@ class MilvusStore:
     def upsert(
         self,
         embedded_chunks: list[EmbeddedChunk],
-        knowledge_base_id: str
+        knowledge_base_id: str,
+        document_id: str = "",
     ) -> int:
         """
         将 EmbeddedChunks 添加到 Milvus
         """
         rows = [
-            self._to_row(ec, knowledge_base_id)
+            self._to_row(ec, knowledge_base_id, document_id)
             for ec in embedded_chunks
             if not ec.skipped
         ]
@@ -124,6 +126,32 @@ class MilvusStore:
     def delete_by_kb(self, knowledge_base_id: str) -> None:
         """删除整个知识库在 Milvus 中的所有 chunk（软删除后的异步清理）。"""
         self._delete_by_expr(f'{_F_KB_ID} == "{knowledge_base_id}"')
+
+    def list_by_document(
+        self,
+        knowledge_base_id: str,
+        document_id: str,
+        offset: int = 0,
+        limit: int = 25,
+    ) -> tuple[list[dict], int]:
+        """按 document_id 列出 chunk，返回 (rows, total)
+
+        单次查询拿全量数据后在内存中排序再分页
+        """
+        expr = f'{_F_KB_ID} == "{knowledge_base_id}" and {_F_DOC_ID} == "{document_id}"'
+        output_fields = [
+            _F_CHUNK_ID, _F_DOC_ID, _F_SOURCE_FILE, _F_CONTENT_TYPE,
+            _F_SECTION_PATH, _F_CHUNK_INDEX, _F_TEXT, _F_EXTRA_META,
+        ]
+        all_rows = self._client.query(
+            collection_name=self._cfg.collection_name,
+            filter=expr,
+            output_fields=output_fields,
+            consistency_level="Strong",
+        )
+        all_rows.sort(key=lambda r: r.get(_F_CHUNK_INDEX, 0))
+        total = len(all_rows)
+        return all_rows[offset: offset + limit], total
 
     def _delete_by_expr(self, expr: str) -> None:
         while True:
@@ -161,6 +189,7 @@ class MilvusStore:
         )
         schema.add_field(_F_CHUNK_ID,     DataType.VARCHAR, max_length=64,               is_primary=True)
         schema.add_field(_F_KB_ID,        DataType.VARCHAR, max_length=_KB_ID_MAX_BYTES, partition_key=True)
+        schema.add_field(_F_DOC_ID,       DataType.VARCHAR, max_length=64)
         schema.add_field(_F_SOURCE_FILE,  DataType.VARCHAR, max_length=_VARCHAR_MAX_BYTES)
         schema.add_field(_F_CONTENT_TYPE, DataType.VARCHAR, max_length=128)
         schema.add_field(_F_SECTION_PATH, DataType.VARCHAR, max_length=_SECTION_MAX_BYTES)
@@ -195,7 +224,7 @@ class MilvusStore:
                 metric_type="BM25",
                 params={"bm25_k1": 1.5, "bm25_b": 0.75},
             )
-        for fname in (_F_SOURCE_FILE, _F_CONTENT_TYPE):
+        for fname in (_F_DOC_ID, _F_SOURCE_FILE, _F_CONTENT_TYPE):
             index_params.add_index(field_name=fname, index_type="INVERTED")
 
         self._client.create_collection(
@@ -218,7 +247,7 @@ class MilvusStore:
         return not required.issubset(existing)
 
         
-    def _to_row(self, ec: EmbeddedChunk, knowledge_base_id: str) -> dict:
+    def _to_row(self, ec: EmbeddedChunk, knowledge_base_id: str, document_id: str = "") -> dict:
         """把 EmbeddedChunk 转成 Milvus 一行数据。"""
         metadata = ec.chunk.metadata
         source_file  = metadata.get("source_file", "")
@@ -231,6 +260,7 @@ class MilvusStore:
         return {
             _F_CHUNK_ID:     _make_chunk_id(knowledge_base_id, source_file, ec.chunk.text),
             _F_KB_ID:        _truncate_bytes(knowledge_base_id, _KB_ID_MAX_BYTES),
+            _F_DOC_ID:       _truncate_bytes(document_id, 64),
             _F_SOURCE_FILE:  _truncate_bytes(source_file, _VARCHAR_MAX_BYTES),
             _F_CONTENT_TYPE: _truncate_bytes(content_type, 128),
             _F_SECTION_PATH: _truncate_bytes(section_path, _SECTION_MAX_BYTES),
