@@ -3,70 +3,105 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-import torch
-
 from .base import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-_RERANK_LIMIT = 20          # 送入 cross-encoder 的最大候选数
-
 @dataclass
 class RerankerConfig:
-    model_name: str = _DEFAULT_MODEL
-    rerank_limit: int = _RERANK_LIMIT
+    reranker_type: str = "dashscope"          # "dashscope" | "local"
+    model_name: str = "qwen3-rerank"
+    api_key: str = ""
+    base_url: str = "https://dashscope.aliyuncs.com"
+    rerank_limit: int = 20
+    # local cross-encoder only
     use_gpu: bool = False
 
+
 class Reranker:
-    """Cross-encoder 精排。
+    """精排器，支持 DashScope 官方 API（qwen3-rerank 等）和本地 cross-encoder 两种模式"""
 
-    将 HybridRetriever 的候选集送入 cross-encoder，得到精排分后重新排序
-    """
-
-    def __init__(
-        self,
-        config: RerankerConfig | None = None
-    ) -> None:
+    def __init__(self, config: RerankerConfig | None = None) -> None:
         self._cfg = config or RerankerConfig()
-        self._model = None
-    
+        self._local_model = None  # lazy-load，仅 local 模式使用
+
     def rerank(
         self,
         query: str,
         chunks: list[RetrievedChunk],
-        top_k: int | None = None
+        top_k: int | None = None,
     ) -> list[RetrievedChunk]:
-        """对候选集进行 cross-encoder 精排，返回按 rerank_score 降序排列的前 top_k 个结果"""
         if not chunks:
             return []
-        
-        self._ensure_model()
 
         candidates = chunks[: self._cfg.rerank_limit]
-        pairs = [[query, c.text] for c in candidates]
 
-        raw_results = self._model.predict(pairs)
-        scores: list[float] = raw_results.tolist() if hasattr(raw_results, "tolist") else list(raw_results)
+        if self._cfg.reranker_type == "dashscope":
+            scores = self._rerank_dashscope(query, [c.text for c in candidates])
+        else:
+            scores = self._rerank_local(query, [c.text for c in candidates])
 
-        if len(scores) != len(candidates):
-            raise RuntimeError(
-                f"Reranker predict() 返回 {len(scores)} 个分数，"
-                f"但候选数为 {len(candidates)}，模型输出异常。"
-            )
-        
         for chunk, score in zip(candidates, scores):
             chunk.rerank_score = float(score)
-        
-        candidates.sort(key=lambda c: c.rerank_score, reverse=True)
-        logger.debug("Reranker: query=%r 精排 %d 条", query[:50], len(candidates))
+            chunk.fusion_score = float(score)   # 覆盖展示分，使 UI 显示精排分
 
+        candidates.sort(key=lambda c: c.rerank_score, reverse=True)
+        logger.debug("Reranker(%s): 精排 %d 条", self._cfg.reranker_type, len(candidates))
         return candidates[:top_k] if top_k is not None else candidates
 
-    def _ensure_model(self) -> None:
-        if self._model is not None:
-            return
+    # ── DashScope ────────────────────────────────────────────────────────────
+
+    def _rerank_dashscope(self, query: str, documents: list[str]) -> list[float]:
+        """调用 DashScope 的兼容 API (Compatible API)，专为 qwen3-rerank 等新模型设计"""
+        if not self._cfg.api_key:
+            raise ValueError(
+                "DashScope API key 未配置，请在 .env 中设置 DASHSCOPE_API_KEY"
+            )
+
+        import httpx
+
+        # 强制使用阿里云最新的 OpenAI 兼容端点
+        base = self._cfg.base_url.rstrip("/")
+        url = f"{base}/compatible-api/v1/reranks"
+
+        headers = {
+            "Authorization": f"Bearer {self._cfg.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": self._cfg.model_name,
+            "query": query,
+            "documents": documents,
+            "top_n": len(documents),
+        }
+
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            if not resp.is_success:
+                raise RuntimeError(f"DashScope Reranker API {resp.status_code}: {resp.text}")
+            
+            data = resp.json()
+
+        raw_results = data.get("results", [])
         
+        scores = [0.0] * len(documents)
+        for item in raw_results:
+            scores[item["index"]] = float(item["relevance_score"])
+            
+        return scores
+
+    # ── Local cross-encoder ───────────────────────────────────────────────────
+
+    def _rerank_local(self, query: str, documents: list[str]) -> list[float]:
+        self._ensure_local_model()
+        pairs = [[query, doc] for doc in documents]
+        raw = self._local_model.predict(pairs)
+        return raw.tolist() if hasattr(raw, "tolist") else list(raw)
+
+    def _ensure_local_model(self) -> None:
+        if self._local_model is not None:
+            return
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as e:
@@ -74,11 +109,7 @@ class Reranker:
                 "sentence-transformers 未安装，请执行: uv add sentence-transformers"
             ) from e
         
-        device = "cpu"
-        if self._cfg.use_gpu and torch.cuda.is_available():
-            device = "cuda"
-            
-        self._model = CrossEncoder(self._cfg.model_name, device=device)
-        logger.info("Reranker 模型已加载：%s（device=%s）", self._cfg.model_name, device)
-
-        
+        import torch
+        device = "cuda" if self._cfg.use_gpu and torch.cuda.is_available() else "cpu"
+        self._local_model = CrossEncoder(self._cfg.model_name, device=device)
+        logger.info("本地 Reranker 已加载：%s（device=%s）", self._cfg.model_name, device)

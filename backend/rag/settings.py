@@ -15,8 +15,21 @@ class RAGChainSettings(BaseSettings):
 
     # 检索相关配置
     use_reranker: bool = True
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_type: str = "dashscope"          # "dashscope" | "local"
+    reranker_model: str = Field(
+        default="qwen3-rerank", 
+        validation_alias=AliasChoices("RAG_RERANKER_MODEL", "RERANKER_MODEL")
+    )
+    dashscope_api_key: str = Field(
+        default="", 
+        validation_alias=AliasChoices("RAG_DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY")
+    )
+    dashscope_base_url: str = Field(
+        default="https://dashscope.aliyuncs.com", 
+        validation_alias=AliasChoices("RAG_DASHSCOPE_BASE_URL", "DASHSCOPE_BASE_URL")
+    )
     candidate_multiplier: int = 3   # HybridRetriever fetch_k = top_k * multiplier
+
 
     # 基础设施配置：优先读 RAG_MILVUS_URI，兼容无前缀的 MILVUS_URI
     milvus_uri: str = Field(
