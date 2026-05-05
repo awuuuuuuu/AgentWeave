@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { Upload, FileText, RefreshCw, Files, Settings, Trash2, MoreHorizontal, Save, Zap, Search, Layers } from "lucide-react";
+import { Upload, FileText, RefreshCw, Files, Settings, Trash2, MoreHorizontal, Save, Zap, Search, Layers, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -33,7 +33,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  apiListDocuments, apiDeleteDocument, apiGetKB, apiUpdateKBRetrievalSettings,
+  apiListDocuments, apiDeleteDocument, apiGetKB, apiUpdateKB, apiUpdateKBRetrievalSettings, apiDeleteKB,
   type KBDocument, type KnowledgeBase, type KBRetrievalSettings,
 } from "@/lib/api";
 import { uploadState } from "@/lib/upload-state";
@@ -60,8 +60,9 @@ const STATUS_MAP: Record<KBDocument["status"], { label: string; variant: "defaul
 };
 
 const sideNavItems = [
-  { key: "docs",     label: "文档",     icon: Files },
-  { key: "settings", label: "设置",     icon: Settings },
+  { key: "docs",         label: "文档",     icon: Files,     route: false },
+  { key: "hit-testing",  label: "召回测试",  icon: Search,    route: true  },
+  { key: "settings",     label: "设置",     icon: Settings,  route: false },
 ];
 
 export default function KnowledgeDetailPage() {
@@ -91,6 +92,14 @@ export default function KnowledgeDetailPage() {
   });
   const [saving, setSaving] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
+  // 知识库基本信息编辑
+  const [editName, setEditName] = useState(kbName);
+  const [kbDesc, setKbDesc] = useState("");
+  const [savingInfo, setSavingInfo] = useState(false);
+  const [saveInfoOk, setSaveInfoOk] = useState(false);
+  // 删除知识库
+  const [deletingKB, setDeletingKB] = useState(false);
+  const [showDeleteKB, setShowDeleteKB] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -99,6 +108,8 @@ export default function KnowledgeDetailPage() {
     loadDocs();
     apiGetKB(id).then((k) => {
       setKb(k);
+      setEditName(k.name);
+      setKbDesc(k.description ?? "");
       setRetrieval({
         retrieval_mode: k.retrieval_mode,
         use_rerank: k.use_rerank,
@@ -176,6 +187,34 @@ export default function KnowledgeDetailPage() {
     }
   }
 
+  async function handleSaveInfo() {
+    if (!editName.trim()) return;
+    setSavingInfo(true);
+    setSaveInfoOk(false);
+    try {
+      const updated = await apiUpdateKB(id, editName.trim(), kbDesc.trim() || undefined);
+      setKb(updated);
+      setSaveInfoOk(true);
+      setTimeout(() => setSaveInfoOk(false), 2000);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setSavingInfo(false);
+    }
+  }
+
+  async function handleDeleteKB() {
+    setDeletingKB(true);
+    try {
+      await apiDeleteKB(id);
+      router.push("/knowledge");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "删除失败");
+      setDeletingKB(false);
+      setShowDeleteKB(false);
+    }
+  }
+
   return (
     <>
     <div className="flex h-full">
@@ -190,10 +229,13 @@ export default function KnowledgeDetailPage() {
         </div>
 
         <nav className="flex-1 py-2 px-2">
-          {sideNavItems.map(({ key, label, icon: Icon }) => (
+          {sideNavItems.map(({ key, label, icon: Icon, route }) => (
             <div
               key={key}
-              onClick={() => setActiveTab(key)}
+              onClick={() => route
+                ? router.push(`/knowledge/${id}/hit-testing?name=${encodeURIComponent(kbName)}`)
+                : setActiveTab(key)
+              }
               className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm cursor-pointer transition-colors ${
                 activeTab === key
                   ? "bg-accent text-accent-foreground font-medium"
@@ -272,7 +314,14 @@ export default function KnowledgeDetailPage() {
                     {docs.map((doc) => {
                       const s = STATUS_MAP[doc.status];
                       return (
-                        <TableRow key={doc.id}>
+                        <TableRow
+                          key={doc.id}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={(e) => {
+                            if ((e.target as HTMLElement).closest("[data-no-row-click]")) return;
+                            router.push(`/knowledge/${id}/documents/${doc.id}?name=${encodeURIComponent(kbName)}&doc=${encodeURIComponent(doc.filename)}`);
+                          }}
+                        >
                           <TableCell className="flex items-center gap-2 font-medium">
                             <FileText size={14} className="text-muted-foreground shrink-0" />
                             <span className="truncate max-w-sm" title={doc.filename}>{doc.filename}</span>
@@ -283,7 +332,7 @@ export default function KnowledgeDetailPage() {
                           <TableCell className="text-muted-foreground text-sm">
                             {new Date(doc.created_at).toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" })}
                           </TableCell>
-                          <TableCell className="text-center">
+                          <TableCell className="text-center" data-no-row-click>
                             <DropdownMenu>
                               <DropdownMenuTrigger className="p-1 rounded hover:bg-accent transition-colors outline-none">
                                 <MoreHorizontal size={15} className="text-muted-foreground" />
@@ -309,9 +358,82 @@ export default function KnowledgeDetailPage() {
           </>
         ) : (
           /* ── 设置 tab ── */
-          <div className="flex-1 overflow-y-auto px-8 py-8 max-w-2xl">
-            <h2 className="text-sm font-semibold mb-1">检索设置</h2>
-            <p className="text-xs text-muted-foreground mb-6">配置此知识库的检索方式，影响对话时的召回行为</p>
+          <div className="flex-1 overflow-y-auto px-8 py-8 max-w-2xl space-y-10">
+
+            {/* ── 基本信息 ── */}
+            <section>
+              <h2 className="text-sm font-semibold mb-1">基本信息</h2>
+              <p className="text-xs text-muted-foreground mb-5">修改知识库名称和描述</p>
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-muted-foreground">名称</Label>
+                  <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="知识库名称" className="text-sm" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-muted-foreground">描述（可选）</Label>
+                  <textarea
+                    value={kbDesc}
+                    onChange={(e) => setKbDesc(e.target.value)}
+                    placeholder="描述此知识库的内容和用途…"
+                    rows={3}
+                    className="w-full resize-none text-sm rounded-md border border-input bg-background px-3 py-2 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  />
+                </div>
+                <Button onClick={handleSaveInfo} disabled={savingInfo || !editName.trim()} className="w-full">
+                  <Save size={14} className="mr-1.5" />
+                  {savingInfo ? "保存中…" : saveInfoOk ? "已保存 ✓" : "保存信息"}
+                </Button>
+              </div>
+            </section>
+
+            {/* ── 分段模式 ── */}
+            <section>
+              <h2 className="text-sm font-semibold mb-1">分段模式</h2>
+              <p className="text-xs text-muted-foreground mb-5">首次上传文档后自动锁定，后续只能调整参数</p>
+              {!kb ? (
+                <Skeleton className="h-24 rounded-xl" />
+              ) : kb.splitter_type === null ? (
+                <div className="rounded-xl border border-dashed px-5 py-4 text-center text-sm text-muted-foreground">
+                  暂无（尚未上传文档，首次上传时选择）
+                </div>
+              ) : (
+                <div className="rounded-xl border px-5 py-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">
+                        {kb.splitter_type === "recursive" ? "递归分割" : "父子分段"}
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded-md">
+                        <Lock size={9} />
+                        已锁定
+                      </span>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {kb.splitter_type === "recursive" ? "通用场景，按分隔符递归切分" : "保留大段上下文，子块用于检索"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-6 text-xs text-muted-foreground">
+                    <span>分块大小：<span className="font-medium text-foreground">{kb.chunk_size} tokens</span></span>
+                    <span>重叠：<span className="font-medium text-foreground">{kb.chunk_overlap} tokens</span></span>
+                  </div>
+                  {kb.separators && kb.separators.length > 0 && (
+                    <div className="flex items-center gap-2 flex-wrap text-xs">
+                      <span className="text-muted-foreground">分隔符：</span>
+                      {kb.separators.map((sep) => (
+                        <span key={sep} className="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground border">
+                          {sep === " " ? "空格" : sep.replace(/\n/g, "\\n").replace(/\r/g, "\\r")}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* ── 检索设置 ── */}
+            <section>
+              <h2 className="text-sm font-semibold mb-1">检索设置</h2>
+              <p className="text-xs text-muted-foreground mb-5">配置此知识库的检索方式，影响对话时的召回行为</p>
 
             {!kb ? (
               <Skeleton className="h-[300px] rounded-xl" />
@@ -457,16 +579,34 @@ export default function KnowledgeDetailPage() {
               </div>
             )}
 
-            <Button onClick={handleSaveRetrieval} disabled={saving || !kb} className="w-full">
-              <Save size={14} className="mr-1.5" />
-              {saving ? "保存中…" : saveOk ? "已保存 ✓" : "保存设置"}
-            </Button>
+              <Button onClick={handleSaveRetrieval} disabled={saving || !kb} className="w-full">
+                <Save size={14} className="mr-1.5" />
+                {saving ? "保存中…" : saveOk ? "已保存 ✓" : "保存设置"}
+              </Button>
+            </section>
+
+            {/* ── 危险区 ── */}
+            <section>
+              <h2 className="text-sm font-semibold mb-1 text-destructive">危险区域</h2>
+              <p className="text-xs text-muted-foreground mb-5">以下操作不可撤销，请谨慎操作</p>
+              <div className="rounded-xl border border-destructive/30 px-5 py-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">删除知识库</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">删除此知识库及其所有文档和向量数据</p>
+                </div>
+                <Button variant="destructive" size="sm" onClick={() => setShowDeleteKB(true)}>
+                  <Trash2 size={13} className="mr-1.5" />
+                  删除
+                </Button>
+              </div>
+            </section>
           </div>
         )}
       </div>
     </div>
 
     {/* Delete confirmation */}
+    {/* 删除文档 */}
     <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
       <AlertDialogContent>
         <AlertDialogHeader>
@@ -483,6 +623,28 @@ export default function KnowledgeDetailPage() {
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
             {deleting ? "删除中…" : "确认删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+
+    {/* 删除知识库 */}
+    <AlertDialog open={showDeleteKB} onOpenChange={(o) => !o && setShowDeleteKB(false)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>确定删除知识库？</AlertDialogTitle>
+          <AlertDialogDescription>
+            将永久删除知识库「{kb?.name}」及其所有文档和向量数据，此操作不可撤销。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(e) => { e.preventDefault(); handleDeleteKB(); }}
+            disabled={deletingKB}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {deletingKB ? "删除中…" : "确认删除"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

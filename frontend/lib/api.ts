@@ -161,6 +161,12 @@ export interface KnowledgeBase {
   score_threshold: number;
   hybrid_mode: "weighted" | "rerank";
   vector_weight: number;
+  // 分段模式（首次上传后锁定）
+  splitter_type: "recursive" | "parent_child" | null;
+  chunk_size: number | null;
+  chunk_overlap: number | null;
+  separators: string[] | null;
+  child_separators: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -175,6 +181,13 @@ export async function apiGetKB(id: string): Promise<KnowledgeBase> {
 
 export async function apiCreateKB(name: string, description?: string): Promise<KnowledgeBase> {
   return apiFetch("/kb", { method: "POST", body: JSON.stringify({ name, description }) }).then((r) => r.json());
+}
+
+export async function apiUpdateKB(id: string, name: string, description?: string): Promise<KnowledgeBase> {
+  return apiFetch(`/kb/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name, description: description ?? null }),
+  }).then((r) => r.json());
 }
 
 export async function apiDeleteKB(id: string): Promise<void> {
@@ -208,6 +221,79 @@ export async function apiListDocuments(kbId: string): Promise<KBDocument[]> {
 
 export async function apiDeleteDocument(kbId: string, docId: string): Promise<void> {
   await apiFetch(`/kb/${kbId}/documents/${docId}`, { method: "DELETE" }, { expectJson: false });
+}
+
+export interface ChunkItem {
+  chunk_id: string;
+  chunk_index: number;
+  text: string;
+  content_type: string;
+  section_path: string;
+  extra_meta: Record<string, unknown>;
+}
+
+export interface ChunkListResponse {
+  items: ChunkItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function apiListChunks(
+  kbId: string,
+  docId: string,
+  page = 1,
+  pageSize = 25,
+): Promise<ChunkListResponse> {
+  return apiFetch(`/kb/${kbId}/documents/${docId}/chunks?page=${page}&page_size=${pageSize}`).then((r) => r.json());
+}
+
+export async function apiGetDocMetadata(kbId: string, docId: string): Promise<Record<string, string>> {
+  return apiFetch(`/kb/${kbId}/documents/${docId}/metadata`).then((r) => r.json());
+}
+
+export async function apiUpdateDocMetadata(
+  kbId: string,
+  docId: string,
+  metadata: Record<string, string>,
+): Promise<Record<string, string>> {
+  return apiFetch(`/kb/${kbId}/documents/${docId}/metadata`, {
+    method: "PATCH",
+    body: JSON.stringify(metadata),
+  }).then((r) => r.json());
+}
+
+export interface HitTestingRecord {
+  chunk_id: string;
+  score: number;
+  text: string;
+  source_file: string;
+  section_path: string;
+  content_type: string;
+}
+
+export interface HitTestingResponse {
+  query: string;
+  records: HitTestingRecord[];
+  log_item: HitTestingLogItem;
+}
+
+export async function apiHitTesting(kbId: string, query: string): Promise<HitTestingResponse> {
+  return apiFetch(`/kb/${kbId}/hit-testing`, {
+    method: "POST",
+    body: JSON.stringify({ query }),
+  }).then((r) => r.json());
+}
+
+export interface HitTestingLogItem {
+  id: string;
+  query: string;
+  result_count: number;
+  created_at: string;
+}
+
+export async function apiGetHitTestingHistory(kbId: string): Promise<HitTestingLogItem[]> {
+  return apiFetch(`/kb/${kbId}/hit-testing/history`).then((r) => r.json());
 }
 
 export interface UploadSettings {

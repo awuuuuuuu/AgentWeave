@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeft, Eye, Upload, ChevronRight, X, Plus, Zap, Search, Layers } from "lucide-react";
+import { ArrowLeft, Eye, Upload, ChevronRight, X, Plus, Zap, Search, Layers, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -113,6 +113,16 @@ export default function UploadPage() {
         hybrid_mode: data.hybrid_mode,
         vector_weight: data.vector_weight,
       });
+      // 若已锁定分段模式，预填 KB 存储的参数
+      if (data.splitter_type) {
+        setSettings({
+          splitter_type: data.splitter_type,
+          chunk_size: data.chunk_size ?? DEFAULT_SETTINGS.chunk_size,
+          chunk_overlap: data.chunk_overlap ?? DEFAULT_SETTINGS.chunk_overlap,
+          separators: data.separators ?? DEFAULT_SEPARATORS,
+          child_separators: data.child_separators ?? DEFAULT_CHILD_SEPARATORS,
+        });
+      }
     }).catch(() => null);
   }, []);
 
@@ -209,6 +219,15 @@ export default function UploadPage() {
             <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
               分段设置
             </h3>
+
+            {/* 已锁定时显示提示 */}
+            {kb?.splitter_type && (
+              <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-md bg-muted/60 border text-xs text-muted-foreground">
+                <Lock size={11} className="shrink-0" />
+                分段模式已根据首次上传锁定，可调整参数但不能切换模式
+              </div>
+            )}
+
             <div className="space-y-2">
 
               {/* ── 递归分割卡片 ── */}
@@ -216,13 +235,15 @@ export default function UploadPage() {
                 className={`rounded-lg border-2 transition-all ${
                   settings.splitter_type === "recursive"
                     ? "border-primary"
+                    : kb?.splitter_type
+                    ? "border-border opacity-40"
                     : "border-border cursor-pointer hover:border-primary/50"
                 }`}
               >
-                {/* 卡片头：始终可见，点击切换 */}
+                {/* 卡片头：已锁定时不可点击切换 */}
                 <div
                   className="flex items-start gap-3 px-4 py-3"
-                  onClick={() => setSettings((s) => ({ ...s, splitter_type: "recursive" }))}
+                  onClick={() => !kb?.splitter_type && setSettings((s) => ({ ...s, splitter_type: "recursive" }))}
                 >
                   <div className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
                     settings.splitter_type === "recursive" ? "border-primary" : "border-muted-foreground/40"
@@ -347,12 +368,14 @@ export default function UploadPage() {
                 className={`rounded-lg border-2 transition-all ${
                   settings.splitter_type === "parent_child"
                     ? "border-primary"
+                    : kb?.splitter_type
+                    ? "border-border opacity-40"
                     : "border-border cursor-pointer hover:border-primary/50"
                 }`}
               >
                 <div
                   className="flex items-start gap-3 px-4 py-3"
-                  onClick={() => setSettings((s) => ({ ...s, splitter_type: "parent_child" }))}
+                  onClick={() => !kb?.splitter_type && setSettings((s) => ({ ...s, splitter_type: "parent_child" }))}
                 >
                   <div className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
                     settings.splitter_type === "parent_child" ? "border-primary" : "border-muted-foreground/40"
