@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 
-from dotenv import load_dotenv
 from jose import JWTError, jwt
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+from config import settings
 
-_SECRET_KEY = os.environ["JWT_SECRET_KEY"]
+_SECRET_KEY = settings.jwt_secret_key
 _ALGORITHM = "HS256"
-_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
-_REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+_ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
+_REFRESH_TOKEN_EXPIRE_DAYS = settings.refresh_token_expire_days
 
 
 def create_access_token(user_id: str) -> str:

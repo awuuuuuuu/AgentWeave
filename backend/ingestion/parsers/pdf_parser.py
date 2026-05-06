@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Literal, Union
 
 import fitz # pymupdf
 
+from config import settings
 from .base import BaseParser, ParsedChunk, register_parser
 
 logger = logging.getLogger(__name__)
 
 def _get_api_url() -> str:
-    return os.getenv("UNSTRUCTURED_API_URL", "")
+    return settings.unstructured_api_url
 
 def _get_api_key() -> str:
-    return os.getenv("UNSTRUCTURED_API_KEY", "")
+    return settings.unstructured_api_key
 
 Strategy = Literal["fast", "smart", "hi_res"]
 

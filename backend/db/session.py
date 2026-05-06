@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator
 
-from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+from config import settings
 
-_DATABASE_URL = os.environ["DATABASE_URL"]
+_DATABASE_URL = settings.database_url
 
 engine = create_async_engine(
     _DATABASE_URL,

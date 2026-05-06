@@ -25,10 +25,9 @@ def cleanup_kb(self, kb_id: str, object_keys: list[str]) -> None:
 
     # Step 2：删除 Milvus chunks
     try:
+        from config import settings
         from ingestion.store.milvus_store import MilvusStore, MilvusStoreConfig
-        from rag.settings import RAGChainSettings
-        cfg = RAGChainSettings()
-        store = MilvusStore(MilvusStoreConfig(uri=cfg.milvus_uri))
+        store = MilvusStore(MilvusStoreConfig(uri=settings.milvus_uri))
         store.delete_by_kb(kb_id)
     except Exception as exc:
         logger.exception("Milvus 清理失败 kb=%s", kb_id)

@@ -60,9 +60,9 @@ def seed_data():
 
 @pytest.fixture(scope="module")
 def chain():
+    from config import Settings
     from rag.chain import RAGChain
-    from rag.settings import RAGChainSettings
-    cfg = RAGChainSettings(
+    cfg = Settings(
         use_reranker=False,   # 集成测试不下载 cross-encoder 模型
         llm_model="gpt-4o-mini",
         output_reserve_tokens=500,

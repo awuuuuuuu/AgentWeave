@@ -17,16 +17,16 @@ from .nodes import (
     make_generate_node,
     fallback_node,
 )
-from .settings import RAGChainSettings
+from config import Settings, settings as _default_settings
 from .state import GraphState
 
 
 class RAGChain:
     """RAG Chain: HybridRetriever → ContextBuilder → LLM"""
 
-    def __init__(self, graph: StateGraph, settings: RAGChainSettings) -> None:
+    def __init__(self, graph: StateGraph, cfg: Settings) -> None:
         self._graph = graph.compile()
-        self._settings = settings
+        self._cfg = cfg
 
     # ------------------------------------------------------------------
     # 工厂方法
@@ -37,18 +37,18 @@ class RAGChain:
         cls,
         retriever: HybridRetriever,
         reranker: Reranker | None,
-        settings: RAGChainSettings | None = None,
+        cfg: Settings | None = None,
     ) -> "RAGChain":
         """使用外部已初始化的组件构建 RAGChain，避免重复创建连接。"""
-        cfg = settings or RAGChainSettings()
+        cfg = cfg or _default_settings
         llm = create_llm(model=cfg.llm_model, max_tokens=cfg.output_reserve_tokens)
         graph = cls._build_graph(retriever, reranker, llm, cfg.max_context_tokens)
         return cls(graph, cfg)
 
     @classmethod
-    def from_settings(cls, settings: RAGChainSettings | None = None) -> "RAGChain":
+    def from_settings(cls, cfg: Settings | None = None) -> "RAGChain":
         """独立构建所有组件（测试/脚本用）。生产环境优先用 from_components。"""
-        cfg = settings or RAGChainSettings()
+        cfg = cfg or _default_settings
 
         store_cfg = MilvusStoreConfig(uri=cfg.milvus_uri)
         embedder = OpenAIEmbedder()

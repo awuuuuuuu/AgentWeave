@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-import os
 import tempfile
 
 import boto3
 from botocore.client import Config
-from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+from config import settings
 
-_ENDPOINT = os.environ["MINIO_ENDPOINT"]
-_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
-_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
-_BUCKET = os.environ.get("MINIO_BUCKET", "ragent")
+_ENDPOINT = settings.minio_endpoint
+_ACCESS_KEY = settings.minio_access_key
+_SECRET_KEY = settings.minio_secret_key
+_BUCKET = settings.minio_bucket
 
 def _make_client():
     client = boto3.client(

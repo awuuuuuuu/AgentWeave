@@ -8,12 +8,11 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from celery import Celery
-from dotenv import load_dotenv
 
-load_dotenv(os.path.join(_backend_dir, ".env"))
+from config import settings
 
-_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
-_BACKEND_URL = os.environ.get("CELERY_BACKEND_URL", "redis://localhost:6379/1")
+_BROKER_URL = settings.celery_broker_url
+_BACKEND_URL = settings.celery_backend_url
 
 celery_app = Celery(
     "ragent",

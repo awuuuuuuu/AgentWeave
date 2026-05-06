@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
-from dotenv import load_dotenv
-
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-
+from config import settings
 from tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_DATABASE_URL = os.environ["DATABASE_URL"]
+_DATABASE_URL = settings.database_url
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
 def ingest_document(
@@ -36,7 +32,6 @@ def ingest_document(
     from ingestion.store.milvus_store import MilvusStore, MilvusStoreConfig
     from ingestion.pipeline import IngestionPipeline
     from knowledge.service import update_document_status
-    from rag.settings import RAGChainSettings
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from storage.minio_client import download_to_tempfile
 
@@ -74,9 +69,8 @@ def ingest_document(
                 splitter = RecursiveSplitter(cfg)
 
             # 摄入 pipeline
-            cfg = RAGChainSettings()
             embedder = OpenAIEmbedder()
-            store = MilvusStore(MilvusStoreConfig(uri=cfg.milvus_uri))
+            store = MilvusStore(MilvusStoreConfig(uri=settings.milvus_uri))
             pipeline = IngestionPipeline(embedder=embedder, store=store, splitter=splitter)
             pipeline.run(
                 [local_path],

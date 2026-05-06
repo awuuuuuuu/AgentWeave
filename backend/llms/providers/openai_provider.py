@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
-
 from langchain_openai import ChatOpenAI
+
+from config import settings
 
 def create_llm(
     model: str = "gpt-4o",
@@ -15,12 +15,10 @@ def create_llm(
     """
     创建 ChatOpenAI 实例
     """
-    openai_api_key = os.environ.get("OPENAI_API_KEY") or None
-    openai_base_url = os.environ.get("OPENAI_BASE_URL") or None
     return ChatOpenAI(
         model=model,
-        api_key=openai_api_key,
-        base_url=openai_base_url,
+        api_key=settings.openai_api_key or None,
+        base_url=settings.openai_base_url or None,
         max_tokens=max_tokens,
         temperature=temperature,
         streaming=streaming,
