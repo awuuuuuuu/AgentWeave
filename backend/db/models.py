@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -114,6 +115,55 @@ class Document(Base):
     )
 
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+
+
+class ConversationSession(Base):
+    """对话会话，对应 LangGraph 的一个 thread_id。"""
+
+    __tablename__ = "conversation_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # active / ended（结束后触发摘要异步写入长期记忆）
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # LLM 生成的本次会话摘要（会话结束后异步写入）
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship()
+
+
+class UserProfile(Base):
+    """用户语义记忆：偏好、专业方向、常用知识库等，每用户一条记录。"""
+
+    __tablename__ = "user_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    preferred_language: Mapped[str] = mapped_column(String(16), nullable=False, default="zh")
+    # beginner / intermediate / expert
+    expertise_level: Mapped[str] = mapped_column(String(32), nullable=False, default="intermediate")
+    frequent_topics: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
+    frequent_kb_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
+    # LLM 提取的自由格式偏好 key-value
+    preferences: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+    user: Mapped[User] = relationship()
 
 
 class HitTestingLog(Base):

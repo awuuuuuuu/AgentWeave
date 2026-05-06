@@ -67,6 +67,10 @@ MINIO_SECURE=false
 CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/1
 
+# 工具体系
+TAVILY_API_KEY=tvly-...            # 联网搜索（留空则跳过 WebSearchTool）
+API_TOOL_CACHE_REDIS_URL=redis://localhost:6379/2  # 工具结果缓存（与 Celery 隔离）
+
 # Milvus
 MILVUS_URI=http://localhost:19530
 ```
@@ -97,12 +101,12 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 |------|------|------|
 | 2 | 混合检索 + 重排序（BM25 + 向量 + Reranker） | ✅ 完成 |
 | 3 | RAG Chain + API + 前端基础 | ✅ 完成 |
-| 4 | Auth + 知识库管理 + 文件上传 | 🚧 后端完成 |
-| 5 | 工具体系 | 🔜 |
-| 6 | 记忆模块 | 🔜 |
-| 7 | LangGraph Agent 编排 | 🔜 |
-| 8 | 会话管理 + 多模型路由 | 🔜 |
-| 9 | 前端完整界面 + 对话反馈 | 🔜 |
+| 4 | Auth + 知识库管理 + 文件上传 | ✅ 完成 |
+| 5 | 工具体系（kb_search / web_search / calculator） | ✅ 完成 |
+| 6 | 三层记忆系统 | 🔜 |
+| 7 | Multi-Agent + Agentic RAG + Human-in-the-Loop | 🔜 |
+| 8 | 会话管理 | 🔜 |
+| 9 | UI 完整度 + 对话反馈 | 🔜 |
 | 10 | 可观测性 + 自动化评估 | 🔜 |
 
 ## 技术债 / TODO
@@ -311,6 +315,12 @@ RAGent 的方案：`onScroll` 事件实时计算 `scrollHeight - scrollTop - cli
 
 RAGent 反转执行顺序：`create_document()` 先写入 DB 拿到 `doc_id`，再将 `doc_id` 直接作为参数传入 `ingest_document.delay(doc_id=...)`，Worker 无需反查数据库，从根本上消除竞态。
 
+### 19. ReactMarkdown 自定义渲染器实现内联引用跳转，不引入 rehype-raw（Step 3）
+
+将 `[N]` 文本转为可点击的上标引用按钮，常见做法是用 `rehype-raw` 允许 HTML 字符串注入，但这引入了 XSS 风险，且需要后端输出 HTML。
+
+RAGent 在 ReactMarkdown 的 `components` 中自定义 `p` 和 `li` 的渲染函数，递归遍历 React children，将匹配 `/\[(\d+)\]/g` 的文本节点拆分为普通文本 + `<sup><button>` 引用元素。引用编号和来源存储在组件 state（`activeRef`），点击后高亮 `CitationList` 中对应的引用卡片。全程纯 React 节点操作，无 HTML 字符串注入，无额外依赖。
+
 ### 21. Celery 摄入重试：仅末次失败标 ERROR，重试中保持 PROCESSING（Step 4）
 
 网络抖动或外部 API 临时故障时，朴素实现在每次异常后立即将文档状态写为 ERROR，随后触发 retry。前端轮询到的状态是 ERROR，但任务实际还在重试中，状态语义混乱。
@@ -329,11 +339,21 @@ RAGent 对 `KnowledgeBase` 和 `Document` 使用软删除（`is_deleted=True`）
 
 RAGent 直接 `INSERT`，捕获 SQLAlchemy `IntegrityError` 后 `rollback()` 并转换为 `ValueError`，依赖数据库 UNIQUE 约束作为唯一事实来源，彻底消除竞态。
 
-### 19. ReactMarkdown 自定义渲染器实现内联引用跳转，不引入 rehype-raw（Step 3）
+### 24. 工具 Schema 单一来源：BaseTool.to_function_schema() 统一生成（Step 5）
 
-将 `[N]` 文本转为可点击的上标引用按钮，常见做法是用 `rehype-raw` 允许 HTML 字符串注入，但这引入了 XSS 风险，且需要后端输出 HTML。
+工具参数描述在两个地方都需要用到：① 发给 LLM 的 Function Calling JSON；② `/api/tools/` 调试接口返回的参数文档。朴素实现在两处分别调用 `model_json_schema()` 并各自手动清理字段，后续若清理逻辑变更则需同步两处。
 
-RAGent 在 ReactMarkdown 的 `components` 中自定义 `p` 和 `li` 的渲染函数，递归遍历 React children，将匹配 `/\[(\d+)\]/g` 的文本节点拆分为普通文本 + `<sup><button>` 引用元素。引用编号和来源存储在组件 state（`activeRef`），点击后高亮 `CitationList` 中对应的引用卡片。全程纯 React 节点操作，无 HTML 字符串注入，无额外依赖。
+RAGent 的 `BaseTool.to_function_schema()` 是唯一的 schema 生成入口，API 路由直接取 `["function"]["parameters"]` 节点复用。关键细节：只移除顶层 `title/description`（Pydantic 自动生成，会污染外层结构），**保留 `$defs`**——嵌套模型和 Enum 的 `$ref` 引用依赖它，OpenAI 能正确解析复杂参数结构。
+
+### 25. 工具执行引擎：参数校验 → Redis 缓存 → asyncio 超时三级保护（Step 5）
+
+`ToolExecutor.execute()` 实现了三级保护链：
+
+1. **参数校验**：通过工具自身的 Pydantic args_schema 校验，类型错误立即返回 `ToolResult(is_error=True)`，不到达执行层
+2. **Redis 缓存**：key = `tool:{name}:{sha256(sorted_json(args))[:16]}`，命中直接返回，错误结果不写缓存（避免缓存错误状态）
+3. **asyncio 超时**：`asyncio.wait_for(tool._arun(), timeout=tool.timeout)` 保护，超时返回结构化错误而非抛异常
+
+工具缓存使用 Redis DB=2，与 Celery 的 DB=0（broker）和 DB=1（backend）逻辑隔离，互不干扰。
 
 ---
 
