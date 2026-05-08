@@ -13,7 +13,8 @@ engine = create_async_engine(
     _DATABASE_URL,
     pool_pre_ping=True,
     pool_size=5,
-    max_overflow=10
+    max_overflow=10,
+    connect_args={"ssl": False},
 )
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)

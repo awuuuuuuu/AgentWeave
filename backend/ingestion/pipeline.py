@@ -172,6 +172,10 @@ class IngestionPipeline:
         # 2. Splitter
         split_chunks = self._splitter.split(raw_chunks)
 
+        # 赋全局文档序号，milvus_store 用此字段生成唯一 chunk_id
+        for i, chunk in enumerate(split_chunks):
+            chunk.metadata["chunk_index_in_doc"] = i
+
         # 3. Embedder
         embedded = self._embedder.embed(split_chunks)
 

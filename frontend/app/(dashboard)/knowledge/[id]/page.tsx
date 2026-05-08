@@ -334,13 +334,16 @@ export default function KnowledgeDetailPage() {
                           </TableCell>
                           <TableCell className="text-center" data-no-row-click>
                             <DropdownMenu>
-                              <DropdownMenuTrigger className="p-1 rounded hover:bg-accent transition-colors outline-none">
+                              <DropdownMenuTrigger
+                                className="p-1 rounded hover:bg-accent transition-colors outline-none"
+                                onClick={(e) => e.stopPropagation()}
+                              >
                                 <MoreHorizontal size={15} className="text-muted-foreground" />
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end" className="w-32">
                                 <DropdownMenuItem
                                   className="gap-2 text-destructive focus:text-destructive"
-                                  onClick={() => setDeleteTarget(doc)}
+                                  onClick={(e) => { e.stopPropagation(); setDeleteTarget(doc); }}
                                 >
                                   <Trash2 size={14} />
                                   删除

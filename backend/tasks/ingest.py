@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from config import settings
 from tasks.celery_app import celery_app
@@ -36,7 +37,12 @@ def ingest_document(
     from storage.minio_client import download_to_tempfile
 
     async def _run() -> None:
-        engine = create_async_engine(_DATABASE_URL, pool_pre_ping=True, pool_size=2)
+        engine = create_async_engine(
+            _DATABASE_URL,
+            pool_pre_ping=True,
+            pool_size=2,
+            connect_args={"ssl": False},
+        )
         session = AsyncSession(engine, expire_on_commit=False)
         local_path: str | None = None
 
@@ -103,7 +109,12 @@ def ingest_document(
             # 只有用完所有重试次数才标 ERROR
             async def _mark_error() -> None:
                 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-                engine = create_async_engine(_DATABASE_URL, pool_pre_ping=True, pool_size=1)
+                engine = create_async_engine(
+                    _DATABASE_URL,
+                    pool_pre_ping=True,
+                    pool_size=1,
+                    connect_args={"ssl": False},
+                )
                 session = AsyncSession(engine, expire_on_commit=False)
                 try:
                     await update_document_status(

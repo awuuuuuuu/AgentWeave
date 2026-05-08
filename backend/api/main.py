@@ -18,7 +18,7 @@ from db.session import Base, engine
 import db.models  # noqa: F401  确保所有模型已注册
 from rag.chain import RAGChain
 from ingestion.embedder.openai_embedder import OpenAIEmbedder
-from ingestion.store.milvus_store import MilvusStoreConfig
+from ingestion.store.milvus_store import MilvusStore, MilvusStoreConfig
 from retrieval.hybrid_retriever import HybridRetriever, HybridRetrieverConfig
 from retrieval.reranker import Reranker, RerankerConfig
 from agent.tools.tool_registry import ToolRegistry
@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
     # ── RAG 检索组件 ──────────────────────────────────────────────────────────
     logger.info("Startup: initializing RAG components...")
     store_cfg = MilvusStoreConfig(uri=settings.milvus_uri)
+    app.state.milvus_store = MilvusStore(store_cfg)
     embedder = OpenAIEmbedder()
     app.state.retriever = HybridRetriever(
         embedder=embedder,
@@ -104,6 +105,7 @@ async def lifespan(app: FastAPI):
         long_term=long_term,
         user_profile=user_profile,
     )
+
     logger.info("Startup complete.")
 
     yield

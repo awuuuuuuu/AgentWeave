@@ -257,26 +257,28 @@ class MilvusStore:
         extra_raw = {k : v for k, v in metadata.items() if k not in _TOP_LEVEL_META_KEYS}
         extra_json = json.loads(json.dumps(extra_raw, default=str))
 
+        chunk_index = int(metadata.get("chunk_index_in_doc", 0))
         return {
-            _F_CHUNK_ID:     _make_chunk_id(knowledge_base_id, source_file, ec.chunk.text),
+            _F_CHUNK_ID:     _make_chunk_id(knowledge_base_id, source_file, ec.chunk.text, chunk_index),
             _F_KB_ID:        _truncate_bytes(knowledge_base_id, _KB_ID_MAX_BYTES),
             _F_DOC_ID:       _truncate_bytes(document_id, 64),
             _F_SOURCE_FILE:  _truncate_bytes(source_file, _VARCHAR_MAX_BYTES),
             _F_CONTENT_TYPE: _truncate_bytes(content_type, 128),
             _F_SECTION_PATH: _truncate_bytes(section_path, _SECTION_MAX_BYTES),
             _F_EMBED_MODEL:  _truncate_bytes(ec.embed_model, 128),
-            _F_CHUNK_INDEX:  int(metadata.get("chunk_index_in_doc", 0)),
+            _F_CHUNK_INDEX:  chunk_index,
             _F_TEXT:         _truncate_bytes(ec.chunk.text, _TEXT_MAX_BYTES),
             _F_EXTRA_META:   extra_json,
             _F_VECTOR:       ec.embedding,
             # sparse_vector 由 Milvus BM25 Function 从 text 字段自动生成，无需手动传入
         }
 
-def _make_chunk_id(knowledge_base_id: str, source_file: str, text: str) -> str:
+def _make_chunk_id(knowledge_base_id: str, source_file: str, text: str, chunk_index: int) -> str:
     """
-    chunk_id：SHA256(kb_id + source_file + text) 前 32 个十六进制字符。
+    chunk_id：SHA256(kb_id + source_file + chunk_index + text) 前 32 个十六进制字符。
+    chunk_index 防止同文档内重复文本产生哈希碰撞。
     """
-    payload = f"{knowledge_base_id}\x00{source_file}\x00{text}"
+    payload = f"{knowledge_base_id}\x00{source_file}\x00{chunk_index}\x00{text}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 def _truncate_bytes(text: str, max_bytes: int) -> str:

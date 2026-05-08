@@ -348,7 +348,7 @@ async def list_chunks(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
-    store = request.app.state.retriever._vector._store
+    store = request.app.state.milvus_store
     offset = (page - 1) * page_size
     rows, total = store.list_by_document(kb_id, doc_id, offset=offset, limit=page_size)
 
