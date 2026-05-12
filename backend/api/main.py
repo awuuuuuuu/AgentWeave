@@ -14,6 +14,7 @@ from api.routes.auth import router as auth_router
 from api.routes.chat import router as chat_router
 from api.routes.knowledge import router as kb_router
 from api.routes.tools import router as tools_router
+from api.routes.agent import router as agent_router
 from db.session import Base, engine
 import db.models  # noqa: F401  确保所有模型已注册
 from rag.chain import RAGChain
@@ -28,6 +29,7 @@ from agent.memory.short_term import ShortTermMemory
 from agent.memory.long_term import LongTermMemory
 from agent.memory.user_profile import UserProfileManager
 from agent.memory.memory_manager import MemoryManager
+from agent.graph.agent_graph import build_agent_graph
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +108,14 @@ async def lifespan(app: FastAPI):
         user_profile=user_profile,
     )
 
+    # ── Agent 主图 ────────────────────────────────────────────────────────────
+    logger.info("Startup: initializing agent graph...")
+    app.state.agent_graph = build_agent_graph(
+        retriever=app.state.retriever,
+        reranker=app.state.reranker,
+        llm_model=settings.llm_model,
+        critic_llm_model=settings.memory_llm_model,
+    )
     logger.info("Startup complete.")
 
     yield
@@ -131,6 +141,7 @@ app.include_router(auth_router)
 app.include_router(kb_router)
 app.include_router(chat_router)
 app.include_router(tools_router)
+app.include_router(agent_router)
 
 
 @app.get("/health")
