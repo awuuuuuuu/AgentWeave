@@ -73,25 +73,64 @@ class HybridRetriever(BaseRetriever):
     async def aretrieve_by_mode(
         self,
         query: str,
-        knowledge_base_id: str,
-        mode: str,
-        top_k: int,
+        knowledge_base_id: str | None = None,
+        kb_ids: list[str] | None = None,
+        mode: str = "hybrid",
+        top_k: int = 5,
         hybrid_mode: str = "weighted",
         vector_weight: float = 0.7,
     ) -> list[RetrievedChunk]:
-        """按 KB 检索模式分发到对应子检索器，返回候选集 (注意：未 rerank,未裁剪到 top_k)"""
-        if mode == "vector":
-            chunks = await self._vector.aretrieve(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k)
-            for c in chunks:
-                c.fusion_score = c.vector_score
-        elif mode == "fulltext":
-            chunks = await self._bm25.aretrieve(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k)
-            for c in chunks:
-                c.fusion_score = c.bm25_score
-        else:
-            alpha = vector_weight if hybrid_mode == "weighted" else 0.5
-            chunks = await self.aretrieve(query=query, knowledge_base_id=knowledge_base_id, top_k=top_k, alpha=alpha)
-        return chunks
+        """按 KB 检索模式分发到对应子检索器。
+
+        支持单 KB（knowledge_base_id）和多 KB（kb_ids）两种调用方式。
+        多 KB hybrid 模式：各 KB 并发取原始双路分数，合并后做一次全局归一，
+        避免各 KB 局部归一后分数不可比的问题。
+        """
+        ids: list[str] = kb_ids or ([knowledge_base_id] if knowledge_base_id else [])
+        if not ids:
+            return []
+
+        alpha = vector_weight if hybrid_mode == "weighted" else 0.5
+
+        # 单 KB 走原有路径（内部已有 fallback 重试逻辑）
+        if len(ids) == 1:
+            if mode == "vector":
+                chunks = await self._vector.aretrieve(query=query, knowledge_base_id=ids[0], top_k=top_k)
+                for c in chunks:
+                    c.fusion_score = c.vector_score
+                return chunks
+            elif mode == "fulltext":
+                chunks = await self._bm25.aretrieve(query=query, knowledge_base_id=ids[0], top_k=top_k)
+                for c in chunks:
+                    c.fusion_score = c.bm25_score
+                return chunks
+            else:
+                return await self.aretrieve(query=query, knowledge_base_id=ids[0], top_k=top_k, alpha=alpha)
+
+        # 多 KB，非 hybrid：各 KB 独立检索后合并（vector/fulltext 原始分数在同一空间，可直接比较）
+        if mode != "hybrid":
+            async def _retrieve_one_simple(kb_id: str) -> list[RetrievedChunk]:
+                if mode == "vector":
+                    chunks = await self._vector.aretrieve(query=query, knowledge_base_id=kb_id, top_k=top_k)
+                    for c in chunks:
+                        c.fusion_score = c.vector_score
+                else:
+                    chunks = await self._bm25.aretrieve(query=query, knowledge_base_id=kb_id, top_k=top_k)
+                    for c in chunks:
+                        c.fusion_score = c.bm25_score
+                return chunks
+            results = await asyncio.gather(*[_retrieve_one_simple(kb_id) for kb_id in ids])
+            return [c for chunks in results for c in chunks]
+
+        # 多 KB hybrid：各 KB 并发取原始双路分数，合并后全局归一
+        # 不在单 KB 内归一，避免"局部 min-max 后跨库分数不可比"问题
+        fetch_k = top_k * self._cfg.candidate_multiplier
+        raw_pairs = await asyncio.gather(*[
+            self._afuse_raw(query, kb_id, fetch_k) for kb_id in ids
+        ])
+        all_vec = [c for vec, _ in raw_pairs for c in vec]
+        all_bm25 = [c for _, bm25 in raw_pairs for c in bm25]
+        return self._merge_and_score(all_vec, all_bm25, alpha=alpha)
 
     async def aretrieve(
         self,
@@ -134,6 +173,20 @@ class HybridRetriever(BaseRetriever):
         
         return self._merge_and_score(vec_results, bm25_results)
     
+    async def _afuse_raw(
+        self,
+        query: str,
+        knowledge_base_id: str,
+        fetch_k: int,
+        filter_expr: str | None = None,
+    ) -> tuple[list[RetrievedChunk], list[RetrievedChunk]]:
+        """返回原始双路结果（不归一化），供跨 KB 全局归一使用"""
+        vec_results, bm25_results = await asyncio.gather(
+            self._vector.aretrieve(query, knowledge_base_id, fetch_k, filter_expr),
+            self._bm25.aretrieve(query, knowledge_base_id, fetch_k, filter_expr)
+        )
+        return vec_results, bm25_results
+
     async def _afuse(
         self,
         query: str,
@@ -143,11 +196,10 @@ class HybridRetriever(BaseRetriever):
         filter_expr: str | None = None,
         alpha: float | None = None,
     ) -> list[RetrievedChunk]:
-        """异步双路并发融合，用 asyncio.gather 同时跑 vector + BM25"""
+        """异步双路并发融合，用 asyncio.gather 同时跑 vector + BM25（单 KB）"""
         fetch_k = top_k * multiplier
-        vec_results, bm25_results = await asyncio.gather(
-            self._vector.aretrieve(query, knowledge_base_id, fetch_k, filter_expr),
-            self._bm25.aretrieve(query, knowledge_base_id, fetch_k, filter_expr)
+        vec_results, bm25_results = await self._afuse_raw(
+            query, knowledge_base_id, fetch_k, filter_expr
         )
         return self._merge_and_score(vec_results, bm25_results, alpha=alpha)
 
