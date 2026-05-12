@@ -124,7 +124,7 @@ class OpenAIEmbedder(BaseEmbedder):
         """
         import openai
 
-        lastexc: Exception | None = None
+        last_exc: Exception | None = None
         for attempt in range(self._cfg.max_retries):
             is_last = attempt == self._cfg.max_retries - 1
             try:
