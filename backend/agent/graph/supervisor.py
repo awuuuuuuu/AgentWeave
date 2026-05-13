@@ -57,7 +57,7 @@ def build_supervisor(
     structured_llm = llm.with_structured_output(_RoutingDecision)
 
     async def supervisor_node(state: AgentState) -> dict:
-        messages = state.get("messgaes", [])
+        messages = state.get("messages", [])
         supervisor_count = state.get("supervisor_count", 0) + 1
 
         if supervisor_count > MAX_SUPERVISOR_LOOPS:
@@ -69,11 +69,17 @@ def build_supervisor(
                 "task": "已达最大处理轮次, 输出当前最佳结果",
                 "supervisor_count": supervisor_count,
             }
-        
+
         recent = messages[-SUPERVISOR_CONTEXT_WINDOW:]
 
+        # 有记忆上下文时追加到 system prompt
+        memory_context = state.get("memory_context", "")
+        effective_system = (
+            f"{system_prompt}\n\n{memory_context}" if memory_context else system_prompt
+        )
+
         decision: _RoutingDecision = await structured_llm.ainvoke(
-            [SystemMessage(content=system_prompt), *recent]
+            [SystemMessage(content=effective_system), *recent]
         )
 
         logger.info(
@@ -83,17 +89,17 @@ def build_supervisor(
         )
 
         result: dict[str, Any] = {
-            "nect_agent": decision.next,
+            "next_agent": decision.next,
             "task": decision.task,
-            "supervisor_count": supervisor_count
+            "supervisor_count": supervisor_count,
         }
 
         if decision.next == "hitl":
             result["pending_approval"] = {
                 "description": decision.task,
-                "tool_name": "human_approval_required"
+                "tool_name": "human_approval_required",
             }
-        
+
         return result
     
     return supervisor_node

@@ -25,7 +25,7 @@ class AgentState(TypedDict):
     """Supervisor 主图状态 (所有节点共享) """
 
     # 消息历史
-    messgaes: Annotated[list[BaseMessage], add_messages]
+    messages: Annotated[list[BaseMessage], add_messages]
 
     # 对话元数据
     user_id: str
@@ -34,7 +34,10 @@ class AgentState(TypedDict):
 
     # Supervisor 路由控制
     next_agent: str             # "researcher" | "analyst" | "hitl" | "__end__"
-    task: str                   # Supervisor 给当前 worker 的任务描述 (自然语言) 
+    task: str                   # Supervisor 给当前 worker 的任务描述 (自然语言)
+
+    # 记忆注入（memory_inject 写入，Supervisor 读取用于路由决策）
+    memory_context: str
 
     # 循环控制计数器
     critic_count: int           # Critic 已重试次数
@@ -43,7 +46,7 @@ class AgentState(TypedDict):
     # Human-in-the-Loop:待审批的高风险工具调用
     pending_approval: dict[str, Any] | None
 
-    # RAG 引用 (由 Researcher 填入, 最终输出携带) 
+    # RAG 引用 (由 Researcher 填入, 最终输出携带)
     citations: list[dict]
 
 

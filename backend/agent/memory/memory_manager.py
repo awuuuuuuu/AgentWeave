@@ -100,20 +100,19 @@ class MemoryManager:
         db: AsyncSession,
     ) -> None:
         """
-        会话结束后调用（Celery 任务 / 异步后台任务）：
-
-        1. ShortTermMemory 压缩 → 生成摘要文本
+        会话结束后调用：
+        1. 从 AsyncPostgresSaver 读真实消息 → LLM 压缩 → 更新 checkpoint
         2. 将摘要写入 LongTermMemory（Milvus）
-        3. 从当前消息提取用户偏好并更新 UserProfile
+        3. 从消息提取用户偏好并更新 UserProfile
         """
-        logger.info("记忆管理器: 会话结束处理触发 session=%s user=%s", session_id, user_id)
+        logger.info("记忆管理器: 会话结束处理 session=%s user=%s", session_id, user_id)
 
-        # 1. 短期记忆 → 摘要
+        # 1. 压缩 checkpoint（读真实消息 → 生成摘要 → 写回）
         summary: str | None = None
         try:
-            summary = await self._short.compress(session_id)
+            summary = await self._short.compress(session_id, user_id)
         except Exception:
-            logger.exception("记忆管理器: 短期记忆压缩失败 session=%s", session_id)
+            logger.exception("记忆管理器: checkpoint 压缩失败 session=%s", session_id)
 
         # 2. 情景记忆存储
         if summary:
@@ -126,9 +125,9 @@ class MemoryManager:
             except Exception:
                 logger.exception("记忆管理器: 情景记忆持久化失败 session=%s", session_id)
 
-        # 3. 用户画像提取
+        # 3. 用户画像提取（读真实消息）
         try:
-            messages = self._short.get_messages(session_id)
+            messages = await self._short.aget_messages(session_id, user_id)
             if messages:
                 await self._profile.extract_and_update(
                     user_id=user_id,
@@ -138,10 +137,10 @@ class MemoryManager:
         except Exception:
             logger.exception("记忆管理器: 用户画像提取失败 session=%s", session_id)
 
-    def get_thread_config(self, session_id: str) -> dict[str, Any]:
-        """LangGraph config dict，供 Agent Graph 调用"""
-        return self._short.get_thread_config(session_id)
+    def get_thread_config(self, session_id: str, user_id: str = "") -> dict[str, Any]:
+        """LangGraph config dict，格式与 agent.py._make_config 对齐"""
+        return self._short.get_thread_config(session_id, user_id)
 
-    def needs_compression(self, session_id: str) -> bool:
-        """判断当前会话是否超过压缩阈值（供实时压缩触发使用）"""
-        return self._short.needs_compression(session_id)
+    async def aneeds_compression(self, session_id: str, user_id: str = "") -> bool:
+        """判断当前会话是否超过压缩阈值"""
+        return await self._short.aneeds_compression(session_id, user_id)
