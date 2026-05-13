@@ -68,8 +68,16 @@ CELERY_BROKER_URL=redis://localhost:6379/0
 CELERY_RESULT_BACKEND=redis://localhost:6379/1
 
 # 工具体系
-TAVILY_API_KEY=tvly-...            # 联网搜索（留空则跳过 WebSearchTool）
-API_TOOL_CACHE_REDIS_URL=redis://localhost:6379/2  # 工具结果缓存（与 Celery 隔离）
+TAVILY_API_KEY=tvly-...                    # 联网搜索（留空则跳过 WebSearchTool）
+TOOL_CACHE_REDIS_URL=redis://localhost:6379/2  # 工具结果缓存（与 Celery 隔离）
+
+# 记忆系统
+MEMORY_REDIS_URL=redis://localhost:6379/3  # 用户画像缓存（留空则复用 tool cache）
+
+# Agent 图持久化（HITL interrupt/resume 跨重启持久化）
+# 与主数据库共用同一 PostgreSQL 实例，LangGraph 自动建表（幂等）
+# DATABASE_URL 已包含连接信息，无需额外配置
+MEMORY_LLM_MODEL=gpt-4o-mini              # 摘要压缩 / 画像提取使用的 LLM
 
 # Milvus
 MILVUS_URI=http://localhost:19530
@@ -103,11 +111,11 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 | 3 | RAG Chain + API + 前端基础 | ✅ 完成 |
 | 4 | Auth + 知识库管理 + 文件上传 | ✅ 完成 |
 | 5 | 工具体系（kb_search / web_search / calculator） | ✅ 完成 |
-| 6 | 三层记忆系统 | 🔜 |
-| 7 | Multi-Agent + Agentic RAG + Human-in-the-Loop | 🔜 |
-| 8 | 会话管理 | 🔜 |
-| 9 | UI 完整度 + 对话反馈 | 🔜 |
-| 10 | 可观测性 + 自动化评估 | 🔜 |
+| 6 | 三层记忆系统（短期 / 长期语义 / 用户画像） | ✅ 完成 |
+| 7 | Multi-Agent + Agentic RAG + Human-in-the-Loop | 🚧 后端完成，前端进行中 |
+| 8 | 私聊模式 + 会话管理 | 🔜 |
+| 9 | AgentRegistry + 动态 Agent 加入（A2A 协议） | 🔜 |
+| 10 | LangSmith 全链路追踪 + 自动评估 | 🔜 |
 
 ## 技术债 / TODO
 
@@ -354,6 +362,43 @@ RAGent 的 `BaseTool.to_function_schema()` 是唯一的 schema 生成入口，AP
 3. **asyncio 超时**：`asyncio.wait_for(tool._arun(), timeout=tool.timeout)` 保护，超时返回结构化错误而非抛异常
 
 工具缓存使用 Redis DB=2，与 Celery 的 DB=0（broker）和 DB=1（backend）逻辑隔离，互不干扰。
+
+### 26. 统一全局配置：单文件 Settings 替代分散的 os.environ（Step 6）
+
+原先各模块分别 `os.getenv()` 或各自实例化 `RAGChainSettings` / `APISettings`，导致两个问题：① `load_dotenv()` 必须在 import 前调用，调用顺序脆弱；② 同一个 key（如 `MILVUS_URI`）在多处硬编码，改名时容易遗漏。
+
+`backend/config.py` 将全部配置合并为单个 `Settings(BaseSettings)` 类，模块级 `settings = Settings()` 作为全局单例，`load_dotenv()` 在 import 时调用（优先于 `Settings` 实例化）。`AliasChoices` 兼容旧 `RAG_*` / `API_*` 前缀，存量 `.env` 无需改动即可直接升级。
+
+### 27. 三层记忆分离：InMemorySaver / Milvus / PostgreSQL+Redis 各司其职（Step 6）
+
+| 层 | 存什么 | 技术 | 读写时机 |
+|---|--------|------|---------|
+| 短期（Working） | 当前会话消息 | LangGraph InMemorySaver | 实时读写 |
+| 长期（Episodic） | 历史对话摘要向量 | Milvus `memory_summaries` | 会话结束后异步写，新对话开始时语义检索读 |
+| 语义（Semantic） | 用户偏好 / 常用话题 | PostgreSQL + Redis 缓存 | 会话结束后异步提取，对话开始时读取注入 |
+
+三层职责清晰：短期记忆做快速消息存取，长期记忆做跨会话语义索引，用户画像做个性化上下文注入。MemoryManager 统一协调，对 Agent 暴露两个接口：`build_context()`（对话开始）和 `on_session_end()`（对话结束）。
+
+### 28. 摘要压缩 + 原地裁剪：InMemorySaver checkpoint 直接改写（Step 6）
+
+会话消息超过 20 条时，`ShortTermMemory.compress()` 完成两件事：① 调用 LLM 生成 150–300 字摘要（返回给调用方写入 LongTermMemory）；② 将 InMemorySaver 中的旧消息**原地替换**为 `[SystemMessage("[历史摘要] …")] + 最近 6 条`，防止上下文无限膨胀。
+
+直接修改 checkpoint 绕过了 LangGraph 的正常 put 路径，存在版本兼容风险，但避免了重建整个 graph 状态的开销。`WeakValueDictionary[str, asyncio.Lock]` 保证同一会话的并发 compress 调用串行执行，Lock 在会话不再被引用时自动回收，无需手动清理。
+
+### 29. Recency Bias + 分数过滤：历史记忆按时间升序注入（Step 6）
+
+LongTermMemory 语义检索后，对结果做两道后处理：
+
+1. **分数过滤**（默认阈值 0.5）：过滤掉余弦相似度低的结果，防止低相关记忆污染上下文
+2. **时间升序排列**：按 `created_at` 从旧到新排序后注入 system prompt，利用 LLM 对上下文尾部的 **Recency Bias**——最近的记忆距当前问题最近，LLM 更容易优先参考
+
+Milvus query 不保证按时间排序，排序在 Python 侧完成（结果集通常 ≤ 5 条，Python 排序开销可忽略）。超出配额（100 条/用户）时通过完整拉取 + Python 排序确定淘汰目标，删除最旧的超额部分。
+
+### 30. with_structured_output 替代手动 JSON 解析：LLM 结构化提取用户画像（Step 6）
+
+`UserProfileManager.extract_and_update()` 需要从对话文本中提取结构化的用户偏好（语言、专业水平、话题等）。朴素实现在 prompt 中要求 LLM 输出 JSON，再手动 `json.loads()` + markdown 代码块剥离，脆弱且难以测试。
+
+RAGent 用 `ChatOpenAI.with_structured_output(_ExtractedProfile)` 直接获得 Pydantic 对象，所有字段均为 `Optional`（无法判断时返回 `None`，不猜测），再用 `model_dump(exclude_none=True)` 提取有效字段做 upsert。`preferences` 字段做 dict merge（不整体覆盖），`frequent_topics` 去重追加保留最近 20 个，保证画像随使用持续积累而非被覆盖。
 
 ---
 

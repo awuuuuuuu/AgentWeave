@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 
 import logging
 
+from langgraph_checkpoint_postgres import AsyncPostgresSaver
+
 # config.py 在模块级调用 load_dotenv，此处无需重复
 from config import settings
 
@@ -84,9 +86,8 @@ async def lifespan(app: FastAPI):
     app.state.tool_executor = ToolExecutor(registry=registry, redis_client=redis_client)
     logger.info("Startup: tools ready: %s", [t.name for t in registry.list_tools()])
 
-    # ── 记忆系统 ──────────────────────────────────────────────────────────────
-    logger.info("Startup: initializing memory system...")
-    short_term = ShortTermMemory(llm_model=settings.memory_llm_model)
+    # ── 记忆系统 + Agent 主图（共享 AsyncPostgresSaver）─────────────────────────
+    logger.info("Startup: initializing memory system + agent graph...")
     long_term = LongTermMemory(milvus_uri=settings.milvus_uri)
     long_term.set_embedder(embedder)
 
@@ -96,35 +97,45 @@ async def lifespan(app: FastAPI):
         memory_redis = aioredis.from_url(settings.memory_redis_url, decode_responses=True)
         logger.info("Startup: memory profile cache Redis connected")
     elif redis_client is not None:
-        memory_redis = redis_client  # 复用 tool_cache redis（不同 key namespace 隔离）
+        memory_redis = redis_client
 
     user_profile = UserProfileManager(
         llm_model=settings.memory_llm_model,
         redis_client=memory_redis,
     )
-    app.state.memory_manager = MemoryManager(
-        short_term=short_term,
-        long_term=long_term,
-        user_profile=user_profile,
-    )
 
-    # ── Agent 主图 ────────────────────────────────────────────────────────────
-    logger.info("Startup: initializing agent graph...")
-    app.state.agent_graph = build_agent_graph(
-        retriever=app.state.retriever,
-        reranker=app.state.reranker,
-        llm_model=settings.llm_model,
-        critic_llm_model=settings.memory_llm_model,
-    )
-    logger.info("Startup complete.")
+    pg_url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+    async with AsyncPostgresSaver.from_conn_string(pg_url) as checkpointer:
+        await checkpointer.setup()  # 建 checkpoint 表（幂等）
 
-    yield
+        # ShortTermMemory 与图共享同一 checkpointer，thread_id 格式对齐
+        short_term = ShortTermMemory(
+            checkpointer=checkpointer,
+            llm_model=settings.memory_llm_model,
+        )
+        app.state.memory_manager = MemoryManager(
+            short_term=short_term,
+            long_term=long_term,
+            user_profile=user_profile,
+        )
 
-    logger.info("Shutdown: releasing resources...")
-    if redis_client is not None:
-        await redis_client.aclose()
-    if memory_redis is not None and memory_redis is not redis_client:
-        await memory_redis.aclose()
+        app.state.agent_graph = build_agent_graph(
+            retriever=app.state.retriever,
+            reranker=app.state.reranker,
+            checkpointer=checkpointer,
+            memory_manager=app.state.memory_manager,
+            llm_model=settings.llm_model,
+            critic_llm_model=settings.memory_llm_model,
+        )
+        logger.info("Startup complete.")
+
+        yield
+
+        logger.info("Shutdown: releasing resources...")
+        if redis_client is not None:
+            await redis_client.aclose()
+        if memory_redis is not None and memory_redis is not redis_client:
+            await memory_redis.aclose()
 
 
 app = FastAPI(title="RAGent API", version="0.1.0", lifespan=lifespan)

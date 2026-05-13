@@ -1,14 +1,19 @@
 """
 Agent 主图工厂
 
-组装 Supervisor + Researcher + Analyst + Critic + HITL 为完整 LangGraph。
+组装 Supervisor + Researcher + Analyst + Critic + HITL + Memory 为完整 LangGraph。
+
+拓扑：
+    memory_inject → supervisor ──→ researcher ──┐
+                               ──→ analyst    ──┤──→ supervisor ──→ critic ──→ memory_save → END
+                               ──→ hitl       ──┘               ↑─────────┘（打回重做）
+                               ──→ critic（任务完成时）
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 
 from .analyst import AGENT_CARD as ANALYST_CARD
@@ -17,6 +22,7 @@ from .critic import AGENT_CARD as CRITIC_CARD
 from .critic import build_critic
 from .hitl import AGENT_CARD as HITL_CARD
 from .hitl import build_hitl
+from .memory_nodes import build_memory_nodes
 from .researcher import AGENT_CARD as RESEARCHER_CARD
 from .researcher import build_researcher
 from .state import AgentState
@@ -26,15 +32,17 @@ from .supervisor import build_supervisor
 _WORKER_CARDS: list[dict] = [RESEARCHER_CARD, ANALYST_CARD, HITL_CARD, CRITIC_CARD]
 
 # 仅参与 Supervisor 路由的 card
-# 注意：Critic 由图结构底层拦截调用，不暴露给 Supervisor
+# 注意：Critic 由图结构底层固定调用，不暴露给 Supervisor
 _ROUTABLE_CARDS: list[dict] = [RESEARCHER_CARD, ANALYST_CARD, HITL_CARD]
 
 logger = logging.getLogger(__name__)
 
+
 def build_agent_graph(
     retriever: Any,
     reranker: Any | None,
-    checkpointer: Any | None = None,
+    checkpointer: Any,
+    memory_manager: Any | None = None,
     llm_model: str = "gpt-4o"
 ) -> Any:
     """
@@ -44,16 +52,10 @@ def build_agent_graph(
     ----
     retriever        HybridRetriever 实例（来自 app.state）
     reranker         Reranker 实例，可为 None
-    checkpointer     LangGraph checkpointer；None 则自动创建 InMemorySaver
+    checkpointer     LangGraph checkpointer（必填，由 lifespan 传入 AsyncPostgresSaver）
+    memory_manager   MemoryManager 实例；None 时跳过记忆节点（退化为无记忆模式）
     llm_model        Supervisor / Researcher / Analyst 使用的主模型
     """
-    if checkpointer is None:
-        checkpointer = InMemorySaver()
-        logger.info(
-            "AgentGraph: 使用 InMemorySaver（HITL 状态不跨 server 重启持久化，"
-            "生产环境请换用 AsyncPostgresSaver）"
-        )
-
     # ── 构建各节点 / 子图 ─────────────────────────────────────────────────────
     supervisor_fn = build_supervisor(llm_model=llm_model, agent_cards=_ROUTABLE_CARDS)
     researcher_sg = build_researcher(
@@ -65,23 +67,30 @@ def build_agent_graph(
     critic_fn = build_critic(llm_model=llm_model)
     hitl_fn = build_hitl()
 
+    memory_inject_fn, memory_save_fn = (
+        build_memory_nodes(memory_manager)
+        if memory_manager else (None, None)
+    )
+
     # ── 路由函数 ──────────────────────────────────────────────────────────────
 
     def route_from_supervisor(state: AgentState) -> str:
         """Supervisor 完成后，根据 next_agent 决定走向"""
         next_agent = state.get("next_agent", "__end__")
-        # __end__ 表示 Supervisor 认为任务完成，先过 Critic 审核
         if next_agent == "__end__":
             return "critic"
         return next_agent
 
     def route_from_critic(state: AgentState) -> str:
-        """Critic 评审后：通过 → END，打回 → supervisor"""
-        return state.get("next_agent", "__end__")
-    
+        """Critic 评审后：通过 → memory_save（或 END），打回 → supervisor"""
+        result = state.get("next_agent", "__end__")
+        if result == "__end__":
+            return "memory_save" if memory_save_fn else "__end__"
+        return result
+
     def route_from_hitl(state: AgentState) -> str:
         return "__end__" if state.get("next_agent") == "__end__" else "supervisor"
-    
+
     # ── 构建主图 ──────────────────────────────────────────────────────────────
     graph = StateGraph(AgentState)
 
@@ -91,7 +100,13 @@ def build_agent_graph(
     graph.add_node("hitl", hitl_fn)
     graph.add_node("critic", critic_fn)
 
-    graph.set_entry_point("supervisor")
+    if memory_inject_fn and memory_save_fn:
+        graph.add_node("memory_inject", memory_inject_fn)
+        graph.add_node("memory_save", memory_save_fn)
+        graph.set_entry_point("memory_inject")
+        graph.add_edge("memory_inject", "supervisor")
+    else:
+        graph.set_entry_point("supervisor")
 
     # Supervisor 出边
     graph.add_conditional_edges(
@@ -101,11 +116,11 @@ def build_agent_graph(
             "researcher": "researcher",
             "analyst": "analyst",
             "hitl": "hitl",
-            "critic": "critic",      # 任务完成，送 Critic 审核
+            "critic": "critic",
         },
     )
 
-    # Workers 完成后回到 Supervisor（让 Supervisor 决定下一步）
+    # Workers 完成后回到 Supervisor
     graph.add_edge("researcher", "supervisor")
     graph.add_edge("analyst", "supervisor")
 
@@ -115,18 +130,21 @@ def build_agent_graph(
         {"supervisor": "supervisor", "__end__": END},
     )
 
-    # Critic 出边
-    graph.add_conditional_edges(
-        "critic",
-        route_from_critic,
-        {
-            "supervisor": "supervisor",   # 打回重做
-            "__end__": END,               # 通过，结束
-        },
-    )
+    # Critic 出边：通过 → memory_save → END；打回 → supervisor
+    critic_targets: dict[str, Any] = {"supervisor": "supervisor"}
+    if memory_save_fn:
+        critic_targets["memory_save"] = "memory_save"
+        graph.add_edge("memory_save", END)
+    else:
+        critic_targets["__end__"] = END
+
+    graph.add_conditional_edges("critic", route_from_critic, critic_targets)
 
     compiled = graph.compile(checkpointer=checkpointer)
-    logger.info("AgentGraph: 编译完成")
+    logger.info(
+        "AgentGraph: 编译完成 (记忆节点=%s)",
+        "启用" if memory_inject_fn else "禁用",
+    )
     return compiled
 
 

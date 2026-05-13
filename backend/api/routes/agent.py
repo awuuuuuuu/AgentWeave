@@ -103,6 +103,7 @@ async def agent_stream(
         "kb_ids": req.kb_ids,
         "next_agent": "",
         "task": "",
+        "memory_context": "",
         "critic_count": 0,
         "supervisor_count": 0,
         "pending_approval": None,
@@ -126,7 +127,7 @@ async def agent_stream(
 
                 # ── 节点开始 ────────────────────────────────────────────────
                 if ev_type == "on_chain_start" and ev_name in (
-                    "supervisor", "researcher", "analyst", "critic", "hitl"
+                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
                 ):
                     yield _sse({"type": "node_start", "node": ev_name, "data": {}})
 
@@ -144,7 +145,7 @@ async def agent_stream(
 
                 # ── 节点结束 ────────────────────────────────────────────────
                 elif ev_type == "on_chain_end" and ev_name in (
-                    "supervisor", "researcher", "analyst", "critic", "hitl"
+                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
                 ):
                     output = ev_data.get("output", {}) or {}
                     citations = output.get("citations", [])
@@ -225,7 +226,7 @@ async def agent_resume(
                 ev_data = event.get("data", {})
 
                 if ev_type == "on_chain_start" and ev_name in (
-                    "supervisor", "researcher", "analyst", "critic", "hitl"
+                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
                 ):
                     yield _sse({"type": "node_start", "node": ev_name, "data": {}})
 
@@ -240,7 +241,7 @@ async def agent_resume(
                         })
 
                 elif ev_type == "on_chain_end" and ev_name in (
-                    "supervisor", "researcher", "analyst", "critic", "hitl"
+                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
                 ):
                     output = ev_data.get("output", {}) or {}
                     citations = output.get("citations", [])
@@ -302,7 +303,7 @@ def _infer_node(event: dict) -> str:
     if not node:
         # 回退：从 tags 中找已知节点名
         tags = event.get("tags", [])
-        known = {"supervisor", "researcher", "analyst", "critic", "hitl"}
+        known = {"memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"}
         for tag in tags:
             if tag in known:
                 return tag
