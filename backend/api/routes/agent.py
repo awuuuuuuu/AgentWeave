@@ -10,9 +10,11 @@ SSE 事件格式
 每条事件均为 `data: <JSON>\n\n`，JSON 结构：
 
     {"type": "node_start",  "node": "supervisor", "data": {}}
-    {"type": "node_end",    "node": "researcher",  "data": {"citations": [...]}}
+    {"type": "node_end",    "node": "researcher",  "data": {"citations": [...], "answer_text": "..."}}
+    {"type": "node_end",    "node": "supervisor",  "data": {"message_to_user": "..."}}
     {"type": "token",       "node": "researcher",  "data": {"content": "..."}}
     {"type": "interrupt",   "node": "hitl",        "data": {"tool_name": "...", "description": "...", "message": "..."}}
+    {"type": "final_answer","data": {"content": "...", "citations": [...]}}
     {"type": "done",        "data": {"citations": [...]}}
     {"type": "error",       "data": {"message": "..."}}
 """
@@ -21,10 +23,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 from pydantic import BaseModel
 
@@ -36,19 +39,22 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
 
 _MAX_QUERY_CHARS = 4000
+_KNOWN_NODES = frozenset(
+    {"memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "reporter", "memory_save"}
+)
 
 
 # ── 请求/响应 Schema ──────────────────────────────────────────────────────────
 
 class AgentChatRequest(BaseModel):
     query: str
-    session_id: str                  # LangGraph thread_id
-    kb_ids: list[str] = []          # 允许检索的知识库列表（空 = 不检索文档）
+    session_id: str
+    kb_ids: list[str] = []
 
 
 class AgentResumeRequest(BaseModel):
     session_id: str
-    decision: str                    # "approve" 或 "reject"
+    decision: str  # HITL: "approve" | "reject"；Critic gate: "retry" | "accept"
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
@@ -58,22 +64,221 @@ def _get_graph(request: Request):
 
 
 def _make_config(session_id: str, user_id: str) -> dict:
-    """LangGraph 线程配置（thread_id 隔离会话状态）"""
     return {
-        "configurable": {
-            "thread_id": f"{user_id}:{session_id}",
-        },
+        "configurable": {"thread_id": f"{user_id}:{session_id}"},
         "recursion_limit": 30,
     }
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _infer_node(event: dict) -> str:
+    """从事件 metadata 推断当前所属节点名"""
+    node = event.get("metadata", {}).get("langgraph_node", "")
+    if not node:
+        for tag in event.get("tags", []):
+            if tag in _KNOWN_NODES:
+                return tag
+    return node or "agent"
+
+
+# ── 共享 SSE 事件解析器（DRY：stream 和 resume 共用） ────────────────────────
+
+async def _process_events(
+    event_source: AsyncGenerator[dict, None],
+    request: Request,
+    session_id: str,
+    graph,
+    config: dict,
+) -> AsyncGenerator[str, None]:
+    """
+    遍历 graph.astream_events() 迭代器，将 LangGraph 内部事件转换为前端 SSE 格式。
+
+    设计原则：
+    - 客户端断开时 return（不 raise），由调用方 finally 输出 [DONE]
+    - CancelledError 向上透传，让 ASGI 层正常取消
+    - 所有业务异常在此捕获并转为 error 事件
+    """
+    try:
+        # 追踪 researcher 最新答案和引用（供 critic 通过后立即发出 final_answer）
+        # 预填充：HITL resume 时 Researcher 不会重跑，需从 checkpoint 恢复
+        _last_answer_text: str = ""
+        _last_citations: list = []
+        _final_answer_sent: bool = False
+
+        initial_state = await graph.aget_state(config)
+        if initial_state and initial_state.values:
+            sv_init = initial_state.values
+            for m in reversed(sv_init.get("messages", [])):
+                if isinstance(m, AIMessage) and m.content:
+                    _last_answer_text = m.content
+                    break
+                elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
+                    _last_answer_text = m["content"]
+                    break
+            _last_citations = sv_init.get("citations", [])
+
+        async for event in event_source:
+            if await request.is_disconnected():
+                logger.info("Agent SSE: 客户端断开 session=%s", session_id)
+                return
+
+            ev_type = event.get("event", "")
+            ev_name = event.get("name", "")
+            ev_data = event.get("data", {})
+
+            # 节点开始
+            if ev_type == "on_chain_start" and ev_name in _KNOWN_NODES:
+                yield _sse({"type": "node_start", "node": ev_name, "data": {}})
+
+            # LLM token 逐字（supervisor/critic 使用 structured_output，跳过原始 JSON token）
+            elif ev_type == "on_chat_model_stream":
+                node = _infer_node(event)
+                if node in ("supervisor", "critic"):
+                    continue
+                chunk = ev_data.get("chunk")
+                if chunk and hasattr(chunk, "content") and chunk.content:
+                    yield _sse({
+                        "type": "token",
+                        "node": node,
+                        "data": {"content": chunk.content},
+                    })
+
+            # 节点结束
+            elif ev_type == "on_chain_end" and ev_name in _KNOWN_NODES:
+                output = ev_data.get("output", {}) or {}
+                data: dict = {}
+                if citations := output.get("citations", []):
+                    data["citations"] = citations
+                # researcher: 无 token 流（ainvoke），从 node_end output 提取答案文本
+                # analyst: 有 token 流，只更新 _last_answer_text 供 final_answer 使用，不发 answer_text（避免覆盖已流式渲染的内容）
+                if ev_name == "researcher":
+                    msgs = output.get("messages", [])
+                    for m in reversed(msgs):
+                        if isinstance(m, AIMessage) and m.content:
+                            data["answer_text"] = m.content
+                            _last_answer_text = m.content
+                            break
+                        elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
+                            data["answer_text"] = m["content"]
+                            _last_answer_text = m["content"]
+                            break
+                    _last_citations = output.get("citations", [])
+                elif ev_name == "analyst":
+                    # 只更新追踪变量，不写 data["answer_text"]
+                    msgs = output.get("messages", [])
+                    for m in reversed(msgs):
+                        if isinstance(m, AIMessage) and m.content:
+                            _last_answer_text = m.content
+                            break
+                        elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
+                            _last_answer_text = m["content"]
+                            break
+                # supervisor 携带路由意图说明；超纲降级（无 workers）时以 message_to_user 作最终答案
+                if ev_name == "supervisor":
+                    if msg := output.get("message_to_user", ""):
+                        data["message_to_user"] = msg
+                    # 超纲降级：supervisor 直接 __end__ 且本轮无 worker 参与
+                    if (
+                        output.get("next_agent") == "__end__"
+                        and not _last_answer_text
+                        and msg
+                        and not _final_answer_sent
+                    ):
+                        yield _sse({"type": "node_end", "node": ev_name, "data": data})
+                        yield _sse({
+                            "type": "final_answer",
+                            "data": {"content": msg, "citations": []},
+                        })
+                        _final_answer_sent = True
+                        continue
+                # reporter 整合完毕 → 更新追踪变量（Reporter 有 token 流，不重复写 answer_text）
+                if ev_name == "reporter":
+                    msgs = output.get("messages", [])
+                    for m in reversed(msgs):
+                        if isinstance(m, AIMessage) and m.content:
+                            _last_answer_text = m.content
+                            break
+                        elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
+                            _last_answer_text = m["content"]
+                            break
+                # critic 评审最终报告：通过时发出 final_answer
+                if ev_name == "critic":
+                    if score := output.get("critic_score"):
+                        data["critic_score"] = score
+                    if feedback := output.get("critic_feedback", ""):
+                        data["critic_feedback"] = feedback
+                    if "critic_approved" in output:
+                        data["critic_approved"] = output["critic_approved"]
+                    if output.get("critic_approved") and _last_answer_text and not _final_answer_sent:
+                        yield _sse({"type": "node_end", "node": ev_name, "data": data})
+                        yield _sse({
+                            "type": "final_answer",
+                            "data": {
+                                "content": _last_answer_text,
+                                "citations": _last_citations,
+                            },
+                        })
+                        _final_answer_sent = True
+                        continue
+                yield _sse({"type": "node_end", "node": ev_name, "data": data})
+
+            # interrupt（HITL 操作审批 或 Critic 质检询问）
+            elif ev_type == "on_chain_stream":
+                chunk_val = ev_data.get("chunk")
+                if isinstance(chunk_val, dict) and chunk_val.get("__interrupt__"):
+                    payload = chunk_val["__interrupt__"][0].value
+                    # Critic gate：中档评分询问用户是否重新生成
+                    if isinstance(payload, dict) and payload.get("type") == "critic_gate":
+                        yield _sse({"type": "critic_gate", "data": payload})
+                    else:
+                        # HITL：高风险操作事前审批
+                        yield _sse({"type": "interrupt", "node": "hitl", "data": payload})
+
+        # 图执行完毕
+        final_state = await graph.aget_state(config)
+        sv = final_state.values if final_state and final_state.values else {}
+        final_citations = sv.get("citations", [])
+
+        if not _final_answer_sent:
+            answer = _last_answer_text
+            cits = _last_citations or final_citations
+
+            if not answer:
+                # HITL resume 场景：本次流中未经过 researcher，从图状态消息中找最后一条 AI 回答
+                for m in reversed(sv.get("messages", [])):
+                    if isinstance(m, AIMessage) and m.content:
+                        answer = m.content
+                        break
+                    elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
+                        answer = m["content"]
+                        break
+
+            if answer:
+                yield _sse({
+                    "type": "final_answer",
+                    "data": {"content": answer, "citations": cits},
+                })
+        yield _sse({"type": "done", "data": {"citations": final_citations}})
+
+    except asyncio.CancelledError:
+        # ASGI 层取消响应时正常退出，不产生 error 事件
+        logger.info("Agent SSE: 任务取消 session=%s", session_id)
+        raise
+    except Exception as exc:
+        logger.exception("Agent SSE: 错误 session=%s", session_id)
+        yield _sse({"type": "error", "data": {"message": str(exc)}})
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
 
 @router.get("/members")
 async def list_members(
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(get_current_user),
 ) -> list[dict]:
-    """返回当前群组的所有 Agent 成员 card（供 AgentRegistry 侧边栏展示）"""
+    """返回群组成员 card（AgentRegistry 侧边栏用）"""
     return get_agent_cards()
 
 
@@ -83,106 +288,53 @@ async def agent_stream(
     request: Request,
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
-    """
-    启动 Agent 对话，SSE 流式返回节点事件。
-
-    每个节点（supervisor / researcher / analyst / critic / hitl）开始和结束
-    时各发送一条事件；LLM token 逐字推送；HITL interrupt 时发送 interrupt 事件。
-    """
+    """启动 Agent 对话，SSE 流式返回节点事件"""
     query = req.query.strip()[:_MAX_QUERY_CHARS]
     if not query:
         raise HTTPException(status_code=400, detail="query 不能为空")
+    logger.info("agent_stream: session=%s kb_ids=%s", req.session_id, req.kb_ids)
 
     graph = _get_graph(request)
     config = _make_config(req.session_id, current_user.id)
 
-    initial_input = {
+    # 检查线程是否已存在：
+    # - 新线程：传入完整初始状态（含 user_id / session_id）
+    # - 已有线程：只追加新消息 + 重置本轮控制字段，保留 checkpoint 中的历史数据
+    existing = await graph.aget_state(config)
+    has_thread = bool(existing and existing.values)
+
+    per_turn_reset = {
         "messages": [HumanMessage(content=query)],
-        "user_id": current_user.id,
-        "session_id": req.session_id,
         "kb_ids": req.kb_ids,
         "next_agent": "",
         "task": "",
         "memory_context": "",
+        "message_to_user": "",
         "critic_count": 0,
         "supervisor_count": 0,
+        "researcher_count": 0,
+        "analyst_count": 0,
+        "critic_score": 0.0,
+        "critic_approved": False,
+        "critic_feedback": "",
         "pending_approval": None,
         "citations": [],
     }
 
+    graph_input = per_turn_reset if has_thread else {
+        **per_turn_reset,
+        "user_id": current_user.id,
+        "session_id": req.session_id,
+    }
+
     async def event_gen():
         try:
-            async for event in graph.astream_events(
-                initial_input, config=config, version="v2"
-            ):
-                if await request.is_disconnected():
-                    logger.warning("Agent SSE: 客户端断开 session=%s", req.session_id)
-                    break
-
-                ev_type = event.get("event", "")
-                ev_name = event.get("name", "")
-                ev_data = event.get("data", {})
-                # namespace 标识事件来源（主图节点名 or 子图）
-                ns: tuple = event.get("metadata", {}).get("langgraph_node", ev_name)
-
-                # ── 节点开始 ────────────────────────────────────────────────
-                if ev_type == "on_chain_start" and ev_name in (
-                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
-                ):
-                    yield _sse({"type": "node_start", "node": ev_name, "data": {}})
-
-                # ── LLM token（逐字） ────────────────────────────────────────
-                elif ev_type == "on_chat_model_stream":
-                    chunk = ev_data.get("chunk")
-                    if chunk and hasattr(chunk, "content") and chunk.content:
-                        # 找出所属节点（从 tags 或 metadata 推断）
-                        node = _infer_node(event)
-                        yield _sse({
-                            "type": "token",
-                            "node": node,
-                            "data": {"content": chunk.content},
-                        })
-
-                # ── 节点结束 ────────────────────────────────────────────────
-                elif ev_type == "on_chain_end" and ev_name in (
-                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
-                ):
-                    output = ev_data.get("output", {}) or {}
-                    citations = output.get("citations", [])
-                    yield _sse({
-                        "type": "node_end",
-                        "node": ev_name,
-                        "data": {"citations": citations} if citations else {},
-                    })
-
-                # ── HITL interrupt ───────────────────────────────────────────
-                elif ev_type == "on_chain_stream":
-                    # interrupt() 触发时 LangGraph 发出特殊 chunk
-                    chunk_val = ev_data.get("chunk")
-                    if (
-                        isinstance(chunk_val, dict)
-                        and chunk_val.get("__interrupt__")
-                    ):
-                        interrupt_payload = chunk_val["__interrupt__"][0].value
-                        yield _sse({
-                            "type": "interrupt",
-                            "node": "hitl",
-                            "data": interrupt_payload,
-                        })
-
-            # ── 图执行完毕：取最终状态发送 done 事件 ──────────────────────
-            final_state = graph.get_state(config)
-            citations = []
-            if final_state and final_state.values:
-                citations = final_state.values.get("citations", [])
-            yield _sse({"type": "done", "data": {"citations": citations}})
-
+            event_source = graph.astream_events(graph_input, config=config, version="v2")
+            async for chunk in _process_events(event_source, request, req.session_id, graph, config):
+                yield chunk
         except asyncio.CancelledError:
-            logger.info("Agent SSE: 请求取消 session=%s", req.session_id)
+            logger.info("Agent stream 生成器取消 session=%s", req.session_id)
             raise
-        except Exception as exc:
-            logger.exception("Agent SSE: 错误 session=%s", req.session_id)
-            yield _sse({"type": "error", "data": {"message": str(exc)}})
         finally:
             yield "data: [DONE]\n\n"
 
@@ -195,73 +347,24 @@ async def agent_resume(
     request: Request,
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
-    """
-    HITL 审批后恢复图执行。
-
-    decision: "approve" 继续执行，"reject" 取消操作。
-    返回与 /agent/stream 相同格式的 SSE 流。
-    """
+    """HITL 审批后恢复图执行（approve / reject）"""
     graph = _get_graph(request)
     config = _make_config(req.session_id, current_user.id)
 
-    # 验证当前图状态确实处于 interrupt
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     if state is None or not state.next:
-        raise HTTPException(
-            status_code=409, detail="当前会话没有待审批的操作"
-        )
+        raise HTTPException(status_code=409, detail="当前会话没有待审批的操作")
 
     resume_command = Command(resume=req.decision)
 
     async def event_gen():
         try:
-            async for event in graph.astream_events(
-                resume_command, config=config, version="v2"
-            ):
-                if await request.is_disconnected():
-                    break
-
-                ev_type = event.get("event", "")
-                ev_name = event.get("name", "")
-                ev_data = event.get("data", {})
-
-                if ev_type == "on_chain_start" and ev_name in (
-                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
-                ):
-                    yield _sse({"type": "node_start", "node": ev_name, "data": {}})
-
-                elif ev_type == "on_chat_model_stream":
-                    chunk = ev_data.get("chunk")
-                    if chunk and hasattr(chunk, "content") and chunk.content:
-                        node = _infer_node(event)
-                        yield _sse({
-                            "type": "token",
-                            "node": node,
-                            "data": {"content": chunk.content},
-                        })
-
-                elif ev_type == "on_chain_end" and ev_name in (
-                    "memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"
-                ):
-                    output = ev_data.get("output", {}) or {}
-                    citations = output.get("citations", [])
-                    yield _sse({
-                        "type": "node_end",
-                        "node": ev_name,
-                        "data": {"citations": citations} if citations else {},
-                    })
-
-            final_state = graph.get_state(config)
-            citations = []
-            if final_state and final_state.values:
-                citations = final_state.values.get("citations", [])
-            yield _sse({"type": "done", "data": {"citations": citations}})
-
+            event_source = graph.astream_events(resume_command, config=config, version="v2")
+            async for chunk in _process_events(event_source, request, req.session_id, graph, config):
+                yield chunk
         except asyncio.CancelledError:
+            logger.info("Agent resume 生成器取消 session=%s", req.session_id)
             raise
-        except Exception as exc:
-            logger.exception("Agent resume 错误 session=%s", req.session_id)
-            yield _sse({"type": "error", "data": {"message": str(exc)}})
         finally:
             yield "data: [DONE]\n\n"
 
@@ -277,34 +380,13 @@ async def get_agent_state(
     """查询指定会话的当前图状态（调试用）"""
     graph = _get_graph(request)
     config = _make_config(session_id, current_user.id)
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     if state is None:
         raise HTTPException(status_code=404, detail="会话不存在或已过期")
     return {
         "session_id": session_id,
         "next": list(state.next),
-        "interrupted": bool(state.next),  # next 非空表示图被 interrupt 暂停
+        "interrupted": bool(state.next),
         "message_count": len(state.values.get("messages", [])),
         "citations": state.values.get("citations", []),
     }
-
-
-# ── 工具函数 ──────────────────────────────────────────────────────────────────
-
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-def _infer_node(event: dict) -> str:
-    """从事件 metadata 推断当前所属节点名"""
-    metadata = event.get("metadata", {})
-    # LangGraph v2 事件在 metadata.langgraph_node 中标注节点名
-    node = metadata.get("langgraph_node", "")
-    if not node:
-        # 回退：从 tags 中找已知节点名
-        tags = event.get("tags", [])
-        known = {"memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "memory_save"}
-        for tag in tags:
-            if tag in known:
-                return tag
-    return node or "agent"
