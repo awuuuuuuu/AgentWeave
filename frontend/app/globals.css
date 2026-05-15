@@ -128,3 +128,16 @@
     @apply font-sans;
   }
 }
+
+/* Agent 群聊动画 */
+@keyframes sidebar-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+@keyframes agent-cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
