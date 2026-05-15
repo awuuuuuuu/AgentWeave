@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -65,6 +66,7 @@ def build_researcher(
         """多知识库并发检索，可选 rerank"""
         query = state["task"]
         kb_ids = state.get("kb_ids") or []
+        logger.info("Researcher.retrieve_docs: query=%r | kb_ids=%s", query[:80], kb_ids)
 
         all_chunks: list[Any] = await retriever.aretrieve_by_mode(
             query=query,
@@ -107,14 +109,38 @@ def build_researcher(
     
     # ── 节点：相关性评估 ──────────────────────────────────────────────────────
 
+    # 评分阈值：fusion/rerank score 高于此值直接视为相关，跳过 LLM 评估
+    _SCORE_SHORTCUT = 0.45
+
     async def grade_docs(state: ResearcherState) -> dict:
-        """LLM 评估检索结果是否足够回答问题"""
+        """评估检索结果是否足够回答问题。
+
+        策略：先用检索分数快速判断（避免 LLM 误判领域术语）；
+        仅当最高分低于阈值时才调 LLM 二次评估。
+        同时将当前 retrieved_docs 更新到 best_retrieved_docs（保留历次最佳召回）。
+        """
         docs = state.get("retrieved_docs") or []
-        task = state["task"]
 
         if not docs:
             return {"docs_relevant": False}
 
+        # 保存当前这批文档为候选最佳（generate_answer 会优先用这批）
+        # 只在本批 best_score 优于之前时更新
+        best_docs = state.get("best_retrieved_docs") or []
+        current_best = max(d.get("score", 0.0) for d in docs)
+        prev_best = max((d.get("score", 0.0) for d in best_docs), default=0.0)
+        update = {"best_retrieved_docs": docs} if current_best >= prev_best else {}
+
+        # 高分直接通过，无需 LLM
+        if current_best >= _SCORE_SHORTCUT:
+            logger.info(
+                "Researcher: 高分召回 (%.3f >= %.2f)，跳过 LLM 评估",
+                current_best, _SCORE_SHORTCUT,
+            )
+            return {"docs_relevant": True, **update}
+
+        # 低分走 LLM 评估
+        task = state["task"]
         doc_preview = "\n\n".join(
             f"[{d['id']}] {d['source']}\n{d['content'][:600]}" for d in docs[:4]
         )
@@ -128,13 +154,13 @@ def build_researcher(
             result = json.loads(resp.content.strip())
             relevant = bool(result.get("relevant", False))
         except (json.JSONDecodeError, AttributeError):
-            relevant = True
+            relevant = True  # 解析失败时保守放行
 
         logger.info(
-            "Researcher: 相关性=%s | rewrite_count=%d/%d",
-            relevant, state.get("rewrite_count", 0), MAX_REWRITES,
+            "Researcher: LLM 评估 relevant=%s (score=%.3f) | rewrite=%d/%d",
+            relevant, current_best, state.get("rewrite_count", 0), MAX_REWRITES,
         )
-        return {"docs_relevant": relevant}
+        return {"docs_relevant": relevant, **update}
     
     # ── 节点：查询重写 ────────────────────────────────────────────────────────
 
@@ -160,7 +186,8 @@ def build_researcher(
 
     async def generate_answer(state: ResearcherState) -> dict:
         """基于检索文档生成最终答案，并构建引用列表"""
-        docs = state.get("retrieved_docs") or []
+        # 优先用最新一批，没有时回退到历史最佳批（防止重写后零召回导致空答案）
+        docs = state.get("retrieved_docs") or state.get("best_retrieved_docs") or []
         task = state["task"]
 
         # 构建上下文块
@@ -172,30 +199,53 @@ def build_researcher(
         else:
             context_block = "<context>（未找到相关文档，请根据通用知识回答）</context>"
 
-        # 取最近一条 HumanMessage 作为用户问题（备用：task）
-        messages = state.get("messages") or []
-        user_msgs = [m for m in messages if isinstance(m, HumanMessage)]
-        user_query = user_msgs[-1].content if user_msgs else task
-
         resp = await llm.ainvoke(
             [
                 SystemMessage(content=RESEARCHER_GENERATE_SYSTEM),
-                HumanMessage(content=f"{context_block}\n\n问题：{user_query}"),
+                HumanMessage(content=f"{context_block}\n\n问题：{task}"),
             ]
         )
         answer = resp.content.strip()
 
+        # 只保留答案中实际引用过的编号，并重新连续编号（[2][5] → [1][2]）
+        # 若 LLM 未添加任何 [N] 标记（如纯表格输出），回退到展示全部检索文档
+
+        # LLM 有时输出全角方括号 【N】，统一规范化为半角 [N] 再处理
+        answer = answer.replace('【', '[').replace('】', ']')
+        used_ids = {int(m) for m in re.findall(r'\[(\d+)\]', answer)}
+        used_docs = [d for d in docs if d["id"] in used_ids] if used_ids else docs
+
+        if used_ids:
+            # 有引用标记：建立旧→新连续编号映射，重写答案
+            ref_remap = {d["id"]: new_i + 1 for new_i, d in enumerate(used_docs)}
+            def _remap(m: re.Match) -> str:
+                old = int(m.group(1))
+                return f"[{ref_remap[old]}]" if old in ref_remap else ""
+            answer = re.sub(r'\[(\d+)\]', _remap, answer)
+        else:
+            # 无引用标记（如纯表格输出）：顺序编号，不修改答案文本
+            ref_remap = {d["id"]: new_i + 1 for new_i, d in enumerate(used_docs)}
+
         citations = [
-            {"id": d["id"], "source": d["source"], "score": d["score"]}
-            for d in docs
+            {
+                "ref": ref_remap[d["id"]],
+                "source_file": d["source"],
+                "section_path": d.get("section_path", ""),
+                "chunk_id": f"{d['source']}_{d.get('chunk_index', i)}",
+                "score": d["score"],
+                "snippet": d["content"][:300],
+            }
+            for i, d in enumerate(used_docs)
         ]
 
         logger.info(
-            "Researcher: 生成答案 %d 字 | 引用 %d 条", len(answer), len(citations)
+            "Researcher: 生成答案 %d 字 | 引用 %d/%d 条 (cited_refs=%s, fallback=%s)",
+            len(answer), len(citations), len(docs), sorted(used_ids), not used_ids,
         )
         return {
             "citations": citations,
             "messages": [AIMessage(content=answer)],
+            "researcher_count": state.get("researcher_count", 0) + 1,
         }
 
     # ── 路由：评估后决策 ──────────────────────────────────────────────────────

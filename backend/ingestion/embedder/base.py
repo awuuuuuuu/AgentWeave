@@ -74,6 +74,13 @@ class BaseEmbedder(ABC):
             raise ValueError(f"embed_query 返回空向量，query={query!r:.50}")
         return result[0]
 
+    async def aembed_query(self, query: str) -> list[float]:
+        """异步版 embed_query，在线程池中执行同步调用避免阻塞事件循环。"""
+        import asyncio
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self.embed_query, query
+        )
+
     @abstractmethod
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         """子类实现：接收 ≤ batch_size 条纯文本，返回等长向量列表"""

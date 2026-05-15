@@ -173,10 +173,14 @@ class ShortTermMemory:
         self, session_id: str, user_id: str, new_messages: list[BaseMessage]
     ) -> None:
         """将 checkpoint 中的 messages 替换为 new_messages"""
-        config = self.get_thread_config(session_id, user_id)
-        checkpoint_tuple = await self.saver.aget_tuple(config)
+        base_config = self.get_thread_config(session_id, user_id)
+        checkpoint_tuple = await self.saver.aget_tuple(base_config)
         if checkpoint_tuple is None:
             return
+
+        # checkpoint_tuple.config 包含 AsyncPostgresSaver.aput 所需的全部字段
+        # (thread_id, checkpoint_ns, checkpoint_id 等)，直接复用避免 KeyError
+        full_config = checkpoint_tuple.config
 
         old_cp = checkpoint_tuple.checkpoint
         old_meta = checkpoint_tuple.metadata or {}
@@ -190,7 +194,7 @@ class ShortTermMemory:
         # 继承现有 step 并 +1，避免 Postgres 版本号回溯导致乐观锁异常
         new_step = (old_meta.get("step") or 0) + 1
         await self.saver.aput(
-            config=config,
+            config=full_config,
             checkpoint=new_cp,
             metadata={"source": "compression", "step": new_step, "writes": {}},
             new_versions={},

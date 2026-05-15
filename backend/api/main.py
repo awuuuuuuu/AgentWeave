@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 import logging
 
-from langgraph_checkpoint_postgres import AsyncPostgresSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 # config.py 在模块级调用 load_dotenv，此处无需重复
 from config import settings
@@ -125,7 +125,6 @@ async def lifespan(app: FastAPI):
             checkpointer=checkpointer,
             memory_manager=app.state.memory_manager,
             llm_model=settings.llm_model,
-            critic_llm_model=settings.memory_llm_model,
         )
         logger.info("Startup complete.")
 

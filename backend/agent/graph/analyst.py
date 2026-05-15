@@ -79,7 +79,11 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
         else:
             answer = resp.content.strip()
 
-        logger.info("Analyst: 生成分析结果 %d 字", len(answer))
-        return {"messages": [AIMessage(content=answer)]}
+        analyst_count = state.get("analyst_count", 0) + 1
+        logger.info("Analyst [%d]: 生成分析结果 %d 字", analyst_count, len(answer))
+        return {
+            "messages": [AIMessage(content=answer)],
+            "analyst_count": analyst_count,
+        }
 
     return analyst_node

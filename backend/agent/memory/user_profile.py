@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import UserProfile
@@ -25,19 +25,24 @@ _CACHE_KEY_PREFIX = "user_profile:"
 
 _EXTRACT_SYSTEM_PROMPT = """你是一个用户画像提取助手。
 根据以下对话内容，提取用户表现出的：
-1. 语言偏好(zh/en)
-2. 专业水平(beginner/intermediate/expert)
-3. 感兴趣的话题(最多5个，用中文短语)
-4. 其他有价值的偏好(key-value 格式)
+1. preferred_language: 语言偏好，值为 "zh" 或 "en"
+2. expertise_level: 专业水平，值为 "beginner"、"intermediate" 或 "expert"
+3. frequent_topics: 感兴趣的话题列表（最多5个，中文短语）
+4. preferences_json: 其他有价值的偏好，以 JSON 字符串形式返回（如 {"风格":"简洁"}），无则填 null
 
-若某字段无法从对话中判断，将其设为 null(不要猜测)。"""
+若某字段无法从对话中判断，将其设为 null，不要猜测。"""
 
 class _ExtractedProfile(BaseModel):
-    """LLM Structured Output schema, 字段全部可选(无法判断时返回 None)"""
+    """LLM Structured Output schema, 字段全部可选(无法判断时返回 None)
+
+    preferences 改为 JSON 字符串，下游解析后再 merge。
+    """
+    model_config = ConfigDict(extra="forbid")   # 顶层加 additionalProperties:false
+
     preferred_language: str | None = None
-    expertise_level: str | None = None
+    expertise_level: Literal["beginner", "intermediate", "expert"] | None = None
     frequent_topics: list[str] | None = None
-    preferences: dict[str, Any] | None = None
+    preferences_json: str | None = None         # JSON string，替代 dict[str, Any]
 
 class UserProfileManager:
     """
@@ -170,6 +175,17 @@ class UserProfileManager:
 
             if extracted is not None:
                 updates = extracted.model_dump(exclude_none=True)
+                # preferences_json → dict，再以 preferences 键传入 upsert_profile
+                # LLM 有时用 ```json ... ``` 包裹输出，剥除后再解析
+                prefs_json = updates.pop("preferences_json", None)
+                if prefs_json:
+                    stripped = prefs_json.strip()
+                    if stripped.startswith("```"):
+                        stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                    try:
+                        updates["preferences"] = json.loads(stripped)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 if updates:
                     await self.upsert_profile(user_id=user_id, db=db, **updates)
                     logger.info(
