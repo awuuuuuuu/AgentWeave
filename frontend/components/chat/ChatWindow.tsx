@@ -215,7 +215,7 @@ export default function ChatWindow() {
         <div className="mx-auto flex max-w-2xl flex-col gap-4">
           {messages.length === 0 && (
             <div className="mt-20 text-center text-gray-400">
-              <p className="text-lg font-medium">RAGent</p>
+              <p className="text-lg font-medium">AgentWeave</p>
               <p className="mt-1 text-sm">输入问题，从知识库中获取答案</p>
             </div>
           )}

@@ -104,7 +104,7 @@ class CitationMeta:
 
 ### 1. 引用格式：`[N]` + regex 提取（借鉴 RAGflow）
 
-RAGflow 使用 `[ID:N]` 并做 regex + embedding fallback 修复。RAGent 简化为 `[N]`，理由：
+RAGflow 使用 `[ID:N]` 并做 regex + embedding fallback 修复。AgentWeave 简化为 `[N]`，理由：
 - LLMgai在 prompt 明确约束下格式稳定，不需要修复机制
 - `[N]` 比 `[ID:N]` 对用户更直观
 - Fallback 嵌入相似度修复留作 Step 9 可观测性改进项
@@ -120,11 +120,11 @@ RAGflow 使用 `[ID:N]` 并做 regex + embedding fallback 修复。RAGent 简化
 </context>
 ```
 
-Dify 用 `<context>` XML 隔离注入内容与指令。RAGent 在此基础上增加 `[N]` 编号，方便 LLM 引用。
+Dify 用 `<context>` XML 隔离注入内容与指令。AgentWeave 在此基础上增加 `[N]` 编号，方便 LLM 引用。
 
 ### 3. Token 预算：97% 截断于 chunk 迭代阶段（借鉴 RAGflow）
 
-RAGflow 在 `kb_prompt()` 中按序迭代 chunk，累计 token 超 97% 预算时停止。RAGent 采用同样策略，在 `ContextBuilder.build()` 内截断，不做事后裁剪，保证 prompt 不超模型 context limit。
+RAGflow 在 `kb_prompt()` 中按序迭代 chunk，累计 token 超 97% 预算时停止。AgentWeave 采用同样策略，在 `ContextBuilder.build()` 内截断，不做事后裁剪，保证 prompt 不超模型 context limit。
 
 ### 4. 无结果降级：显式 `NO_CONTEXT` 字符串（借鉴 RAGflow `empty_response`）
 

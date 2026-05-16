@@ -36,7 +36,7 @@ export default function LoginPage() {
   return (
     <Card className="w-full max-w-sm">
       <CardHeader>
-        <CardTitle>登录 RAGent</CardTitle>
+        <CardTitle>登录 AgentWeave</CardTitle>
         <CardDescription>使用邮箱和密码登录</CardDescription>
       </CardHeader>
       <form onSubmit={handleSubmit}>

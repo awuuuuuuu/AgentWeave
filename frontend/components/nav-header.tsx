@@ -37,7 +37,7 @@ export default function NavHeader() {
         <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
           <span className="text-primary-foreground text-xs font-bold">R</span>
         </div>
-        <span className="font-semibold text-sm">RAGent</span>
+        <span className="font-semibold text-sm">AgentWeave</span>
       </Link>
 
       {/* Nav */}

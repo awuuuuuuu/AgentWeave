@@ -94,7 +94,7 @@ class RetrievedChunk:
 
 ### 1. Weighted Sum 而非 RRF
 
-业界常用 Reciprocal Rank Fusion（RRF）做混合检索融合，但 RRF 只使用排名、丢弃原始分数。RAGent 选择 **Weighted Sum**：
+业界常用 Reciprocal Rank Fusion（RRF）做混合检索融合，但 RRF 只使用排名、丢弃原始分数。AgentWeave 选择 **Weighted Sum**：
 
 ```
 fusion_score = α × norm(vector_score) + (1-α) × norm(bm25_score)

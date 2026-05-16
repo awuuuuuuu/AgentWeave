@@ -1,14 +1,14 @@
-# RAGent
+# AgentWeave
 
 企业级 Agent RAG 平台——单机有记忆有监督，联网可跨组织协作。
 
-每个 RAGent 实例既可作为独立的多 Agent 知识助手运行，也可通过 A2A 协议暴露自身能力、接入上层编排者，构成**层级 Agent 网络**：不同组织的 AI 大脑可以临时组成专家委员会协作解决复杂问题，数据不出域，结论通过标准接口流动。
+每个 AgentWeave 实例既可作为独立的多 Agent 知识助手运行，也可通过 A2A 协议暴露自身能力、接入上层编排者，构成**层级 Agent 网络**：不同组织的 AI 大脑可以临时组成专家委员会协作解决复杂问题，数据不出域，结论通过标准接口流动。
 
 **核心差异化：**
 - **Agentic RAG**：Researcher 自校正检索（CRAG 思路），信息不足时自动改写查询词重试
 - **三层记忆**：短期消息 + 长期语义摘要 + 用户画像，跨会话持续学习
 - **Human-in-the-Loop**：高风险操作 `interrupt()` 暂停等待审批，Critic 质量门控
-- **层级 Agent 网络**：A2A 协议，任意 RAGent 实例可注册为外部 Agent 加入群组（Step 9）
+- **层级 Agent 网络**：A2A 协议，任意 AgentWeave 实例可注册为外部 Agent 加入群组（Step 9）
 
 ## 本地运行
 
@@ -118,14 +118,14 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ```
 应急指挥 Coordinator
-  ├─ 环保局 RAGent (A2A)  → 大气扩散预测报告
-  ├─ 医疗急救 RAGent (A2A) → 医疗资源调配方案
-  ├─ 企业安全 RAGent (A2A) → 泄漏源处置建议
+  ├─ 环保局 AgentWeave (A2A)  → 大气扩散预测报告
+  ├─ 医疗急救 AgentWeave (A2A) → 医疗资源调配方案
+  ├─ 企业安全 AgentWeave (A2A) → 泄漏源处置建议
   ├─ 内部 Analyst           → 整合三份报告
   └─ HITL                  → 指挥长审批后发布
 ```
 
-每个部门 RAGent 有自己的知识库和 Agent 群组，只通过 A2A 标准接口暴露推理结论——数据不出域，能力可组合。
+每个部门 AgentWeave 有自己的知识库和 Agent 群组，只通过 A2A 标准接口暴露推理结论——数据不出域，能力可组合。
 
 ## 技术债 / TODO
 
@@ -201,7 +201,7 @@ Splitter 层不感知文档结构，之所以能保证不跨章节/页面边界�
 
 ### 4. Error Chunk 错误隔离：失败不中断
 
-传统做法在解析失败时抛出异常，导致批量任务中一个损坏文件就中断整个 pipeline。RAGent 的设计是：解析失败时返回 `content_type="error"` 的占位 chunk，携带 `error` 字段记录原因，之后的层自动跳过它。
+传统做法在解析失败时抛出异常，导致批量任务中一个损坏文件就中断整个 pipeline。AgentWeave 的设计是：解析失败时返回 `content_type="error"` 的占位 chunk，携带 `error` 字段记录原因，之后的层自动跳过它。
 
 - Parser 层：捕获所有异常，返回 error chunk，不向上抛出
 - Splitter 层：error chunk 直接透传（`content_type` 路由）
@@ -262,11 +262,11 @@ RecursiveSplitter 在实现时处理了两个容易被忽略的边界问题：
 
 ### 10. Milvus Schema：顶层字段 + Partition Key 多租户隔离
 
-不同于 Dify 把所有 metadata 打包进单个 JSON 字段（无法建标量索引）、也不同于 RAGflow 给每个字段单独建索引（维护成本高），RAGent 采用中间路线：高频过滤字段（`source_file`、`content_type`）提升为顶层 VARCHAR 字段并建 INVERTED 索引，其余非结构化 metadata 存入 `extra_meta` JSON。按 `knowledge_base_id` 作为 Partition Key 分区，天然支持多知识库数据隔离，同时规避 Dify 的 Collection-per-dataset 方案在 Milvus 10K collection 上限的扩展瓶颈。
+不同于 Dify 把所有 metadata 打包进单个 JSON 字段（无法建标量索引）、也不同于 RAGflow 给每个字段单独建索引（维护成本高），AgentWeave 采用中间路线：高频过滤字段（`source_file`、`content_type`）提升为顶层 VARCHAR 字段并建 INVERTED 索引，其余非结构化 metadata 存入 `extra_meta` JSON。按 `knowledge_base_id` 作为 Partition Key 分区，天然支持多知识库数据隔离，同时规避 Dify 的 Collection-per-dataset 方案在 Milvus 10K collection 上限的扩展瓶颈。
 
 ### 11. 混合检索：Weighted Sum 而非 RRF，保留双路原始分数
 
-业界常用 Reciprocal Rank Fusion（RRF）做多路融合，但 RRF 只使用排名、丢弃原始分数，无法反映"某路完全没命中"的情况。RAGent 选择 **Weighted Sum**：
+业界常用 Reciprocal Rank Fusion（RRF）做多路融合，但 RRF 只使用排名、丢弃原始分数，无法反映"某路完全没命中"的情况。AgentWeave 选择 **Weighted Sum**：
 
 ```
 fusion_score = α × norm(vector_score) + (1-α) × norm(bm25_score)
@@ -295,7 +295,7 @@ BM25 使用 Milvus 2.5 的内置 Function，在 insert 时自动将 `text` 转�
 
 RAG Chain 的 SSE 流式响应需要同时产出逐字 token 和最终引用元数据。朴素实现会调用两次 LangGraph（一次 stream tokens，一次 invoke 取引用），消耗双倍 LLM 费用。
 
-RAGent 的 `astream_full()` 使用 `astream_events(version="v2")` 在单次 graph 执行中：
+AgentWeave 的 `astream_full()` 使用 `astream_events(version="v2")` 在单次 graph 执行中：
 - 捕获 `on_chat_model_stream` 事件 → 产出 `("token", str)` 给前端逐字渲染
 - 捕获 `on_chain_end` 事件（含完整 GraphState）→ 产出 `("result", dict)` 含引用元数据
 
@@ -305,7 +305,7 @@ SSE 路由消费此 async generator，每次 yield 前 `await request.is_disconn
 
 ### 15. 引用格式选型：`[N]` + regex 提取，借鉴 RAGflow
 
-RAGflow 使用 `[ID:N]` 引用格式，并在 LLM 零引用时用嵌入相似度做 fallback 修复。RAGent 简化为 `[N]`，System prompt 约束引用编号必须放在**句号之前**（"…内容 [1]。"格式），regex 提取 + 出界编号过滤已足够可靠。`has_context=True` 但答案无引用时记录 warning 便于可观测性追踪。fallback 嵌入修复留作 Step 9 改进项。
+RAGflow 使用 `[ID:N]` 引用格式，并在 LLM 零引用时用嵌入相似度做 fallback 修复。AgentWeave 简化为 `[N]`，System prompt 约束引用编号必须放在**句号之前**（"…内容 [1]。"格式），regex 提取 + 出界编号过滤已足够可靠。`has_context=True` 但答案无引用时记录 warning 便于可观测性追踪。fallback 嵌入修复留作 Step 9 改进项。
 
 ContextBuilder 采用 Dify 的 `<context>` XML 标签隔离注入内容，并在其中嵌入 RAGflow 风格的 `[N] 来源：file | section` 前缀，兼顾结构清晰与引用追踪。
 
@@ -313,55 +313,55 @@ ContextBuilder 采用 Dify 的 `<context>` XML 标签隔离注入内容，并在
 
 浏览器原生 `EventSource` 只支持 GET 请求，无法携带 JSON body（query + kb_id），且不支持 `AbortController` 取消。`@microsoft/fetch-event-source` 虽然解决了这些问题，但引入了额外依赖和复杂的重连配置。
 
-RAGent 直接使用 `fetch` + `ReadableStream`：`resp.body!.getReader()` 逐块读取字节流，`TextDecoder` 解码，按 `\n\n` 切割事件块，取 `data:` 行解析 JSON。整体实现约 40 行，零额外依赖。停止生成时调用 `AbortController.abort()`，`fetch` 立即中断，后端 SSE 路由通过 `await request.is_disconnected()` 检测断线停止 LLM 流式输出。
+AgentWeave 直接使用 `fetch` + `ReadableStream`：`resp.body!.getReader()` 逐块读取字节流，`TextDecoder` 解码，按 `\n\n` 切割事件块，取 `data:` 行解析 JSON。整体实现约 40 行，零额外依赖。停止生成时调用 `AbortController.abort()`，`fetch` 立即中断，后端 SSE 路由通过 `await request.is_disconnected()` 检测断线停止 LLM 流式输出。
 
 ### 17. requestAnimationFrame 批量 token 合并，避免每 token 触发 setState（Step 3）
 
 流式输出时，LLM 可能以极高频率（每 5~20ms）产出一个 token。若每个 token 直接调用 `setState`，会触发等量次数的 React re-render，在长文回答中导致明显卡顿。
 
-RAGent 使用 `tokenBufRef`（`useRef<string>`）暂存收到的 token，配合 `rafRef`（`useRef<number>`）做 `requestAnimationFrame` 调度：只在浏览器下一帧渲染前才将缓冲区 flush 到 `setState`。同一帧内收到的多个 token 合并为一次 render，将 setState 调用次数从 O(token数) 降至 O(帧数，约 60fps)。
+AgentWeave 使用 `tokenBufRef`（`useRef<string>`）暂存收到的 token，配合 `rafRef`（`useRef<number>`）做 `requestAnimationFrame` 调度：只在浏览器下一帧渲染前才将缓冲区 flush 到 `setState`。同一帧内收到的多个 token 合并为一次 render，将 setState 调用次数从 O(token数) 降至 O(帧数，约 60fps)。
 
 ### 18. 智能自动滚动：用户上翻时停止跟随，回到底部按钮（Step 3）
 
 朴素实现在每个 token 到来时无条件调用 `scrollIntoView`，若用户向上翻看历史内容，会被强制拉回底部，体验极差（参考 Open-WebUI 的滚动管理设计）。
 
-RAGent 的方案：`onScroll` 事件实时计算 `scrollHeight - scrollTop - clientHeight`，距底部 `< 120px` 时标记 `isNearBottom=true`。只有 `isNearBottom` 时才执行自动滚动，流式输出期间使用 `behavior: "instant"` 避免平滑滚动动画造成视觉抖动。用户主动上翻后（`isNearBottom=false`），显示"回到底部"悬浮按钮，点击后重置标记并滚到底。
+AgentWeave 的方案：`onScroll` 事件实时计算 `scrollHeight - scrollTop - clientHeight`，距底部 `< 120px` 时标记 `isNearBottom=true`。只有 `isNearBottom` 时才执行自动滚动，流式输出期间使用 `behavior: "instant"` 避免平滑滚动动画造成视觉抖动。用户主动上翻后（`isNearBottom=false`），显示"回到底部"悬浮按钮，点击后重置标记并滚到底。
 
 ### 20. 文件上传竞态条件修复：先建记录再入队（Step 4）
 
 上传接口的朴素实现是先 `ingest_document.delay()` 再 `create_document()`，但 Celery Worker 在高并发下会在数据库记录创建前就开始执行任务，通过 `task_id` 反查文档时得到 `None`，导致 PROCESSING/READY/ERROR 状态更新全部变成 no-op，文档永远停在 pending。
 
-RAGent 反转执行顺序：`create_document()` 先写入 DB 拿到 `doc_id`，再将 `doc_id` 直接作为参数传入 `ingest_document.delay(doc_id=...)`，Worker 无需反查数据库，从根本上消除竞态。
+AgentWeave 反转执行顺序：`create_document()` 先写入 DB 拿到 `doc_id`，再将 `doc_id` 直接作为参数传入 `ingest_document.delay(doc_id=...)`，Worker 无需反查数据库，从根本上消除竞态。
 
 ### 19. ReactMarkdown 自定义渲染器实现内联引用跳转，不引入 rehype-raw（Step 3）
 
 将 `[N]` 文本转为可点击的上标引用按钮，常见做法是用 `rehype-raw` 允许 HTML 字符串注入，但这引入了 XSS 风险，且需要后端输出 HTML。
 
-RAGent 在 ReactMarkdown 的 `components` 中自定义 `p` 和 `li` 的渲染函数，递归遍历 React children，将匹配 `/\[(\d+)\]/g` 的文本节点拆分为普通文本 + `<sup><button>` 引用元素。引用编号和来源存储在组件 state（`activeRef`），点击后高亮 `CitationList` 中对应的引用卡片。全程纯 React 节点操作，无 HTML 字符串注入，无额外依赖。
+AgentWeave 在 ReactMarkdown 的 `components` 中自定义 `p` 和 `li` 的渲染函数，递归遍历 React children，将匹配 `/\[(\d+)\]/g` 的文本节点拆分为普通文本 + `<sup><button>` 引用元素。引用编号和来源存储在组件 state（`activeRef`），点击后高亮 `CitationList` 中对应的引用卡片。全程纯 React 节点操作，无 HTML 字符串注入，无额外依赖。
 
 ### 21. Celery 摄入重试：仅末次失败标 ERROR，重试中保持 PROCESSING（Step 4）
 
 网络抖动或外部 API 临时故障时，朴素实现在每次异常后立即将文档状态写为 ERROR，随后触发 retry。前端轮询到的状态是 ERROR，但任务实际还在重试中，状态语义混乱。
 
-RAGent 通过 `self.request.retries >= self.max_retries` 判断是否为最终失败，中间重试保持 PROCESSING 状态不变，仅在用尽所有重试次数后才写 ERROR。前端看到的状态始终与任务生命周期语义一致。
+AgentWeave 通过 `self.request.retries >= self.max_retries` 判断是否为最终失败，中间重试保持 PROCESSING 状态不变，仅在用尽所有重试次数后才写 ERROR。前端看到的状态始终与任务生命周期语义一致。
 
 ### 22. 软删除 + 幂等异步清理，保证外部数据源最终一致（Step 4）
 
 硬删除知识库时若同步清理 Milvus，一旦 Milvus 超时，整个 HTTP 请求失败，但 PostgreSQL 记录已删，产生孤立的向量数据。
 
-RAGent 对 `KnowledgeBase` 和 `Document` 使用软删除（`is_deleted=True`），API 立即返回，异步 Celery 任务 `cleanup_kb` 负责清理 MinIO 对象和 Milvus chunks。`_delete_minio_objects` 对 `NoSuchKey` 静默跳过，`MilvusStore.delete_by_kb` 查不到数据时直接结束循环，整个清理流程幂等——Celery retry 重跑时不产生虚假报错。
+AgentWeave 对 `KnowledgeBase` 和 `Document` 使用软删除（`is_deleted=True`），API 立即返回，异步 Celery 任务 `cleanup_kb` 负责清理 MinIO 对象和 Milvus chunks。`_delete_minio_objects` 对 `NoSuchKey` 静默跳过，`MilvusStore.delete_by_kb` 查不到数据时直接结束循环，整个清理流程幂等——Celery retry 重跑时不产生虚假报错。
 
 ### 23. TOCTOU 竞态修复：register 依赖 DB 唯一约束而非先查后写（Step 4）
 
 先 `SELECT` 邮箱是否存在再 `INSERT` 的经典模式在高并发下存在 TOCTOU（Time-of-Check-Time-of-Use）竞态：两个请求同时通过存在性检查，都尝试插入，第二条在数据库层报 `IntegrityError`，但业务层已无法感知。
 
-RAGent 直接 `INSERT`，捕获 SQLAlchemy `IntegrityError` 后 `rollback()` 并转换为 `ValueError`，依赖数据库 UNIQUE 约束作为唯一事实来源，彻底消除竞态。
+AgentWeave 直接 `INSERT`，捕获 SQLAlchemy `IntegrityError` 后 `rollback()` 并转换为 `ValueError`，依赖数据库 UNIQUE 约束作为唯一事实来源，彻底消除竞态。
 
 ### 24. 工具 Schema 单一来源：BaseTool.to_function_schema() 统一生成（Step 5）
 
 工具参数描述在两个地方都需要用到：① 发给 LLM 的 Function Calling JSON；② `/api/tools/` 调试接口返回的参数文档。朴素实现在两处分别调用 `model_json_schema()` 并各自手动清理字段，后续若清理逻辑变更则需同步两处。
 
-RAGent 的 `BaseTool.to_function_schema()` 是唯一的 schema 生成入口，API 路由直接取 `["function"]["parameters"]` 节点复用。关键细节：只移除顶层 `title/description`（Pydantic 自动生成，会污染外层结构），**保留 `$defs`**——嵌套模型和 Enum 的 `$ref` 引用依赖它，OpenAI 能正确解析复杂参数结构。
+AgentWeave 的 `BaseTool.to_function_schema()` 是唯一的 schema 生成入口，API 路由直接取 `["function"]["parameters"]` 节点复用。关键细节：只移除顶层 `title/description`（Pydantic 自动生成，会污染外层结构），**保留 `$defs`**——嵌套模型和 Enum 的 `$ref` 引用依赖它，OpenAI 能正确解析复杂参数结构。
 
 ### 25. 工具执行引擎：参数校验 → Redis 缓存 → asyncio 超时三级保护（Step 5）
 
@@ -408,7 +408,7 @@ Milvus query 不保证按时间排序，排序在 Python 侧完成（结果集�
 
 `UserProfileManager.extract_and_update()` 需要从对话文本中提取结构化的用户偏好（语言、专业水平、话题等）。朴素实现在 prompt 中要求 LLM 输出 JSON，再手动 `json.loads()` + markdown 代码块剥离，脆弱且难以测试。
 
-RAGent 用 `ChatOpenAI.with_structured_output(_ExtractedProfile)` 直接获得 Pydantic 对象，所有字段均为 `Optional`（无法判断时返回 `None`，不猜测），再用 `model_dump(exclude_none=True)` 提取有效字段做 upsert。`preferences` 字段做 dict merge（不整体覆盖），`frequent_topics` 去重追加保留最近 20 个，保证画像随使用持续积累而非被覆盖。
+AgentWeave 用 `ChatOpenAI.with_structured_output(_ExtractedProfile)` 直接获得 Pydantic 对象，所有字段均为 `Optional`（无法判断时返回 `None`，不猜测），再用 `model_dump(exclude_none=True)` 提取有效字段做 upsert。`preferences` 字段做 dict merge（不整体覆盖），`frequent_topics` 去重追加保留最近 20 个，保证画像随使用持续积累而非被覆盖。
 
 ---
 

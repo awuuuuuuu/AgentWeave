@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RAGent",
+  title: "AgentWeave",
   description: "企业级 Agent + RAG 问答系统",
 };
 

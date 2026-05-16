@@ -1,4 +1,4 @@
-# RAGent 前端
+# AgentWeave 前端
 
 企业级 RAG 问答界面，基于 Next.js + Tailwind CSS，支持 SSE 流式逐字渲染与引用溯源。
 
