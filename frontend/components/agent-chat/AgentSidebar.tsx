@@ -5,7 +5,6 @@ import {
   IconCrown,
   IconSearch,
   IconChartBar,
-  IconStar,
   IconShieldCheck,
   IconBrain,
   IconArchive,
@@ -36,12 +35,6 @@ const AGENT_CONFIG: Record<
     dotColor: "#7F77DD",
     iconColor: "#7F77DD",
     desc: "数据建模分析",
-  },
-  critic: {
-    icon: <IconStar size={15} />,
-    dotColor: "#EF9F27",
-    iconColor: "#EF9F27",
-    desc: "质量评审",
   },
   reporter: {
     icon: <IconClipboardList size={15} />,
@@ -74,7 +67,6 @@ const AGENTS_ORDER: AgentName[] = [
   "supervisor",
   "researcher",
   "analyst",
-  "critic",
   "reporter",
   "hitl",
 ];

@@ -36,6 +36,8 @@ dependencies = [
     "boto3>=1.34",
     "tavily-python>=0.7.24",
     "langgraph-checkpoint-postgres>=2.0",  # AsyncPostgresSaver：HITL 状态跨重启持久化
+    "psycopg[binary]>=3.3.4",
+    "psycopg-pool>=3.3.1",
 ]
 
 [dependency-groups]

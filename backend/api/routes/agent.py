@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_QUERY_CHARS = 4000
 _KNOWN_NODES = frozenset(
-    {"memory_inject", "supervisor", "researcher", "analyst", "critic", "hitl", "reporter", "memory_save"}
+    {"memory_inject", "supervisor", "researcher", "analyst", "reporter", "memory_save"}
 )
 
 
@@ -54,7 +54,7 @@ class AgentChatRequest(BaseModel):
 
 class AgentResumeRequest(BaseModel):
     session_id: str
-    decision: str  # HITL: "approve" | "reject"；Critic gate: "retry" | "accept"
+    decision: str  # HITL: "approve" | "reject"
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ async def _process_events(
     - 所有业务异常在此捕获并转为 error 事件
     """
     try:
-        # 追踪 researcher 最新答案和引用（供 critic 通过后立即发出 final_answer）
+        # 追踪最新答案文本和引用，用于 final_answer 事件
         # 预填充：HITL resume 时 Researcher 不会重跑，需从 checkpoint 恢复
         _last_answer_text: str = ""
         _last_citations: list = []
@@ -133,10 +133,10 @@ async def _process_events(
             if ev_type == "on_chain_start" and ev_name in _KNOWN_NODES:
                 yield _sse({"type": "node_start", "node": ev_name, "data": {}})
 
-            # LLM token 逐字（supervisor/critic 使用 structured_output，跳过原始 JSON token）
+            # LLM token 逐字（supervisor 使用 structured_output，跳过原始 JSON token）
             elif ev_type == "on_chat_model_stream":
                 node = _infer_node(event)
-                if node in ("supervisor", "critic"):
+                if node == "supervisor":
                     continue
                 chunk = ev_data.get("chunk")
                 if chunk and hasattr(chunk, "content") and chunk.content:
@@ -194,7 +194,7 @@ async def _process_events(
                         })
                         _final_answer_sent = True
                         continue
-                # reporter 整合完毕 → 更新追踪变量（Reporter 有 token 流，不重复写 answer_text）
+                # reporter 整合完毕 → 更新追踪变量并发出 final_answer（Reporter 是质量链的终点）
                 if ev_name == "reporter":
                     msgs = output.get("messages", [])
                     for m in reversed(msgs):
@@ -204,15 +204,7 @@ async def _process_events(
                         elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
                             _last_answer_text = m["content"]
                             break
-                # critic 评审最终报告：通过时发出 final_answer
-                if ev_name == "critic":
-                    if score := output.get("critic_score"):
-                        data["critic_score"] = score
-                    if feedback := output.get("critic_feedback", ""):
-                        data["critic_feedback"] = feedback
-                    if "critic_approved" in output:
-                        data["critic_approved"] = output["critic_approved"]
-                    if output.get("critic_approved") and _last_answer_text and not _final_answer_sent:
+                    if _last_answer_text and not _final_answer_sent:
                         yield _sse({"type": "node_end", "node": ev_name, "data": data})
                         yield _sse({
                             "type": "final_answer",
@@ -225,17 +217,12 @@ async def _process_events(
                         continue
                 yield _sse({"type": "node_end", "node": ev_name, "data": data})
 
-            # interrupt（HITL 操作审批 或 Critic 质检询问）
+            # interrupt（HITL 高风险操作审批）
             elif ev_type == "on_chain_stream":
                 chunk_val = ev_data.get("chunk")
                 if isinstance(chunk_val, dict) and chunk_val.get("__interrupt__"):
                     payload = chunk_val["__interrupt__"][0].value
-                    # Critic gate：中档评分询问用户是否重新生成
-                    if isinstance(payload, dict) and payload.get("type") == "critic_gate":
-                        yield _sse({"type": "critic_gate", "data": payload})
-                    else:
-                        # HITL：高风险操作事前审批
-                        yield _sse({"type": "interrupt", "node": "hitl", "data": payload})
+                    yield _sse({"type": "interrupt", "node": "hitl", "data": payload})
 
         # 图执行完毕
         final_state = await graph.aget_state(config)
@@ -310,13 +297,9 @@ async def agent_stream(
         "task": "",
         "memory_context": "",
         "message_to_user": "",
-        "critic_count": 0,
         "supervisor_count": 0,
         "researcher_count": 0,
         "analyst_count": 0,
-        "critic_score": 0.0,
-        "critic_approved": False,
-        "critic_feedback": "",
         "pending_approval": None,
         "citations": [],
     }

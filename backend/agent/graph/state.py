@@ -40,7 +40,6 @@ class AgentState(TypedDict):
     memory_context: str
 
     # 循环控制计数器
-    critic_count: int           # Critic 已重试次数
     supervisor_count: int       # Supervisor 已路由次数, 达到 MAX_SUPERVISOR_LOOPS 强制结束
     researcher_count: int       # Researcher 已实际执行次数（含无结果的调用）
     analyst_count: int          # Analyst 已实际执行次数
@@ -50,11 +49,6 @@ class AgentState(TypedDict):
 
     # RAG 引用 (由 Researcher 填入, 最终输出携带)
     citations: list[dict]
-
-    # Critic 评审结果
-    critic_score: float
-    critic_approved: bool
-    critic_feedback: str
 
 
 # ── Researcher 子图状态 ───────────────────────────────────────────────────────

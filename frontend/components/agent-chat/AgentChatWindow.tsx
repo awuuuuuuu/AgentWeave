@@ -202,9 +202,6 @@ export function AgentChatWindow() {
         const citations: Citation[] = event.data.citations ?? [];
         const messageToUser = event.data.message_to_user;
         const answerText = event.data.answer_text;
-        const criticScore = event.data.critic_score;
-        const criticFeedback = event.data.critic_feedback;
-        const criticApproved = event.data.critic_approved;
 
         // Supervisor 二次路由（纯内部决策）时无内容，直接删掉气泡避免重复展示
         if (node === "supervisor" && !messageToUser) {
@@ -221,9 +218,6 @@ export function AgentChatWindow() {
           ...(messageToUser ? { content: messageToUser } : {}),
           // researcher 使用 ainvoke，无 token 流，答案从 node_end 的 answer_text 取
           ...(answerText ? { content: answerText } : {}),
-          ...(criticScore !== undefined ? { criticScore } : {}),
-          ...(criticFeedback ? { criticFeedback } : {}),
-          ...(criticApproved !== undefined ? { criticApproved } : {}),
         }));
 
         setActiveAgent(null);
@@ -533,7 +527,7 @@ export function AgentChatWindow() {
                   向 Agent 群组提问
                 </div>
                 <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", textAlign: "center", lineHeight: 1.6, maxWidth: 320 }}>
-                  Supervisor 会自动拆解任务，调度 Researcher、Analyst、Critic 协同完成。
+                  Supervisor 会自动拆解任务，调度 Researcher、Analyst、Reporter 协同完成。
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%", maxWidth: 360 }}>
                   {SUGGESTIONS.map((s, i) => (

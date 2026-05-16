@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 AGENT_CARD = {
     "name": "hitl",
     "description": "高风险操作前暂停等待人工审批；确认或拒绝后继续执行",
-    "routing_hint": "用户请求涉及不可逆的外部操作（写文件、执行代码、发送消息等）时",
+    "routing_hint": "用户请求涉及不可逆的外部操作（写文件、执行代码、发送消息等），或用户明确要求人工审批/确认（如『需要人工审批』『请人工确认』『最后审批』）时",
     "tools": [],
     "icon": "⚠️",
     "color": "yellow",

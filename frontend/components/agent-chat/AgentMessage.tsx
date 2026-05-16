@@ -7,7 +7,7 @@ import {
   IconCrown,
   IconSearch,
   IconChartBar,
-  IconStar,
+
   IconShieldCheck,
   IconBrain,
   IconArchive,
@@ -16,7 +16,7 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconCheckbox,
-  IconAlertCircle,
+
 } from "@tabler/icons-react";
 import type { AgentBubble, Citation } from "@/lib/agent-api";
 
@@ -56,14 +56,6 @@ const AGENT_META: Record<
     avatarColor: "#3C3489",
     dotColor: "#7F77DD",
     nameColor: "#534AB7",
-  },
-  critic: {
-    label: "Critic",
-    icon: <IconStar size={13} />,
-    avatarBg: "#FAEEDA",
-    avatarColor: "#633806",
-    dotColor: "#EF9F27",
-    nameColor: "#854F0B",
   },
   reporter: {
     label: "Reporter",
@@ -107,7 +99,6 @@ const MENTION_META: Record<
   supervisor: { bg: "#E6F1FB", color: "#185FA5", icon: <IconCrown size={11} />,          label: "Supervisor" },
   researcher: { bg: "#E1F5EE", color: "#0F6E56", icon: <IconSearch size={11} />,         label: "Researcher" },
   analyst:    { bg: "#EEEDFE", color: "#534AB7", icon: <IconChartBar size={11} />,       label: "Analyst"    },
-  critic:     { bg: "#FAEEDA", color: "#854F0B", icon: <IconStar size={11} />,           label: "Critic"     },
   reporter:   { bg: "#E0F7F6", color: "#1A7A74", icon: <IconClipboardList size={11} />, label: "Reporter"   },
   hitl:       { bg: "#FCEBEB", color: "#791F1F", icon: <IconShieldCheck size={11} />,   label: "HITL"       },
 };
@@ -155,7 +146,7 @@ function makeMarkdownComponents(
   function processStr(text: string): React.ReactNode[] {
     const result: React.ReactNode[] = [];
     // split on @Mention（大小写不敏感）
-    const mentionRe = /(@(?:Supervisor|Researcher|Analyst|Critic|Reporter|HITL))/gi;
+    const mentionRe = /(@(?:Supervisor|Researcher|Analyst|Reporter|HITL))/gi;
     const parts = text.split(mentionRe);
 
     for (let pi = 0; pi < parts.length; pi++) {
@@ -493,7 +484,6 @@ interface AgentMessageProps {
 export function AgentMessage({ bubble }: AgentMessageProps) {
   const {
     agent, content, status, citations, replyTo,
-    criticScore, criticFeedback, criticApproved,
     isFinalAnswer,
   } = bubble;
   const [highlightedRef, setHighlightedRef] = useState<number | null>(null);
@@ -642,27 +632,6 @@ export function AgentMessage({ bubble }: AgentMessageProps) {
               />
               思考中…
             </span>
-          ) : agent === "critic" && status === "done" && criticScore !== undefined ? (
-            /* Critic 评分展示 */
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 5,
-                  padding: "3px 10px", borderRadius: 100, fontSize: 12, fontWeight: 600,
-                  background: criticApproved ? "#E1F5EE" : "#FAEEDA",
-                  color: criticApproved ? "#085041" : "#633806",
-                  border: `0.5px solid ${criticApproved ? "#5DCAA5" : "#FAC775"}`,
-                }}
-              >
-                {criticApproved ? <IconCheckbox size={13} /> : <IconAlertCircle size={13} />}
-                {criticScore.toFixed(1)} / 10 · {criticApproved ? "已通过" : "需改进"}
-              </span>
-              {criticFeedback && !criticApproved && (
-                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.6, borderLeft: "2px solid #FAC775", paddingLeft: 8 }}>
-                  {criticFeedback}
-                </div>
-              )}
-            </div>
           ) : (
             <>
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={makeMarkdownComponents(visibleCitations, handleCiteClick)}>

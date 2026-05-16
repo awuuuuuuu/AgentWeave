@@ -1,6 +1,14 @@
 # RAGent
 
-企业级 Agent + RAG 系统。
+企业级 Agent RAG 平台——单机有记忆有监督，联网可跨组织协作。
+
+每个 RAGent 实例既可作为独立的多 Agent 知识助手运行，也可通过 A2A 协议暴露自身能力、接入上层编排者，构成**层级 Agent 网络**：不同组织的 AI 大脑可以临时组成专家委员会协作解决复杂问题，数据不出域，结论通过标准接口流动。
+
+**核心差异化：**
+- **Agentic RAG**：Researcher 自校正检索（CRAG 思路），信息不足时自动改写查询词重试
+- **三层记忆**：短期消息 + 长期语义摘要 + 用户画像，跨会话持续学习
+- **Human-in-the-Loop**：高风险操作 `interrupt()` 暂停等待审批，Critic 质量门控
+- **层级 Agent 网络**：A2A 协议，任意 RAGent 实例可注册为外部 Agent 加入群组（Step 9）
 
 ## 本地运行
 
@@ -93,29 +101,31 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ## 开发进度
 
-**Step 1 — 文档摄入**
-
-| 子模块 | 状态 |
-|--------|------|
-| Parsers（PDF / Word / HTML / Markdown / TXT / Fallback） | ✅ 完成 |
-| Splitter（按语义边界切块，控制 chunk 大小与重叠） | ✅ 完成 |
-| Embedding（文本 → 向量，OpenAI text-embedding-3-small） | ✅ 完成 |
-| Milvus 写入（chunk + 向量 + metadata 入库） | ✅ 完成 |
-| 摄入 Pipeline（串联以上四步，支持批量文件处理） | ✅ 完成 |
-
-**后续 Steps**
-
 | Step | 模块 | 状态 |
 |------|------|------|
-| 2 | 混合检索 + 重排序（BM25 + 向量 + Reranker） | ✅ 完成 |
-| 3 | RAG Chain + API + 前端基础 | ✅ 完成 |
-| 4 | Auth + 知识库管理 + 文件上传 | ✅ 完成 |
-| 5 | 工具体系（kb_search / web_search / calculator） | ✅ 完成 |
-| 6 | 三层记忆系统（短期 / 长期语义 / 用户画像） | ✅ 完成 |
-| 7 | Multi-Agent + Agentic RAG + Human-in-the-Loop | 🚧 后端完成，前端进行中 |
-| 8 | 私聊模式 + 会话管理 | 🔜 |
-| 9 | AgentRegistry + 动态 Agent 加入（A2A 协议） | 🔜 |
-| 10 | LangSmith 全链路追踪 + 自动评估 | 🔜 |
+| 1 | 文档摄入流水线（Parser / Splitter / Embedder / Store） | ✅ |
+| 2 | 混合检索 + 重排序（BM25 + 向量 + qwen3-rerank） | ✅ |
+| 3 | RAG Chain + SSE 流式 API + 前端基础 | ✅ |
+| 4 | Auth + 知识库管理 + 文件上传 + 召回测试 | ✅ |
+| 5 | 工具体系（kb_search / web_search / calculator） | ✅ |
+| 6 | 三层记忆系统（短期 / 长期语义 / 用户画像） | ✅ |
+| 7 | Multi-Agent 群聊 + Agentic RAG + HITL + Critic 门控 | 🚧 后端完成，前端进行中 |
+| 8 | 多租户（org_id 隔离）+ 私聊模式 + 会话管理 | 🔜 |
+| 9 | 层级 Agent 网络：AgentRegistry + A2A 自我暴露 + Coordinator 账号 | 🔜 |
+| 10 | LangSmith 全链路追踪 + 自动评估 + `/analytics` 仪表盘 | 🔜 |
+
+**Step 9 核心场景（城市应急响应）：**
+
+```
+应急指挥 Coordinator
+  ├─ 环保局 RAGent (A2A)  → 大气扩散预测报告
+  ├─ 医疗急救 RAGent (A2A) → 医疗资源调配方案
+  ├─ 企业安全 RAGent (A2A) → 泄漏源处置建议
+  ├─ 内部 Analyst           → 整合三份报告
+  └─ HITL                  → 指挥长审批后发布
+```
+
+每个部门 RAGent 有自己的知识库和 Agent 群组，只通过 A2A 标准接口暴露推理结论——数据不出域，能力可组合。
 
 ## 技术债 / TODO
 
@@ -409,6 +419,6 @@ RAGent 用 `ChatOpenAI.with_structured_output(_ExtractedProfile)` 直接获得 P
 - **向量库**：Milvus（Docker 本地）
 - **关系库**：PostgreSQL（Supabase）
 - **缓存**：Redis（Docker 本地）
-- **前端**：Next.js 16 + Tailwind CSS（shadcn/ui 计划 Step 8 引入）
+- **前端**：Next.js 16 + shadcn/ui + Tailwind CSS
 - **运行时**：Python 3.11+、uv
 - **测试**：pytest 8+

@@ -25,7 +25,6 @@ export type AgentName =
   | "supervisor"
   | "researcher"
   | "analyst"
-  | "critic"
   | "reporter"
   | "hitl"
   | "memory_save";
@@ -54,7 +53,7 @@ export interface AgentCard {
 export type AgentSSEEvent =
   | { type: "node_start"; node: AgentName }
   | { type: "token"; node: AgentName; data: { content: string } }
-  | { type: "node_end"; node: AgentName; data: { citations?: Citation[]; message_to_user?: string; answer_text?: string; critic_score?: number; critic_feedback?: string; critic_approved?: boolean } }
+  | { type: "node_end"; node: AgentName; data: { citations?: Citation[]; message_to_user?: string; answer_text?: string } }
   | { type: "interrupt"; node: "hitl"; data: HITLData }
   | { type: "final_answer"; data: { content: string; citations: Citation[] } }
   | { type: "done"; data: { citations: Citation[] } }
@@ -69,18 +68,14 @@ export interface AgentBubble {
   status: "thinking" | "streaming" | "done" | "error";
   citations: Citation[];
   hitlData?: HITLData;           // interrupt 时才有
-  criticScore?: number;          // critic node_end 时才有
-  criticFeedback?: string;
-  criticApproved?: boolean;
   replyTo?: { agentName: string; text: string };
-  isFinalAnswer?: boolean;       // Critic 批准后的最终汇总答案
+  isFinalAnswer?: boolean;       // Reporter 完成后的最终汇总答案
 }
 
 // reply-to 硬推断：按节点在图中的依赖关系固定
 export const REPLY_TO: Partial<Record<AgentName, { agentName: string; text: string }>> = {
   researcher: { agentName: "Supervisor", text: "收到，开始检索" },
   analyst:    { agentName: "Supervisor", text: "收到指令，开始建模" },
-  critic:     { agentName: "Supervisor", text: "收到，开始评审" },
   reporter:   { agentName: "Supervisor", text: "收到，整合最终答案" },
   hitl:       { agentName: "Supervisor", text: "需要人工确认" },
 };
