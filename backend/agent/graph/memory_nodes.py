@@ -81,7 +81,7 @@ def build_memory_nodes(memory_manager: MemoryManager):
             logger.exception("memory_inject: gather 失败 user=%s", user_id)
             return {}
 
-        result: dict = {}
+        result: dict = {"memory_injected": True}
 
         if isinstance(compress_result, list) and compress_result:
             result["messages"] = compress_result
@@ -113,14 +113,14 @@ def build_memory_nodes(memory_manager: MemoryManager):
         if not user_id:
             return {}
 
-        asyncio.create_task(_run_on_session_end(memory_manager, session_id, user_id))
+        asyncio.create_task(run_on_session_end(memory_manager, session_id, user_id))
         logger.info("memory_save: 后台 on_session_end 已触发 session=%s", session_id)
         return {}
 
     return memory_inject_node, memory_save_node
 
 
-async def _run_on_session_end(
+async def run_on_session_end(
     memory_manager: MemoryManager,
     session_id: str,
     user_id: str,

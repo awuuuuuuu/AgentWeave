@@ -38,6 +38,8 @@ class AgentState(TypedDict):
     
     # 记忆注入（memory_inject 写入，Supervisor 读取用于路由决策）
     memory_context: str
+    # 标记本次会话是否已完成记忆注入（首轮置 True，后续轮次跳过 memory_inject）
+    memory_injected: bool
 
     # 循环控制计数器
     supervisor_count: int       # Supervisor 已路由次数, 达到 MAX_SUPERVISOR_LOOPS 强制结束

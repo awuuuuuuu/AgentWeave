@@ -4,21 +4,22 @@ Agent 主图工厂
 组装 Supervisor + Researcher + Analyst + HITL + Reporter + Memory 为完整 LangGraph。
 
 拓扑：
-    memory_inject → supervisor ──→ researcher ──┐
-                               ──→ analyst    ──┤──→ supervisor ──→ reporter ──→ memory_save → END
-                               ──→ hitl       ──┘
-                               ──→ memory_save/END（超纲降级，Supervisor 直接 __end__）
+    START ──(首轮)──→ memory_inject → supervisor ──→ researcher ──┐
+          ──(续轮)──→ supervisor                  ──→ analyst    ──┤──→ supervisor ──→ reporter → END
+                                                  ──→ hitl       ──┘
+                                                  ──→ END（Supervisor 直接 __end__）
+
+memory_save 已移出图流程，由前端在关闭会话时调用 POST /agent/sessions/{id}/close 触发。
 
 注：Critic 节点已保留在代码库中，但未接入默认图。
     质量门控由 HITL（人工审批）承担，适合跨组织应急响应等有人在链路上的场景。
-    如需 Critic，在 enabled_agents 中重新接入 reporter → critic → memory_save 这条边即可。
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from .analyst import AGENT_CARD as ANALYST_CARD
 from .analyst import build_analyst
@@ -68,18 +69,24 @@ def build_agent_graph(
     hitl_fn = build_hitl()
     reporter_fn = build_reporter(llm_model=llm_model)
 
-    memory_inject_fn, memory_save_fn = (
+    memory_inject_fn, _ = (
         build_memory_nodes(memory_manager)
         if memory_manager else (None, None)
     )
 
     # ── 路由函数 ──────────────────────────────────────────────────────────────
 
+    def route_from_start(state: AgentState) -> str:
+        """首轮对话时注入记忆，后续轮次直接进入 Supervisor。"""
+        if memory_inject_fn and not state.get("memory_injected", False):
+            return "memory_inject"
+        return "supervisor"
+
     def route_from_supervisor(state: AgentState) -> str:
         next_agent = state.get("next_agent", "__end__")
 
         if next_agent == "__end__":
-            return "memory_save" if memory_save_fn else "__end__"
+            return "__end__"
 
         if next_agent == "researcher":
             researcher_count = state.get("researcher_count", 0)
@@ -104,26 +111,25 @@ def build_agent_graph(
     graph.add_node("hitl", hitl_fn)
     graph.add_node("reporter", reporter_fn)
 
-    if memory_inject_fn and memory_save_fn:
+    # 入口：首轮注入记忆，后续直接进 Supervisor
+    if memory_inject_fn:
         graph.add_node("memory_inject", memory_inject_fn)
-        graph.add_node("memory_save", memory_save_fn)
-        graph.set_entry_point("memory_inject")
         graph.add_edge("memory_inject", "supervisor")
-        graph.add_edge("memory_save", END)
+        graph.add_conditional_edges(
+            START,
+            route_from_start,
+            {"memory_inject": "memory_inject", "supervisor": "supervisor"},
+        )
     else:
-        graph.set_entry_point("supervisor")
+        graph.add_edge(START, "supervisor")
 
     supervisor_targets: dict[str, Any] = {
         "researcher": "researcher",
         "analyst":    "analyst",
         "hitl":       "hitl",
         "reporter":   "reporter",
+        "__end__":    END,
     }
-    if memory_save_fn:
-        supervisor_targets["memory_save"] = "memory_save"
-    else:
-        supervisor_targets["__end__"] = END
-
     graph.add_conditional_edges("supervisor", route_from_supervisor, supervisor_targets)
 
     graph.add_edge("researcher", "supervisor")
@@ -135,11 +141,8 @@ def build_agent_graph(
         {"supervisor": "supervisor", "__end__": END},
     )
 
-    # Reporter 完成即结束（HITL 是唯一的质量门控）
-    if memory_save_fn:
-        graph.add_edge("reporter", "memory_save")
-    else:
-        graph.add_edge("reporter", END)
+    # Reporter 完成即结束；memory_save 由前端调用 /agent/sessions/{id}/close 触发
+    graph.add_edge("reporter", END)
 
     compiled = graph.compile(checkpointer=checkpointer)
     logger.info(
