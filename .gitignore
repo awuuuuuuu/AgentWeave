@@ -24,3 +24,5 @@ debug_*.pdf
 
 # IDE
 .vscode/
+
+demo/
