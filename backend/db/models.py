@@ -32,6 +32,24 @@ class DocumentStatus(str, Enum):
 # ── 表模型 ───────────────────────────────────────────────────────────────────
 
 
+class Organization(Base):
+    """机构（租户）。department = 独立部门实例 / command = 编排指挥中心（Step 9）。"""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # "department"（如环保局、医疗急救）| "command"（如城市应急指挥中心）
+    type: Mapped[str] = mapped_column(String(16), nullable=False, default="department")
+    # 邀请码（唯一），分享给部门成员注册时使用
+    invite_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    users: Mapped[list[User]] = relationship(back_populates="org")
+
+
 class User(Base):
     """系统用户。"""
 
@@ -40,6 +58,13 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 多租户字段（Step 8+，nullable = 未加入任何部门）
+    org_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -47,6 +72,7 @@ class User(Base):
     knowledge_bases: Mapped[list[KnowledgeBase]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    org: Mapped[Organization | None] = relationship(back_populates="users")
 
 
 class KnowledgeBase(Base):
@@ -59,6 +85,13 @@ class KnowledgeBase(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 多租户字段（Step 8+，nullable 过渡期）
+    org_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 检索设置（per-KB，查询时覆盖全局默认值）
@@ -127,13 +160,18 @@ class ConversationSession(Base):
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    # active / ended（结束后触发摘要异步写入长期记忆）
+    # active / ended / deleted
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 本次会话使用的知识库 IDs
+    kb_ids: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     # LLM 生成的本次会话摘要（会话结束后异步写入）
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -164,6 +202,32 @@ class UserProfile(Base):
     )
 
     user: Mapped[User] = relationship()
+
+
+class ChatMessage(Base):
+    """Agent 群聊气泡，按 seq 顺序归属于某个会话。"""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    agent: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    citations: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    hitl_data: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    reply_to: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    is_final_answer: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    session: Mapped[ConversationSession] = relationship()
 
 
 class HitTestingLog(Base):

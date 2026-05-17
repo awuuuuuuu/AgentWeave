@@ -32,6 +32,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 
 from agent.graph.agent_graph import get_agent_cards
+from agent.graph.memory_nodes import run_on_session_end
 from auth.dependencies import get_current_user
 from db.models import User
 
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_QUERY_CHARS = 4000
 _KNOWN_NODES = frozenset(
-    {"memory_inject", "supervisor", "researcher", "analyst", "reporter", "memory_save"}
+    {"memory_inject", "supervisor", "researcher", "analyst", "reporter"}
 )
 
 
@@ -295,13 +296,14 @@ async def agent_stream(
         "kb_ids": req.kb_ids,
         "next_agent": "",
         "task": "",
-        "memory_context": "",
         "message_to_user": "",
         "supervisor_count": 0,
         "researcher_count": 0,
         "analyst_count": 0,
         "pending_approval": None,
         "citations": [],
+        # memory_context / memory_injected 不在此处列出：由 LangGraph checkpoint 跨轮持久化
+        # memory_injected 首轮由 memory_inject 节点置 True，后续轮次跳过注入步骤
     }
 
     graph_input = per_turn_reset if has_thread else {
@@ -352,6 +354,25 @@ async def agent_resume(
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@router.post("/sessions/{session_id}/close")
+async def close_agent_session(
+    session_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    关闭会话：触发 memory_save（on_session_end）。
+    fire-and-forget，立即返回；前端在切换会话或离开页面时调用。
+    """
+    memory_manager = getattr(request.app.state, "memory_manager", None)
+    if memory_manager:
+        asyncio.create_task(
+            run_on_session_end(memory_manager, session_id, current_user.id)
+        )
+        logger.info("close_session: memory_save 已调度 session=%s", session_id)
+    return {"status": "ok"}
 
 
 @router.get("/state/{session_id}")

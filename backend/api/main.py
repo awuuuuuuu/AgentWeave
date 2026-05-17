@@ -17,6 +17,8 @@ from api.routes.chat import router as chat_router
 from api.routes.knowledge import router as kb_router
 from api.routes.tools import router as tools_router
 from api.routes.agent import router as agent_router
+from api.routes.sessions import router as sessions_router
+from api.routes.orgs import router as orgs_router
 from db.session import Base, engine
 import db.models  # noqa: F401  确保所有模型已注册
 from rag.chain import RAGChain
@@ -39,9 +41,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时建表（幂等）、预热 RAGChain 和检索组件，关闭时自动释放"""
-    logger.info("Startup: initializing database...")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Startup: skipping create_all — schema managed by Alembic migrations")
 
     # ── RAG 检索组件 ──────────────────────────────────────────────────────────
     logger.info("Startup: initializing RAG components...")
@@ -152,6 +152,8 @@ app.include_router(kb_router)
 app.include_router(chat_router)
 app.include_router(tools_router)
 app.include_router(agent_router)
+app.include_router(sessions_router)
+app.include_router(orgs_router)
 
 
 @app.get("/health")

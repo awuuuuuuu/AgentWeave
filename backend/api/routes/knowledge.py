@@ -49,7 +49,7 @@ async def list_kbs(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ) -> list[KBResponse]:
-    kbs = await kb_service.list_kbs(current_user.id, session, limit=limit, offset=offset)
+    kbs = await kb_service.list_kbs(current_user.id, session, limit=limit, offset=offset, org_id=current_user.org_id)
     return [KBResponse.model_validate(kb) for kb in kbs]
 
 @router.post("", response_model=KBResponse, status_code=status.HTTP_201_CREATED)
@@ -58,7 +58,7 @@ async def create_kb(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ) -> KBResponse:
-    kb = await kb_service.create_kb(req, current_user.id, session)
+    kb = await kb_service.create_kb(req, current_user.id, session, org_id=current_user.org_id)
     return KBResponse.model_validate(kb)
 
 @router.get("/{kb_id}", response_model=KBResponse)
@@ -68,7 +68,7 @@ async def get_db(
     session: AsyncSession = Depends(get_session),
 ) -> KBResponse:
     try:
-        kb = await kb_service.get_kb(kb_id, current_user.id, session)
+        kb = await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return KBResponse.model_validate(kb)
@@ -81,7 +81,7 @@ async def update_kb(
     session: AsyncSession = Depends(get_session)
 ) -> KBResponse:
     try:
-        kb = await kb_service.update_kb(kb_id, req, current_user.id, session)
+        kb = await kb_service.update_kb(kb_id, req, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return KBResponse.model_validate(kb)
@@ -94,7 +94,7 @@ async def update_retrieval_settings(
     session: AsyncSession = Depends(get_session),
 ) -> KBResponse:
     try:
-        kb = await kb_service.update_kb_retrieval_settings(kb_id, req, current_user.id, session)
+        kb = await kb_service.update_kb_retrieval_settings(kb_id, req, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return KBResponse.model_validate(kb)
@@ -106,7 +106,7 @@ async def delete_kb(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     try:
-        await kb_service.delete_kb(kb_id, current_user.id, session)
+        await kb_service.delete_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
@@ -122,7 +122,7 @@ async def list_documents(
     session: AsyncSession = Depends(get_session),
 ) -> list[DocumentResponse]:
     try:
-        docs = await kb_service.list_documents(kb_id, current_user.id, session, limit=limit, offset=offset)
+        docs = await kb_service.list_documents(kb_id, current_user.id, session, limit=limit, offset=offset, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return [DocumentResponse.model_validate(d) for d in docs]
@@ -136,7 +136,7 @@ async def get_document(
     session: AsyncSession = Depends(get_session),
 ) -> DocumentResponse:
     try:
-        doc = await kb_service.get_document(doc_id, kb_id, current_user.id, session)
+        doc = await kb_service.get_document(doc_id, kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return DocumentResponse.model_validate(doc)
@@ -150,7 +150,7 @@ async def delete_document(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     try:
-        await kb_service.delete_document(doc_id, kb_id, current_user.id, session)
+        await kb_service.delete_document(doc_id, kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
@@ -167,9 +167,9 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ) -> UploadResponse:
-    # 验证 KB 是不是用户的
+    # 验证 KB 是不是用户/组织的
     try:
-        kb = await kb_service.get_kb(kb_id, current_user.id, session)
+        kb = await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
@@ -252,7 +252,7 @@ async def preview_document(
 ) -> list[ChunkPreviewItem]:
     """解析 + 分段预览，不做 embedding 也不写 Milvus。"""
     try:
-        await kb_service.get_kb(kb_id, current_user.id, session)
+        await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
@@ -344,7 +344,7 @@ async def list_chunks(
     session: AsyncSession = Depends(get_session),
 ) -> ChunkListResponse:
     try:
-        await kb_service.get_kb(kb_id, current_user.id, session)
+        await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
@@ -376,8 +376,8 @@ async def get_doc_metadata(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     try:
-        await kb_service.get_kb(kb_id, current_user.id, session)
-        doc = await kb_service.get_document(doc_id, kb_id, current_user.id, session)
+        await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
+        doc = await kb_service.get_document(doc_id, kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return doc.doc_metadata or {}
@@ -392,8 +392,8 @@ async def update_doc_metadata(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     try:
-        await kb_service.get_kb(kb_id, current_user.id, session)
-        doc = await kb_service.get_document(doc_id, kb_id, current_user.id, session)
+        await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
+        doc = await kb_service.get_document(doc_id, kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     # PATCH 语义：合并更新，不覆盖已有 key
@@ -413,7 +413,7 @@ async def hit_testing(
     session: AsyncSession = Depends(get_session),
 ) -> HitTestingResponse:
     try:
-        kb = await kb_service.get_kb(kb_id, current_user.id, session)
+        kb = await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
@@ -499,7 +499,7 @@ async def get_hit_testing_history(
     session: AsyncSession = Depends(get_session),
 ) -> list[HitTestingLogItem]:
     try:
-        await kb_service.get_kb(kb_id, current_user.id, session)
+        await kb_service.get_kb(kb_id, current_user.id, session, org_id=current_user.org_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
