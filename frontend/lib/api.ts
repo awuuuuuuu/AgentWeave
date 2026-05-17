@@ -125,10 +125,18 @@ export interface AuthTokens {
   token_type: string;
 }
 
-export async function apiRegister(email: string, password: string): Promise<AuthTokens> {
+export async function apiRegister(
+  email: string,
+  password: string,
+  inviteCode?: string
+): Promise<AuthTokens> {
   return apiFetch("/auth/register", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email,
+      password,
+      ...(inviteCode ? { invite_code: inviteCode } : {}),
+    }),
   }).then((r) => r.json());
 }
 
@@ -369,6 +377,30 @@ export async function apiPreviewChunks(
     throw new Error(err.detail ?? "预览失败");
   }
   return res.json();
+}
+
+// ── Org API ────────────────────────────────────────────────────────────────
+
+export interface OrgInfo {
+  id: string;
+  name: string;
+  type: string;
+  invite_code: string;
+  created_at: string;
+}
+
+export interface OrgMember {
+  id: string;
+  email: string;
+  joined_at: string;
+}
+
+export async function apiGetMyOrg(): Promise<OrgInfo> {
+  return apiFetch("/orgs/me").then((r) => r.json());
+}
+
+export async function apiGetOrgMembers(): Promise<OrgMember[]> {
+  return apiFetch("/orgs/me/members").then((r) => r.json());
 }
 
 // ── SSE 流式问答 ───────────────────────────────────────────────────────────

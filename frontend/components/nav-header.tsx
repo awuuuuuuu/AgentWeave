@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { BookOpen, MessageSquare, LogOut, User, Users } from "lucide-react";
+import { BookOpen, Building2, MessageSquare, LogOut, User, Users } from "lucide-react";
 import { tokenStorage } from "@/lib/api";
 import {
   DropdownMenu,
@@ -15,6 +15,7 @@ const navItems = [
   { href: "/knowledge", label: "知识库", icon: BookOpen },
   { href: "/chat", label: "对话", icon: MessageSquare },
   { href: "/agent", label: "群组", icon: Users },
+  { href: "/org", label: "部门", icon: Building2 },
 ];
 
 export default function NavHeader() {

@@ -579,9 +579,9 @@ export function AgentMessage({ bubble }: AgentMessageProps) {
             fontSize: 13,
             lineHeight: 1.7,
             color: "var(--color-text-primary)",
-            border: `0.5px solid ${isFinalAnswer ? "#5DCAA5" : "var(--color-border-tertiary)"}`,
+            border: `1px solid ${isFinalAnswer ? "#5DCAA5" : "var(--color-border-secondary)"}`,
             background: isFinalAnswer ? "#F4FBF8" : "var(--color-background-primary)",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.07)",
           }}
         >
           {/* 最终答案标识 */}

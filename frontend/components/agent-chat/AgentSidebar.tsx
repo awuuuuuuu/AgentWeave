@@ -116,7 +116,7 @@ export function AgentSidebar({ activeAgent, sessionId, isRunning }: AgentSidebar
           <IconTournament size={16} color="#85B7EB" />
           Agent Studio
         </div>
-        <div style={{ fontSize: 11, color: "#4a5568", marginTop: 3 }} suppressHydrationWarning>
+        <div style={{ fontSize: 11, color: "#8a9ab5", marginTop: 3 }} suppressHydrationWarning>
           会话 #{shortId} · {isRunning ? "运行中" : "待命"}
         </div>
       </div>
@@ -152,7 +152,7 @@ export function AgentSidebar({ activeAgent, sessionId, isRunning }: AgentSidebar
           padding: "10px 15px",
           borderTop: "0.5px solid rgba(255,255,255,0.07)",
           fontSize: 11,
-          color: "#4a5568",
+          color: "#8a9ab5",
           display: "flex",
           alignItems: "center",
           gap: 6,
@@ -189,7 +189,7 @@ function SidebarSection({
         style={{
           padding: "12px 13px 6px",
           fontSize: 10,
-          color: "#4a5568",
+          color: "#8a9ab5",
           letterSpacing: "0.06em",
           fontWeight: 500,
           textTransform: "uppercase",
@@ -249,7 +249,7 @@ function AgentRow({
         <div
           style={{
             fontSize: 13,
-            color: active ? "#e2e6f0" : "#8a8f9a",
+            color: active ? "#e2e6f0" : "#b0b7c3",
             fontWeight: 500,
             transition: "color 0.15s",
           }}
@@ -259,7 +259,7 @@ function AgentRow({
         <div
           style={{
             fontSize: 11,
-            color: "#4a5568",
+            color: "#8a9ab5",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",

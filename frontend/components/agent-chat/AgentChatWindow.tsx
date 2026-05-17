@@ -10,18 +10,19 @@ import {
   IconCheck,
   IconX,
   IconMessageQuestion,
-  IconCar,
-  IconBrain,
-  IconCode,
   IconLock,
-  IconRefresh,
 } from "@tabler/icons-react";
-import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
 
 import {
   streamAgent,
   resumeAgent,
+  updateSession,
+  closeSession,
+  listMessages,
+  saveMessages,
+  msgTobubble,
+  bubbleToMsg,
   REPLY_TO,
   type AgentBubble,
   type AgentName,
@@ -42,26 +43,29 @@ const KB_COLORS = [
   { bg: "#F1EFE8", color: "#444441", border: "#B4B2A9" },
 ];
 
-// ── 建议提问 ──────────────────────────────────────────────────────────────────
-
-const SUGGESTIONS = [
-  { icon: <IconCar size={14} />, text: "分析 2024 年新能源汽车市场竞争格局" },
-  { icon: <IconBrain size={14} />, text: "梳理 AI 大模型赛道头部玩家的融资情况" },
-  { icon: <IconCode size={14} />, text: "对比 GPT-4o 与 Claude 在代码生成场景的能力差异" },
-];
-
-// ── 工具函数 ──────────────────────────────────────────────────────────────────
+//── 工具函数 ──────────────────────────────────────────────────────────────────
 
 function makeBubbleId() {
   return Math.random().toString(36).slice(2, 9);
 }
 
+// ── Props ─────────────────────────────────────────────────────────────────────
+
+interface AgentChatWindowProps {
+  sessionId: string;
+  sessionMessageCount?: number;  // 来自 DB 的当前 message_count（父级传入）
+  initialKbIds?: string[];       // 新建会话时选中的知识库 IDs
+  onSessionUpdated?: () => void; // 流结束后通知父级刷新会话列表
+}
+
 // ── 主组件 ────────────────────────────────────────────────────────────────────
 
-export function AgentChatWindow() {
-  // sessionId 和 bubbles 必须在 useEffect 里从 sessionStorage 初始化
-  // 不能在 useState 懒初始化里读 sessionStorage（SSR/客户端不一致会导致 hydration 报错）
-  const [sessionId, setSessionId] = useState<string>("");
+export function AgentChatWindow({
+  sessionId,
+  sessionMessageCount = 0,
+  initialKbIds,
+  onSessionUpdated,
+}: AgentChatWindowProps) {
   const [bubbles, setBubbles] = useState<AgentBubble[]>([]);
   const [input, setInput] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -72,12 +76,45 @@ export function AgentChatWindow() {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [selectedKbIds, setSelectedKbIds] = useState<Set<string>>(new Set());
   const [kbPopOpen, setKbPopOpen] = useState(false);
-  const [kbsLoading, setKbsLoading] = useState(true);   // 加载完成前禁止发送
+  const [kbsLoading, setKbsLoading] = useState(true);
+
+  // 追踪首条用户消息（用于生成 session title）
+  const firstUserMsgRef = useRef<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const msgsRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   const kbPopRef = useRef<HTMLDivElement>(null);
+  // 镜像 bubbles，供异步回调读取最新值（避免 stale closure）
+  const bubblesRef = useRef<AgentBubble[]>([]);
+  // 已持久化到 DB 的气泡数量（用于 afterStreamDone 只保存增量）
+  const savedCountRef = useRef(0);
+
+  // 切换 sessionId 时：重置状态、加载历史消息；离开时触发 memory_save
+  useEffect(() => {
+    setBubbles([]);
+    bubblesRef.current = [];
+    savedCountRef.current = 0;
+    setInput("");
+    setIsRunning(false);
+    setHitlPending(false);
+    setActiveAgent(null);
+    firstUserMsgRef.current = null;
+
+    listMessages(sessionId)
+      .then((msgs) => {
+        const loaded = msgs.map(msgTobubble);
+        setBubbles(loaded);
+        bubblesRef.current = loaded;
+        savedCountRef.current = loaded.length;
+      })
+      .catch(() => {}); // 静默失败，从空白开始
+
+    return () => {
+      if (!firstUserMsgRef.current) return;
+      closeSession(sessionId).catch(() => {});
+    };
+  }, [sessionId]);
 
   // 点击 KB 弹层外部时关闭
   useEffect(() => {
@@ -91,40 +128,25 @@ export function AgentChatWindow() {
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [kbPopOpen]);
 
-  // 客户端挂载后从 sessionStorage 恢复 sessionId 和聊天记录（避免 SSR/hydration 不一致）
-  useEffect(() => {
-    // sessionId
-    const storedId = sessionStorage.getItem("agent_session_id");
-    if (storedId) {
-      setSessionId(storedId);
-    } else {
-      const id = uuidv4();
-      sessionStorage.setItem("agent_session_id", id);
-      setSessionId(id);
-    }
-
-    // 聊天记录
-    try {
-      const raw = sessionStorage.getItem("agent_bubbles");
-      if (raw) setBubbles(JSON.parse(raw) as AgentBubble[]);
-    } catch { }
-  }, []);
-
-  // 加载知识库列表（完成前阻止发送，避免 kb_ids=[] 的空请求）
+  // 加载知识库列表；initialKbIds 有值时优先使用，否则默认选第一个
   useEffect(() => {
     apiListKBs()
       .then((list) => {
         setKbs(list);
-        if (list.length > 0) setSelectedKbIds(new Set([list[0].id]));
+        if (initialKbIds && initialKbIds.length > 0) {
+          setSelectedKbIds(new Set(initialKbIds));
+        } else if (list.length > 0) {
+          setSelectedKbIds(new Set([list[0].id]));
+        }
       })
-      .catch(() => { })
+      .catch(() => {})
       .finally(() => setKbsLoading(false));
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
-  // 聊天记录持久化（仅保存 done 状态的气泡，避免保存半途截断的 streaming 状态）
+  // bubblesRef 跟随 bubbles 状态同步
   useEffect(() => {
-    const stable = bubbles.filter((b) => b.status === "done" || b.status === "error");
-    sessionStorage.setItem("agent_bubbles", JSON.stringify(stable));
+    bubblesRef.current = bubbles;
   }, [bubbles]);
 
   // 自动滚动
@@ -138,6 +160,40 @@ export function AgentChatWindow() {
     const el = msgsRef.current;
     if (!el) return;
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+
+  // ── 流结束后更新 session 元数据 ─────────────────────────────────────────────
+
+  async function afterStreamDone() {
+    if (!sessionId) return;
+    const totalCount = bubblesRef.current.length;
+    const title = firstUserMsgRef.current
+      ? firstUserMsgRef.current.slice(0, 45) +
+        (firstUserMsgRef.current.length > 45 ? "…" : "")
+      : undefined;
+
+    // 将本轮新增的已完成气泡持久化到 DB
+    const allBubbles = bubblesRef.current;
+    const newBubbles = allBubbles
+      .slice(savedCountRef.current)
+      .filter((b) => b.status === "done");
+    if (newBubbles.length > 0) {
+      const msgs = newBubbles.map((b, i) =>
+        bubbleToMsg(b, savedCountRef.current + i)
+      );
+      await saveMessages(sessionId, msgs).catch(() => {});
+      savedCountRef.current += newBubbles.length;
+    }
+
+    try {
+      await updateSession(sessionId, {
+        message_count: totalCount,
+        ...(sessionMessageCount === 0 && title ? { title } : {}),
+      });
+      onSessionUpdated?.();
+    } catch {
+      // 非关键路径，静默失败
+    }
   }
 
   // ── SSE 状态机 ──────────────────────────────────────────────────────────────
@@ -158,7 +214,6 @@ export function AgentChatWindow() {
       });
     }
 
-    // 每个节点对应一个 bubbleId
     const nodeBubbleId: Partial<Record<AgentName, string>> = {};
 
     for await (const event of gen) {
@@ -166,7 +221,6 @@ export function AgentChatWindow() {
         const node = event.node;
         setActiveAgent(node);
 
-        // memory 节点不创建大气泡，只会在 node_end 时显示系统条
         const id = makeBubbleId();
         nodeBubbleId[node] = id;
 
@@ -192,7 +246,7 @@ export function AgentChatWindow() {
           status: "streaming",
         }));
 
-        atBottomRef.current = true; // 流式时强制滚到底
+        atBottomRef.current = true;
       }
 
       else if (event.type === "node_end") {
@@ -203,7 +257,6 @@ export function AgentChatWindow() {
         const messageToUser = event.data.message_to_user;
         const answerText = event.data.answer_text;
 
-        // Supervisor 二次路由（纯内部决策）时无内容，直接删掉气泡避免重复展示
         if (node === "supervisor" && !messageToUser) {
           setBubbles((prev) => prev.filter((b) => b.id !== id));
           setActiveAgent(null);
@@ -214,9 +267,7 @@ export function AgentChatWindow() {
           ...(prev ?? { id, agent: node, content: "", replyTo: REPLY_TO[node] }),
           status: "done",
           citations,
-          // supervisor 没有 token 流，用 message_to_user 作为气泡内容
           ...(messageToUser ? { content: messageToUser } : {}),
-          // researcher 使用 ainvoke，无 token 流，答案从 node_end 的 answer_text 取
           ...(answerText ? { content: answerText } : {}),
         }));
 
@@ -250,16 +301,19 @@ export function AgentChatWindow() {
         setHitlPending(true);
         setIsRunning(false);
         setActiveAgent(null);
-        return; // SSE 在 interrupt 时自然结束，等待 resume
+        return;
       }
 
       else if (event.type === "final_answer") {
-        // Reporter 整合后输出最终答案气泡（超纲降级时由 supervisor message_to_user 触发）
-        // 若 reporter 的 node_start/node_end 已创建气泡，更新它；否则新建
         const reporterBubbleId = nodeBubbleId["reporter"];
         if (reporterBubbleId) {
           upsertBubble(reporterBubbleId, (prev) => ({
-            ...(prev ?? { id: reporterBubbleId, agent: "reporter" as AgentName, citations: [], replyTo: REPLY_TO["reporter"] }),
+            ...(prev ?? {
+              id: reporterBubbleId,
+              agent: "reporter" as AgentName,
+              citations: [],
+              replyTo: REPLY_TO["reporter"],
+            }),
             content: event.data.content,
             status: "done",
             citations: event.data.citations ?? [],
@@ -284,6 +338,7 @@ export function AgentChatWindow() {
       else if (event.type === "done") {
         setIsRunning(false);
         setActiveAgent(null);
+        await afterStreamDone();
       }
 
       else if (event.type === "error") {
@@ -301,11 +356,16 @@ export function AgentChatWindow() {
 
   const send = useCallback(async () => {
     const q = input.trim();
-    if (!q || isRunning || hitlPending || kbsLoading) return;
+    if (!q || isRunning || hitlPending || kbsLoading || !sessionId) return;
     setInput("");
     setIsRunning(true);
 
-    // 追加用户消息气泡
+    // 记录首条消息（用于生成 title）
+    if (!firstUserMsgRef.current) {
+      firstUserMsgRef.current = q;
+    }
+
+
     setBubbles((prev) => [
       ...prev,
       {
@@ -342,12 +402,9 @@ export function AgentChatWindow() {
     async (decision: "approve" | "reject") => {
       setHitlPending(false);
 
-      if (decision === "reject") {
-        return;
-      }
+      if (decision === "reject") return;
 
       setIsRunning(true);
-
       abortRef.current = new AbortController();
       try {
         const gen = resumeAgent(sessionId, decision, abortRef.current.signal);
@@ -386,8 +443,8 @@ export function AgentChatWindow() {
   const hasMessages = bubbles.length > 0;
 
   return (
-    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
-      {/* 侧边栏 */}
+    <div style={{ display: "flex", flex: 1, minWidth: 0, height: "100%", overflow: "hidden" }}>
+      {/* Agent 状态侧边栏 */}
       <AgentSidebar
         activeAgent={activeAgent}
         sessionId={sessionId}
@@ -422,38 +479,6 @@ export function AgentChatWindow() {
             · #{shortId}
           </span>
 
-          {/* 新对话按钮 */}
-          {!isRunning && (
-            <button
-              onClick={() => {
-                const id = uuidv4();
-                sessionStorage.setItem("agent_session_id", id);
-                sessionStorage.removeItem("agent_bubbles");
-                setSessionId(id);
-                setBubbles([]);
-                setInput("");
-                setHitlPending(false);
-                setActiveAgent(null);
-              }}
-              title="开启新对话"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-                padding: "3px 8px",
-                borderRadius: 6,
-                border: "0.5px solid var(--color-border-secondary)",
-                background: "transparent",
-                fontSize: 11,
-                color: "var(--color-text-tertiary)",
-                cursor: "pointer",
-              }}
-            >
-              <IconRefresh size={11} />
-              新对话
-            </button>
-          )}
-
           <span
             style={{
               marginLeft: "auto",
@@ -464,13 +489,13 @@ export function AgentChatWindow() {
               background: hitlPending
                 ? "#FCEBEB"
                 : isRunning
-                  ? "#E1F5EE"
-                  : "var(--color-background-secondary)",
+                ? "#E1F5EE"
+                : "var(--color-background-secondary)",
               color: hitlPending
                 ? "#791F1F"
                 : isRunning
-                  ? "#085041"
-                  : "var(--color-text-tertiary)",
+                ? "#085041"
+                : "var(--color-text-tertiary)",
             }}
           >
             {hitlPending ? "等待审批" : isRunning ? "运行中" : "待命"}
@@ -481,22 +506,10 @@ export function AgentChatWindow() {
         <div
           ref={msgsRef}
           onScroll={handleScroll}
-          style={{ flex: 1, overflowY: "auto" }}
+          style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}
         >
-          <div
-            style={{
-              maxWidth: 800,
-              width: "100%",
-              margin: "0 auto",
-              padding: "18px 22px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 14,
-              minHeight: "100%",
-            }}
-          >
             {!hasMessages ? (
-              /* 空状态 */
+              /* 空状态：flex:1 直接撑满滚动容器，justifyContent 居中 */
               <div
                 style={{
                   flex: 1,
@@ -529,49 +542,34 @@ export function AgentChatWindow() {
                 <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", textAlign: "center", lineHeight: 1.6, maxWidth: 320 }}>
                   Supervisor 会自动拆解任务，调度 Researcher、Analyst、Reporter 协同完成。
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%", maxWidth: 360 }}>
-                  {SUGGESTIONS.map((s, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setInput(s.text)}
-                      style={{
-                        background: "var(--color-background-secondary)",
-                        border: "0.5px solid var(--color-border-secondary)",
-                        borderRadius: 8,
-                        padding: "8px 12px",
-                        fontSize: 12,
-                        color: "var(--color-text-secondary)",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        textAlign: "left",
-                      }}
-                    >
-                      <span style={{ color: "var(--color-text-tertiary)", flexShrink: 0 }}>
-                        {s.icon}
-                      </span>
-                      {s.text}
-                    </button>
-                  ))}
-                </div>
               </div>
             ) : (
-              bubbles.map((bubble) =>
-                bubble.hitlData ? (
-                  /* HITL 审批卡片 */
-                  <HITLCard
-                    key={bubble.id}
-                    data={bubble.hitlData}
-                    onDecision={handleHITLDecision}
-                    disabled={!hitlPending}
-                  />
-                ) : (
-                  <AgentMessage key={bubble.id} bubble={bubble} />
-                )
-              )
+              /* 有消息时：正常流布局，加内边距和最大宽度 */
+              <div
+                style={{
+                  maxWidth: 800,
+                  width: "100%",
+                  margin: "0 auto",
+                  padding: "18px 22px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 14,
+                }}
+              >
+                {bubbles.map((bubble) =>
+                  bubble.hitlData ? (
+                    <HITLCard
+                      key={bubble.id}
+                      data={bubble.hitlData}
+                      onDecision={handleHITLDecision}
+                      disabled={!hitlPending}
+                    />
+                  ) : (
+                    <AgentMessage key={bubble.id} bubble={bubble} />
+                  )
+                )}
+              </div>
             )}
-          </div>
         </div>
 
         {/* 输入区 */}
@@ -751,21 +749,34 @@ export function AgentChatWindow() {
                   kbsLoading
                     ? "知识库加载中，请稍候…"
                     : hitlPending
-                      ? "等待人工审批，输入已暂停…"
-                      : isRunning
-                        ? "Agent 运行中，请稍候…"
-                        : "提出你的研究问题，Agent 群组将协同回答…"
+                    ? "等待人工审批，输入已暂停…"
+                    : isRunning
+                    ? "Agent 运行中，请稍候…"
+                    : "提出你的研究问题，Agent 群组将协同回答…"
                 }
                 style={{
                   flex: 1,
-                  border: "0.5px solid var(--color-border-secondary)",
+                  border: "1px solid var(--color-border-secondary)",
                   borderRadius: 8,
                   padding: "7px 11px",
                   fontSize: 13,
                   color: "var(--color-text-primary)",
-                  background: (hitlPending || kbsLoading) ? "var(--color-background-secondary)" : "var(--color-background-primary)",
-                  cursor: (hitlPending || kbsLoading) ? "not-allowed" : "text",
+                  background:
+                    hitlPending || kbsLoading
+                      ? "var(--color-background-secondary)"
+                      : "var(--color-background-primary)",
+                  cursor: hitlPending || kbsLoading ? "not-allowed" : "text",
                   outline: "none",
+                  boxShadow: "0 0 0 0 transparent",
+                  transition: "border-color 0.15s, box-shadow 0.15s",
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = "#185FA5";
+                  e.currentTarget.style.boxShadow = "0 0 0 3px rgba(24,95,165,0.12)";
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = "var(--color-border-secondary)";
+                  e.currentTarget.style.boxShadow = "0 0 0 0 transparent";
                 }}
               />
               <button
@@ -775,14 +786,23 @@ export function AgentChatWindow() {
                   width: 32,
                   height: 32,
                   borderRadius: 7,
-                  background: (hitlPending || kbsLoading || (!isRunning && !input.trim())) ? "var(--color-background-secondary)" : "#185FA5",
+                  background:
+                    hitlPending || kbsLoading || (!isRunning && !input.trim())
+                      ? "var(--color-background-secondary)"
+                      : "#185FA5",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  cursor: (hitlPending || kbsLoading || (!isRunning && !input.trim())) ? "not-allowed" : "pointer",
+                  cursor:
+                    hitlPending || kbsLoading || (!isRunning && !input.trim())
+                      ? "not-allowed"
+                      : "pointer",
                   flexShrink: 0,
                   border: "none",
-                  color: (hitlPending || kbsLoading || (!isRunning && !input.trim())) ? "var(--color-text-tertiary)" : "#fff",
+                  color:
+                    hitlPending || kbsLoading || (!isRunning && !input.trim())
+                      ? "var(--color-text-tertiary)"
+                      : "#fff",
                 }}
               >
                 {isRunning ? <IconSquare size={14} /> : <IconSend size={15} />}
@@ -790,16 +810,23 @@ export function AgentChatWindow() {
             </div>
 
             {/* 提示行 */}
-            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6, display: "flex", alignItems: "center", gap: 4 }}>
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--color-text-tertiary)",
+                marginTop: 6,
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
               {hitlPending ? (
                 <>
                   <IconLock size={12} />
                   HITL 审批通过后，Agent 将自动继续任务流
                 </>
               ) : (
-                <>
-                  已选 <strong>{selectedKbIds.size}</strong> 个知识库
-                </>
+                <>已选 <strong>{selectedKbIds.size}</strong> 个知识库</>
               )}
             </div>
           </div>

@@ -99,6 +99,7 @@ export default function KnowledgePage() {
   }
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="px-8 py-8">
       {/* Page header */}
       <div className="flex items-center justify-between mb-6">
@@ -216,6 +217,7 @@ export default function KnowledgePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
     </div>
   );
 }

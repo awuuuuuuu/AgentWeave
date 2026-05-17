@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -9,15 +9,61 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiRegister, tokenStorage } from "@/lib/api";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+interface OrgPreview {
+  name: string;
+  type: "department" | "command" | string;
+}
+
+const ORG_TYPE_LABEL: Record<string, string> = {
+  department: "部门",
+  command: "指挥中心",
+};
+
 export default function RegisterPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const from = searchParams.get("from") ?? "/knowledge";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [inviteCode, setInviteCode] = useState(searchParams.get("code") ?? "");
+  const [orgPreview, setOrgPreview] = useState<OrgPreview | null>(null);
+  const [codeChecking, setCodeChecking] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // 邀请码实时预检（防抖 500ms）
+  useEffect(() => {
+    const code = inviteCode.trim().toUpperCase();
+    setOrgPreview(null);
+    setCodeError(null);
+    if (!code) return;
+
+    setCodeChecking(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/orgs/validate?code=${encodeURIComponent(code)}`);
+        if (res.ok) {
+          const data: OrgPreview = await res.json();
+          setOrgPreview(data);
+          setCodeError(null);
+        } else {
+          setOrgPreview(null);
+          setCodeError("邀请码无效");
+        }
+      } catch {
+        setCodeError("验证失败，请检查网络");
+      } finally {
+        setCodeChecking(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [inviteCode]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -35,10 +81,26 @@ export default function RegisterPage() {
       setError("密码必须包含至少一个数字");
       return;
     }
+    if (!inviteCode.trim()) {
+      setError("请填写部门邀请码");
+      return;
+    }
+    if (codeChecking) {
+      setError("正在验证邀请码，请稍候");
+      return;
+    }
+    if (codeError) {
+      setError("邀请码无效，请核对后重试");
+      return;
+    }
 
     setLoading(true);
     try {
-      const tokens = await apiRegister(email, password);
+      const tokens = await apiRegister(
+        email,
+        password,
+        inviteCode.trim().toUpperCase()
+      );
       tokenStorage.set(tokens.access_token, tokens.refresh_token);
       router.push(from);
     } catch (err) {
@@ -61,6 +123,7 @@ export default function RegisterPage() {
               {error}
             </p>
           )}
+
           <div className="space-y-2">
             <Label htmlFor="email">邮箱</Label>
             <Input
@@ -97,6 +160,52 @@ export default function RegisterPage() {
               required
               autoComplete="new-password"
             />
+          </div>
+
+          {/* 邀请码（必填） */}
+          <div className="space-y-2">
+            <Label htmlFor="invite_code">部门邀请码</Label>
+            <Input
+              id="invite_code"
+              type="text"
+              placeholder="A3KX7DQF"
+              value={inviteCode}
+              onChange={(e) => {
+                setInviteCode(e.target.value.toUpperCase());
+                setError(null);
+              }}
+              className={
+                inviteCode
+                  ? orgPreview
+                    ? "border-green-500"
+                    : codeError
+                    ? "border-destructive"
+                    : ""
+                  : ""
+              }
+              maxLength={32}
+              autoComplete="off"
+              required
+            />
+            {/* 邀请码预览区 */}
+            {inviteCode.trim() && (
+              <div className="text-xs">
+                {codeChecking && (
+                  <span className="text-muted-foreground">验证中…</span>
+                )}
+                {!codeChecking && orgPreview && (
+                  <span className="text-green-600 dark:text-green-400">
+                    ✓ 加入：{orgPreview.name}
+                    <span className="ml-1 text-muted-foreground">
+                      ({ORG_TYPE_LABEL[orgPreview.type] ?? orgPreview.type})
+                    </span>
+                  </span>
+                )}
+                {!codeChecking && codeError && (
+                  <span className="text-destructive">{codeError}</span>
+                )}
+              </div>
+            )}
           </div>
         </CardContent>
         <CardFooter className="flex flex-col gap-3">
