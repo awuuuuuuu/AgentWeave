@@ -9,7 +9,7 @@ Agent 主图工厂
                                                   ──→ hitl       ──┘
                                                   ──→ END（Supervisor 直接 __end__）
 
-memory_save 已移出图流程，由前端在关闭会话时调用 POST /agent/sessions/{id}/close 触发。
+on_session_end 已移出图流程，由前端在关闭会话时调用 POST /agent/sessions/{id}/close 触发。
 
 注：Critic 节点已保留在代码库中，但未接入默认图。
     质量门控由 HITL（人工审批）承担，适合跨组织应急响应等有人在链路上的场景。
@@ -69,9 +69,9 @@ def build_agent_graph(
     hitl_fn = build_hitl()
     reporter_fn = build_reporter(llm_model=llm_model)
 
-    memory_inject_fn, _ = (
+    memory_inject_fn = (
         build_memory_nodes(memory_manager)
-        if memory_manager else (None, None)
+        if memory_manager else None
     )
 
     # ── 路由函数 ──────────────────────────────────────────────────────────────

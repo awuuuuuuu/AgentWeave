@@ -1,16 +1,15 @@
 """
-记忆节点：memory_inject + memory_save
+记忆节点：memory_inject
 
-memory_inject（入口）：
+memory_inject（图入口节点）：
   1. 若 session 消息超过阈值，用 RemoveMessage 原地压缩（图内安全机制，不直接写 checkpoint）
   2. 从 LongTermMemory + UserProfile 构建 memory_context，写入 state 供 Supervisor 使用
 
-memory_save（出口）：
-  Critic 通过后 fire-and-forget 触发 memory_manager.on_session_end()：
+run_on_session_end（图外工具函数，由 API 路由调用）：
+  前端关闭会话时触发，fire-and-forget：
     - ShortTermMemory.compress() 读真实 checkpoint → 生成摘要 → 写回 checkpoint
     - 摘要写入 LongTermMemory（Milvus）
     - UserProfile 更新
-  立即返回，不阻塞 done 事件
 
 设计说明：
   - 图内压缩用 RemoveMessage + acompress_messages（不碰 checkpoint，LangGraph 安全写入）
@@ -36,7 +35,7 @@ _KEEP_RECENT = 6
 
 
 def build_memory_nodes(memory_manager: MemoryManager):
-    """返回 (memory_inject_fn, memory_save_fn) 两个节点函数"""
+    """返回 memory_inject 节点函数"""
 
     async def memory_inject_node(state: AgentState) -> dict:
         """
@@ -58,7 +57,7 @@ def build_memory_nodes(memory_manager: MemoryManager):
             if len(messages) < _COMPRESSION_THRESHOLD:
                 return None
             old_msgs = messages[:-_KEEP_RECENT]
-            summary = await memory_manager._short.acompress_messages(old_msgs)
+            summary = await memory_manager.acompress_messages(old_msgs)
             if not summary:
                 return None
             removals = [RemoveMessage(id=m.id) for m in old_msgs if m.id]
@@ -73,13 +72,9 @@ def build_memory_nodes(memory_manager: MemoryManager):
                     db=db,
                 )
 
-        try:
-            compress_result, context = await asyncio.gather(
-                _compress(), _fetch_context(), return_exceptions=True
-            )
-        except Exception:
-            logger.exception("memory_inject: gather 失败 user=%s", user_id)
-            return {}
+        compress_result, context = await asyncio.gather(
+            _compress(), _fetch_context(), return_exceptions=True
+        )
 
         result: dict = {"memory_injected": True}
 
@@ -102,22 +97,7 @@ def build_memory_nodes(memory_manager: MemoryManager):
 
         return result
 
-    async def memory_save_node(state: AgentState) -> dict:
-        """
-        fire-and-forget 触发 on_session_end，立即返回不阻塞 done 事件。
-        on_session_end：compress checkpoint → 写 LongTermMemory → 更新 UserProfile。
-        """
-        user_id = state.get("user_id", "")
-        session_id = state.get("session_id", "")
-
-        if not user_id:
-            return {}
-
-        asyncio.create_task(run_on_session_end(memory_manager, session_id, user_id))
-        logger.info("memory_save: 后台 on_session_end 已触发 session=%s", session_id)
-        return {}
-
-    return memory_inject_node, memory_save_node
+    return memory_inject_node
 
 
 async def run_on_session_end(

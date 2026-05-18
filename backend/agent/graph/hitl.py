@@ -57,17 +57,18 @@ def build_hitl() -> object:
             }
         )
 
-        if decision == "approve":
+        if decision.lower().strip() in {"approve", "approved", "yes"}:
             logger.info("HITL: 用户批准 | 操作=%r", operation_desc[:60])
             return {
                 "pending_approval": None,
                 "next_agent": "",
+                "analyst_count": 0,   # 重置计数，允许 Supervisor 再次路由 Analyst 执行操作
                 "messages": [
-                    AIMessage(content=f"用户已批准，正在执行：{operation_desc}")
+                    AIMessage(content=f"用户已批准：{operation_desc}", name="hitl")
                 ],
             }
         else:
-            logger.info("HITL: 用户拒绝 | 操作=%r", operation_desc[:60])
+            logger.info("HITL: 用户拒绝 | decision=%r | 操作=%r", decision, operation_desc[:60])
             return {
                 "pending_approval": None,
                 "next_agent": "__end__",
@@ -76,7 +77,8 @@ def build_hitl() -> object:
                         content=(
                             f"操作已取消：用户拒绝执行 [{operation_desc}]。"
                             "如需调整，请重新描述您的需求。"
-                        )
+                        ),
+                        name="hitl",
                     )
                 ],
             }

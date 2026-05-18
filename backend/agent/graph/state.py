@@ -52,6 +52,18 @@ class AgentState(TypedDict):
     # RAG 引用 (由 Researcher 填入, 最终输出携带)
     citations: list[dict]
 
+    # 当前用户所属机构的 MCP 连接配置（由 agent_stream 写入，Analyst 节点消费）
+    # 格式：[{"name": str, "url": str, "description": str}]
+    org_mcp_connections: list[dict]
+
+    # Supervisor 用：当前 org 的 MCP 工具一句话描述（由 agent_stream 生成）
+    # 例："可用 MCP 工具：ambulance_dispatch（救护车调度）、amap（地图路线规划）"
+    org_mcp_summary: str
+
+    # 部门专属 prompt 补充（由 agent_stream 从 Organization.dept_prompts 读取）
+    org_supervisor_hints: str   # 注入 Supervisor system prompt 末尾
+    org_analyst_context: str    # 注入 Analyst system prompt 末尾
+
 
 # ── Researcher 子图状态 ───────────────────────────────────────────────────────
 

@@ -30,7 +30,7 @@ AGENT_CARD = {
     "color": "blue",
 }
 
-_RETRIEVE_TOP_K = 5
+_RETRIEVE_TOP_K = 10
 _DOC_MAX_CHARS = 1500   # 单条文档截断，防止 context 爆炸
 
 # 模型有时会在改写结果前加礼貌性前缀，清洗掉
@@ -105,12 +105,19 @@ def build_researcher(
         logger.info(
             "Researcher: 检索到 %d 条文档 | query=%r", len(docs), query[:60]
         )
+        for d in docs:
+            logger.info(
+                "  [doc%d] src=%s score=%.3f vec=%.3f bm25=%.3f | %r",
+                d["id"], d["source"], d["score"], d["vector_score"], d["bm25_score"],
+                d["content"][:120],
+            )
         return {"retrieved_docs": docs}
     
     # ── 节点：相关性评估 ──────────────────────────────────────────────────────
 
     # 评分阈值：fusion/rerank score 高于此值直接视为相关，跳过 LLM 评估
-    _SCORE_SHORTCUT = 0.45
+    # 实测 hybrid 检索场景下分数普遍在 0.55~0.80，0.80 过高导致几乎所有结果都走 LLM 评估
+    _SCORE_SHORTCUT = 0.72
 
     async def grade_docs(state: ResearcherState) -> dict:
         """评估检索结果是否足够回答问题。
@@ -142,7 +149,7 @@ def build_researcher(
         # 低分走 LLM 评估
         task = state["task"]
         doc_preview = "\n\n".join(
-            f"[{d['id']}] {d['source']}\n{d['content'][:600]}" for d in docs[:4]
+            f"[{d['id']}] {d['source']}\n{d['content'][:500]}" for d in docs[:8]
         )
         resp = await llm.ainvoke(
             [
@@ -187,7 +194,7 @@ def build_researcher(
     async def generate_answer(state: ResearcherState) -> dict:
         """基于检索文档生成最终答案，并构建引用列表"""
         # 优先用最新一批，没有时回退到历史最佳批（防止重写后零召回导致空答案）
-        docs = state.get("retrieved_docs") or state.get("best_retrieved_docs") or []
+        docs = state.get("best_retrieved_docs") or state.get("retrieved_docs") or []
         task = state["task"]
 
         # 构建上下文块
@@ -197,7 +204,7 @@ def build_researcher(
             )
             context_block = f"<context>\n{context}\n</context>"
         else:
-            context_block = "<context>（未找到相关文档，请根据通用知识回答）</context>"
+            context_block = "<context>（知识库中未检索到相关文档）</context>"
 
         resp = await llm.ainvoke(
             [
@@ -244,7 +251,7 @@ def build_researcher(
         )
         return {
             "citations": citations,
-            "messages": [AIMessage(content=answer)],
+            "messages": [AIMessage(content=answer, name="researcher")],
             "researcher_count": state.get("researcher_count", 0) + 1,
         }
 

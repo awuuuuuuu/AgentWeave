@@ -41,12 +41,13 @@ def build_reporter(llm_model: str = "gpt-4o") -> object:
         user_msgs = [m for m in messages if isinstance(m, HumanMessage)]
         user_query = user_msgs[-1].content if user_msgs else ""
 
-        # 收集所有 Worker AI 消息（跳过 Supervisor 的路由消息，通过 name 字段精确过滤）
+        # 收集 Worker AI 消息：包含 researcher/analyst，排除 supervisor/reporter 自身
+        _EXCLUDE_NAMES = {"supervisor", "reporter"}
         worker_outputs: list[str] = []
         for m in messages:
             if not isinstance(m, AIMessage) or not m.content:
                 continue
-            if getattr(m, "name", "") == "supervisor":
+            if getattr(m, "name", "") in _EXCLUDE_NAMES:
                 continue
             worker_outputs.append(m.content.strip())
 
@@ -64,8 +65,8 @@ def build_reporter(llm_model: str = "gpt-4o") -> object:
         else:
             context_section = ""
 
-        # 专家分析摘要（取最后 3 条，避免上下文过长）
-        expert_section = "\n\n---\n\n".join(worker_outputs[-3:])
+        # 专家分析摘要（全部 worker 输出，reporter 已通过名称精确过滤，不会越界）
+        expert_section = "\n\n---\n\n".join(worker_outputs)
 
         resp = await llm.ainvoke(
             [
@@ -81,7 +82,7 @@ def build_reporter(llm_model: str = "gpt-4o") -> object:
         logger.info("Reporter: 生成最终答案 %d 字 | 引用 %d 条", len(answer), len(citations))
 
         return {
-            "messages": [AIMessage(content=answer)],
+            "messages": [AIMessage(content=answer, name="reporter")],
         }
 
     return reporter_node

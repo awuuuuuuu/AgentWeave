@@ -144,3 +144,7 @@ class MemoryManager:
     async def aneeds_compression(self, session_id: str, user_id: str = "") -> bool:
         """判断当前会话是否超过压缩阈值"""
         return await self._short.aneeds_compression(session_id, user_id)
+
+    async def acompress_messages(self, messages: list) -> str | None:
+        """对给定消息列表生成摘要文本，不读写 checkpoint（图内压缩节点使用）"""
+        return await self._short.acompress_messages(messages)
