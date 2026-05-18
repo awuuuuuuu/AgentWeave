@@ -4,6 +4,12 @@ from contextlib import asynccontextmanager
 
 import logging
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 # config.py 在模块级调用 load_dotenv，此处无需重复

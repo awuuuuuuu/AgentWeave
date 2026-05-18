@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .session import Base
@@ -43,6 +44,14 @@ class Organization(Base):
     type: Mapped[str] = mapped_column(String(16), nullable=False, default="department")
     # 邀请码（唯一），分享给部门成员注册时使用
     invite_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    # 部门代码（种子脚本用），如 "medical_ems" / "traffic_control"
+    dept_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # MCP 连接配置列表：[{"name": str, "url": str, "description": str}]
+    mcp_connections: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    # 部门专属 Prompt 补充：{"supervisor_hints": str, "analyst_context": str}
+    dept_prompts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )

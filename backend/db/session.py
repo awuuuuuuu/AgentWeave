@@ -25,12 +25,18 @@ class Base(DeclarativeBase):
     pass
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with SessionLocal() as session:
+    session = SessionLocal()
+    try:
+        yield session
+    except Exception:
         try:
-            yield session
+            await session.rollback()
         except Exception:
-            try:
-                await session.rollback()
-            except Exception:
-                pass
-            raise
+            pass
+        raise
+    finally:
+        try:
+            await session.close()
+        except Exception:
+            # 底层连接已断开（如长时 SSE 期间 asyncpg 超时）时忽略 close 错误
+            pass

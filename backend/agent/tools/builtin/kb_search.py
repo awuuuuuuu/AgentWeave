@@ -81,7 +81,9 @@ class KBSearchTool(BaseTool):
         records: list[dict] = []
         total_chars = 0
         for i, chunk in enumerate(all_chunks, 1):
-            chunk_str = f"[{i}] {chunk.text}\n来源：{chunk.source_file}"
+            # 父子切分模式：子块命中后返回父块完整上下文给 LLM
+            display_text = chunk.extra_meta.get("parent_text") or chunk.text
+            chunk_str = f"[{i}] {display_text}\n来源：{chunk.source_file}"
             if total_chars + len(chunk_str) > _MAX_CHARS:
                 lines.append(f"... （已截断，更多结果请缩小查询范围）")
                 break
@@ -90,7 +92,7 @@ class KBSearchTool(BaseTool):
             records.append(
                 {
                     "chunk_id": chunk.chunk_id,
-                    "text": chunk.text,
+                    "text": display_text,
                     "source_file": chunk.source_file,
                     "score": round(chunk.rerank_score or chunk.fusion_score, 4),
                 }

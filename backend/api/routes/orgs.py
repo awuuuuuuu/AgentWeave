@@ -1,10 +1,14 @@
 """
 机构管理路由
 
-POST /orgs              — 创建机构（开发/Demo 用，生产环境应鉴权）
-GET  /orgs/validate     — 验证邀请码，返回机构基本信息（注册页预检）
-GET  /orgs/me           — 当前用户所在机构详情
-GET  /orgs/me/members   — 当前机构成员列表
+POST /orgs                        — 创建机构（开发/Demo 用，生产环境应鉴权）
+GET  /orgs/validate               — 验证邀请码，返回机构基本信息（注册页预检）
+GET  /orgs/me                     — 当前用户所在机构详情
+GET  /orgs/me/members             — 当前机构成员列表
+GET  /orgs/me/mcp-connections     — 查询 MCP 连接列表
+PUT  /orgs/me/mcp-connections     — 全量更新 MCP 连接列表
+POST /orgs/me/mcp-connections     — 追加单条 MCP 连接
+DELETE /orgs/me/mcp-connections/{name} — 按 name 删除单条 MCP 连接
 """
 from __future__ import annotations
 
@@ -129,3 +133,79 @@ async def validate_invite_code(
     if org is None:
         raise HTTPException(status_code=404, detail="邀请码无效")
     return OrgValidateOut(name=org.name, type=org.type)
+
+
+# ── MCP 连接管理 ───────────────────────────────────────────────────────────────
+
+class McpConnection(BaseModel):
+    name: str
+    url: str
+    description: str = ""
+
+
+async def _get_my_org(current_user: User, db: AsyncSession) -> Organization:
+    if not current_user.org_id:
+        raise HTTPException(status_code=404, detail="您还未加入任何部门")
+    org = await db.scalar(select(Organization).where(Organization.id == current_user.org_id))
+    if org is None:
+        raise HTTPException(status_code=404, detail="机构不存在")
+    return org
+
+
+@router.get("/me/mcp-connections", response_model=list[McpConnection])
+async def list_mcp_connections(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[McpConnection]:
+    """查询当前机构的 MCP 连接列表。"""
+    org = await _get_my_org(current_user, db)
+    return [McpConnection(**c) for c in (org.mcp_connections or [])]
+
+
+@router.put("/me/mcp-connections", response_model=list[McpConnection])
+async def replace_mcp_connections(
+    body: list[McpConnection],
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[McpConnection]:
+    """全量替换当前机构的 MCP 连接列表。"""
+    org = await _get_my_org(current_user, db)
+    org.mcp_connections = [c.model_dump() for c in body]
+    await db.commit()
+    await db.refresh(org)
+    return [McpConnection(**c) for c in org.mcp_connections]
+
+
+@router.post("/me/mcp-connections", response_model=list[McpConnection], status_code=201)
+async def add_mcp_connection(
+    body: McpConnection,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[McpConnection]:
+    """向当前机构追加一条 MCP 连接（name 重复则报错）。"""
+    org = await _get_my_org(current_user, db)
+    existing = org.mcp_connections or []
+    if any(c["name"] == body.name for c in existing):
+        raise HTTPException(status_code=409, detail=f"名称 '{body.name}' 已存在")
+    org.mcp_connections = existing + [body.model_dump()]
+    await db.commit()
+    await db.refresh(org)
+    return [McpConnection(**c) for c in org.mcp_connections]
+
+
+@router.delete("/me/mcp-connections/{name}", response_model=list[McpConnection])
+async def delete_mcp_connection(
+    name: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[McpConnection]:
+    """按 name 删除一条 MCP 连接。"""
+    org = await _get_my_org(current_user, db)
+    existing = org.mcp_connections or []
+    updated = [c for c in existing if c["name"] != name]
+    if len(updated) == len(existing):
+        raise HTTPException(status_code=404, detail=f"未找到名称为 '{name}' 的 MCP 连接")
+    org.mcp_connections = updated
+    await db.commit()
+    await db.refresh(org)
+    return [McpConnection(**c) for c in org.mcp_connections]

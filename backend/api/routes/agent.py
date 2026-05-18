@@ -30,11 +30,14 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent.graph.agent_graph import get_agent_cards
 from agent.graph.memory_nodes import run_on_session_end
 from auth.dependencies import get_current_user
-from db.models import User
+from db.models import Organization, User
+from db.session import get_session
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -43,6 +46,14 @@ _MAX_QUERY_CHARS = 4000
 _KNOWN_NODES = frozenset(
     {"memory_inject", "supervisor", "researcher", "analyst", "reporter"}
 )
+
+# Researcher 子图内部步骤 → 前端状态提示文字
+_RESEARCHER_STEPS: dict[str, str] = {
+    "retrieve": "正在检索知识库…",
+    "grade":    "正在评估文档质量…",
+    "rewrite":  "正在优化查询词…",
+    "generate": "正在生成答案…",
+}
 
 
 # ── 请求/响应 Schema ──────────────────────────────────────────────────────────
@@ -133,6 +144,14 @@ async def _process_events(
             # 节点开始
             if ev_type == "on_chain_start" and ev_name in _KNOWN_NODES:
                 yield _sse({"type": "node_start", "node": ev_name, "data": {}})
+
+            # Researcher 子图步骤提示（retrieve / grade / rewrite / generate）
+            elif ev_type == "on_chain_start" and ev_name in _RESEARCHER_STEPS:
+                yield _sse({
+                    "type": "status",
+                    "node": "researcher",
+                    "data": {"step": ev_name, "text": _RESEARCHER_STEPS[ev_name]},
+                })
 
             # LLM token 逐字（supervisor 使用 structured_output，跳过原始 JSON token）
             elif ev_type == "on_chat_model_stream":
@@ -257,7 +276,14 @@ async def _process_events(
         raise
     except Exception as exc:
         logger.exception("Agent SSE: 错误 session=%s", session_id)
-        yield _sse({"type": "error", "data": {"message": str(exc)}})
+        # 网络类错误给用户友好提示，避免暴露原始异常字符串
+        exc_qualname = f"{type(exc).__module__}.{type(exc).__name__}"
+        _NETWORK_ERRORS = ("ConnectionError", "ConnectError", "Timeout", "APIConnectionError")
+        if any(k in exc_qualname for k in _NETWORK_ERRORS):
+            user_msg = "AI 服务暂时无法连接，请稍后重试"
+        else:
+            user_msg = str(exc) or "Agent 执行出错"
+        yield _sse({"type": "error", "data": {"message": user_msg}})
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -270,17 +296,60 @@ async def list_members(
     return get_agent_cards()
 
 
+async def _get_org_mcp_connections(user: User, db: AsyncSession) -> list[dict]:
+    """读取用户所在机构的 MCP 连接配置；无机构或无连接时返回空列表。"""
+    if not user.org_id:
+        return []
+    org = await db.scalar(select(Organization).where(Organization.id == user.org_id))
+    if org is None:
+        return []
+    return org.mcp_connections or []
+
+
+async def _get_org_dept_prompts(user: User, db: AsyncSession) -> tuple[str, str]:
+    """读取用户所在机构的部门专属 prompt；返回 (supervisor_hints, analyst_context)。"""
+    if not user.org_id:
+        return "", ""
+    org = await db.scalar(select(Organization).where(Organization.id == user.org_id))
+    if org is None or not org.dept_prompts:
+        return "", ""
+    prompts = org.dept_prompts
+    return prompts.get("supervisor_hints", ""), prompts.get("analyst_context", "")
+
+
+def _build_mcp_summary(mcp_connections: list[dict]) -> str:
+    """把 mcp_connections 列表转为 Supervisor prompt 里的一行描述。"""
+    if not mcp_connections:
+        return ""
+    parts = [
+        f"{c['name']}（{c.get('description', '')}）"
+        for c in mcp_connections
+        if c.get("name")
+    ]
+    return "Analyst 可调用以下 MCP 工具：" + "、".join(parts)
+
+
 @router.post("/stream")
 async def agent_stream(
     req: AgentChatRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     """启动 Agent 对话，SSE 流式返回节点事件"""
     query = req.query.strip()[:_MAX_QUERY_CHARS]
     if not query:
         raise HTTPException(status_code=400, detail="query 不能为空")
-    logger.info("agent_stream: session=%s kb_ids=%s", req.session_id, req.kb_ids)
+
+    # 读取当前用户 org 的 MCP 连接配置和部门专属 prompt
+    org_mcp_connections, (org_supervisor_hints, org_analyst_context) = await asyncio.gather(
+        _get_org_mcp_connections(current_user, db),
+        _get_org_dept_prompts(current_user, db),
+    )
+    logger.info(
+        "agent_stream: session=%s kb_ids=%s mcp_conns=%d",
+        req.session_id, req.kb_ids, len(org_mcp_connections),
+    )
 
     graph = _get_graph(request)
     config = _make_config(req.session_id, current_user.id)
@@ -294,6 +363,10 @@ async def agent_stream(
     per_turn_reset = {
         "messages": [HumanMessage(content=query)],
         "kb_ids": req.kb_ids,
+        "org_mcp_connections": org_mcp_connections,
+        "org_mcp_summary": _build_mcp_summary(org_mcp_connections),
+        "org_supervisor_hints": org_supervisor_hints,
+        "org_analyst_context": org_analyst_context,
         "next_agent": "",
         "task": "",
         "message_to_user": "",
@@ -368,9 +441,10 @@ async def close_agent_session(
     """
     memory_manager = getattr(request.app.state, "memory_manager", None)
     if memory_manager:
-        asyncio.create_task(
+        task = asyncio.create_task(
             run_on_session_end(memory_manager, session_id, current_user.id)
         )
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
         logger.info("close_session: memory_save 已调度 session=%s", session_id)
     return {"status": "ok"}
 
