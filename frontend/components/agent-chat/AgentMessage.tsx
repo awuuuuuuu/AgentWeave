@@ -630,7 +630,7 @@ export function AgentMessage({ bubble }: AgentMessageProps) {
                   flexShrink: 0, animation: "spin 0.75s linear infinite",
                 }}
               />
-              思考中…
+              {content || "思考中…"}
             </span>
           ) : (
             <>

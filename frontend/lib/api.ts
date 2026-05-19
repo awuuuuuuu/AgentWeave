@@ -403,6 +403,30 @@ export async function apiGetOrgMembers(): Promise<OrgMember[]> {
   return apiFetch("/orgs/me/members").then((r) => r.json());
 }
 
+export interface McpConnection {
+  name: string;
+  url: string;
+  description: string;
+}
+
+export async function apiListMcpConnections(): Promise<McpConnection[]> {
+  return apiFetch("/orgs/me/mcp-connections").then((r) => r.json());
+}
+
+export async function apiAddMcpConnection(conn: McpConnection): Promise<McpConnection[]> {
+  return apiFetch("/orgs/me/mcp-connections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(conn),
+  }).then((r) => r.json());
+}
+
+export async function apiDeleteMcpConnection(name: string): Promise<McpConnection[]> {
+  return apiFetch(`/orgs/me/mcp-connections/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  }).then((r) => r.json());
+}
+
 // ── SSE 流式问答 ───────────────────────────────────────────────────────────
 
 export interface Citation {

@@ -249,6 +249,17 @@ export function AgentChatWindow({
         atBottomRef.current = true;
       }
 
+      else if (event.type === "status") {
+        const node = event.node;
+        const id = nodeBubbleId[node];
+        if (!id) continue;
+        upsertBubble(id, (prev) => ({
+          ...(prev ?? { id, agent: node, citations: [], replyTo: REPLY_TO[node] }),
+          content: event.data.text,
+          status: "thinking",
+        }));
+      }
+
       else if (event.type === "node_end") {
         const node = event.node;
         const id = nodeBubbleId[node];

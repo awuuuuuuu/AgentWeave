@@ -60,6 +60,7 @@ export type AgentSSEEvent =
   | { type: "node_start"; node: AgentName }
   | { type: "token"; node: AgentName; data: { content: string } }
   | { type: "node_end"; node: AgentName; data: { citations?: Citation[]; message_to_user?: string; answer_text?: string } }
+  | { type: "status"; node: AgentName; data: { step: string; text: string } }
   | { type: "interrupt"; node: "hitl"; data: HITLData }
   | { type: "final_answer"; data: { content: string; citations: Citation[] } }
   | { type: "done"; data: { citations: Citation[] } }
@@ -81,7 +82,7 @@ export interface AgentBubble {
 // reply-to 硬推断：按节点在图中的依赖关系固定
 export const REPLY_TO: Partial<Record<AgentName, { agentName: string; text: string }>> = {
   researcher: { agentName: "Supervisor", text: "收到，开始检索" },
-  analyst:    { agentName: "Supervisor", text: "收到指令，开始建模" },
+  analyst:    { agentName: "Supervisor", text: "收到，调用工具分析" },
   reporter:   { agentName: "Supervisor", text: "收到，整合最终答案" },
   hitl:       { agentName: "Supervisor", text: "需要人工确认" },
 };

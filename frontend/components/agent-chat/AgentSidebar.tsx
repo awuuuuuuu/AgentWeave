@@ -34,7 +34,7 @@ const AGENT_CONFIG: Record<
     icon: <IconChartBar size={15} />,
     dotColor: "#7F77DD",
     iconColor: "#7F77DD",
-    desc: "数据建模分析",
+    desc: "MCP 工具调用 + 分析",
   },
   reporter: {
     icon: <IconClipboardList size={15} />,
