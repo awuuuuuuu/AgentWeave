@@ -9,8 +9,8 @@ _SEPARATORS = ["\n\n", "\n", "。", ".", "；", ";", " ", ""]
 
 @dataclass
 class RecursiveConfig:
-    chunk_size: int = 512
-    chunk_overlap: int = 64
+    chunk_size: int = 1024
+    chunk_overlap: int = 128
     separators: list[str] = field(default_factory=lambda: list(_SEPARATORS))
     encoding_name: str = "cl100k_base"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal, Union
 
@@ -120,43 +121,58 @@ class PdfParser(BaseParser):
             if chunk: chunks.append(chunk)
         return chunks
     
+    # 降级页比例超过此阈值时，放弃逐页降级，直接对整份 PDF 做整体 hi_res 解析
+    SMART_ESCALATE_THRESHOLD: float = 0.5
+    # 局部降级时并发调用 hi_res API 的最大线程数
+    SMART_MAX_WORKERS: int = 4
+
     def _run_smart_pipeline(self, pdf_bytes: bytes, filename: str) -> list[ParsedChunk]:
         """
-        智能探路算法：
-        1. fitz 直接提取文字
-        2. 若某页存在【空页/乱码/图片】的话，则将该页加入降级的页码集合
+        智能探路算法（两阶段）：
+
+        Phase 1 — 本地扫描（无 API 调用）：
+            fitz 全文扫描，识别每页是否需要降级（空页/乱码/含重要图表），
+            同时缓存正常页的本地提取结果。
+
+        Phase 2 — 路由决策：
+            - 降级页比例 >= SMART_ESCALATE_THRESHOLD（默认 50%）：
+              整体 hi_res（1 次 API 调用），跨页上下文更完整，API 调用次数最少
+            - 否则：
+              仅对降级页逐一调用 hi_res API，正常页沿用本地结果，节省成本
         """
-        chunks = []
+        # Phase 1: 全文扫描，不调任何 API
+        # 同时预提取降级页的单页 bytes，供后续并发调用使用（fitz 操作，纯内存，极快）
+        good_page_chunks: dict[int, list[ParsedChunk]] = {}
+        fallback_pages: list[int] = []
+        fallback_page_bytes: dict[int, bytes] = {}
+        fallback_page_elements: dict[int, list] = {}  # 降级 API 失败时的兜底
 
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            for page_idx in range(doc.page_count):
+            total_pages = doc.page_count
+            for page_idx in range(total_pages):
                 page_num = page_idx + 1
                 page = doc[page_idx]
-                
-                # 1. 提取当前页并检查
+
                 page_elements = []
                 page_has_image = False
                 page_raw_text = ""
-                
+
                 page_area = page.rect.width * page.rect.height
                 for block in page.get_text("blocks"):
                     if block[6] != 0:
-                        continue  # 内联图片块，由下面 get_image_info 统一处理
+                        continue
                     text = block[4].strip()
                     if text:
                         page_raw_text += text
                         page_elements.append(_FitzElement(text, page_num, bbox=block[:4]))
 
-                # 检测页面上所有光栅图像（含 XObject 嵌入图，如论文配图）
                 for img_info in page.get_image_info():
                     bbox = img_info["bbox"]
                     img_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
                     if page_area > 0 and img_area / page_area > 0.1:
                         page_has_image = True
                         break
-                
-                # 2. 判断是否降级
-                needs_fallback = False
+
                 if page_has_image:
                     logger.debug("Page %d: 检测到图片/图表，加入降级名单。", page_num)
                     needs_fallback = True
@@ -166,34 +182,71 @@ class PdfParser(BaseParser):
                 elif _is_garbled(page_raw_text):
                     logger.debug("Page %d: 乱码比例过高(编码损坏)，加入降级名单。", page_num)
                     needs_fallback = True
+                else:
+                    needs_fallback = False
 
-                # 3. 路由执行
-                if not needs_fallback:
-                    # 正常页：组装本地提取的结果
+                if needs_fallback:
+                    fallback_pages.append(page_num)
+                    fallback_page_elements[page_num] = page_elements
+                    fallback_page_bytes[page_num] = self._extract_single_page_from_doc(doc, page_num)
+                else:
+                    page_chunks = []
                     for el in page_elements:
                         chunk = self._build_chunk(el, filename)
-                        if chunk: chunks.append(chunk)
-                else:
-                    # 异常页面处理：复用当前 Document 实例截取单页，调用远端高精度解析服务兜底
-                    logger.info("第 %d 页命中降级规则 (存在图表/空页/乱码)，触发 hi_res 远端 API 进行高精度重解析...", page_num)
-                    try:
-                        single_page_bytes = self._extract_single_page_from_doc(doc, page_num)
-                        hi_res_elements = _call_api(
-                            single_page_bytes, None, "hi_res", infer_table_structure=True
-                        )
-                        for el in hi_res_elements:
-                            chunk = self._build_chunk(el, filename)
-                            if chunk:
-                                chunk.metadata["fallback"] = "hi_res"
-                                chunks.append(chunk)
-                    except Exception as exc:
-                        logger.warning("对第 %d 页执行远端降级失败: %s", page_num, exc)
-                        # 降级失败，使用本地提取的残缺版
-                        for el in page_elements:
-                            chunk = self._build_chunk(el, filename)
-                            if chunk: chunks.append(chunk)
-                            
-        return chunks
+                        if chunk:
+                            page_chunks.append(chunk)
+                    good_page_chunks[page_num] = page_chunks
+
+        # Phase 2: 路由决策
+        fallback_ratio = len(fallback_pages) / total_pages if total_pages > 0 else 0
+
+        if fallback_ratio >= self.SMART_ESCALATE_THRESHOLD:
+            logger.info(
+                "降级页比例 %.0f%% (%d/%d 页) 超过阈值 %.0f%%，升级为整体 hi_res 解析（1 次 API 调用）",
+                fallback_ratio * 100, len(fallback_pages), total_pages,
+                self.SMART_ESCALATE_THRESHOLD * 100,
+            )
+            return self._run_hi_res_pipeline(pdf_bytes, None, filename)
+
+        # 局部降级：并发调用 hi_res API，各页独立互不依赖
+        logger.info(
+            "降级页 %d/%d 页（%.0f%%），以 %d 线程并发调用 hi_res API",
+            len(fallback_pages), total_pages, fallback_ratio * 100, self.SMART_MAX_WORKERS,
+        )
+        all_chunks: list[ParsedChunk] = []
+        for page_chunks in good_page_chunks.values():
+            all_chunks.extend(page_chunks)
+
+        def _process_fallback_page(page_num: int) -> tuple[int, list[ParsedChunk]]:
+            logger.info("第 %d 页命中降级规则 (存在图表/空页/乱码)，触发 hi_res 远端 API 进行高精度重解析...", page_num)
+            try:
+                hi_res_elements = _call_api(
+                    fallback_page_bytes[page_num], None, "hi_res", infer_table_structure=True
+                )
+                chunks = []
+                for el in hi_res_elements:
+                    chunk = self._build_chunk(el, filename)
+                    if chunk:
+                        chunk.metadata["fallback"] = "hi_res"
+                        chunks.append(chunk)
+                return page_num, chunks
+            except Exception as exc:
+                logger.warning("对第 %d 页执行远端降级失败: %s", page_num, exc)
+                chunks = []
+                for el in fallback_page_elements.get(page_num, []):
+                    chunk = self._build_chunk(el, filename)
+                    if chunk:
+                        chunks.append(chunk)
+                return page_num, chunks
+
+        with ThreadPoolExecutor(max_workers=self.SMART_MAX_WORKERS) as executor:
+            futures = {executor.submit(_process_fallback_page, pn): pn for pn in fallback_pages}
+            for future in as_completed(futures):
+                _, page_chunks = future.result()
+                all_chunks.extend(page_chunks)
+
+        all_chunks.sort(key=lambda c: c.metadata.get("page_number") or 0)
+        return all_chunks
     
     def _build_chunk(self, el, filename: str) -> ParsedChunk | None:
         """统一的数据装配流水线：负责过滤页眉页脚，组装最终的 ParsedChunk。"""

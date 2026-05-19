@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 # Markdown 标题行：# / ## / ### …（最多 6 级）
 _MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)")
+# Markdown 表格分隔行：| --- | --- | 形式
+_MD_TABLE_SEP_RE = re.compile(r"^\s*\|[\s\-|:]+\|\s*$")
 
 # YAML frontmatter 块：文件开头 --- 到下一个 ---
 _FRONTMATTER_RE = re.compile(r"^\s*---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
@@ -88,11 +90,13 @@ def _split_md(body: str, filename: str, frontmatter: dict[str, str]) -> list[Par
         block = "\n".join(pending_lines).strip()
         pending_lines.clear()
         if block:
+            # 检测块内是否包含 Markdown 表格（有分隔行 | --- | 即判定为表格）
+            content_type = "table" if _MD_TABLE_SEP_RE.search(block) else "text"
             chunks.append(ParsedChunk(
                 text=block,
                 metadata={
                     "source_file": filename,
-                    "content_type": "text",
+                    "content_type": content_type,
                     "section_path": section_path,
                     **frontmatter,
                 }

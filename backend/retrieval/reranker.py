@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -48,6 +49,15 @@ class Reranker:
         candidates.sort(key=lambda c: c.rerank_score, reverse=True)
         logger.debug("Reranker(%s): 精排 %d 条", self._cfg.reranker_type, len(candidates))
         return candidates[:top_k] if top_k is not None else candidates
+
+    async def arerank(
+        self,
+        query: str,
+        chunks: list[RetrievedChunk],
+        top_k: int | None = None,
+    ) -> list[RetrievedChunk]:
+        """异步精排：在线程池中运行同步 rerank，避免阻塞事件循环。"""
+        return await asyncio.to_thread(self.rerank, query, chunks, top_k)
 
     # ── DashScope ────────────────────────────────────────────────────────────
 

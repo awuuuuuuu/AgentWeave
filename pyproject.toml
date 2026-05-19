@@ -38,6 +38,11 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0",  # AsyncPostgresSaver：HITL 状态跨重启持久化
     "psycopg[binary]>=3.3.4",
     "psycopg-pool>=3.3.1",
+    # ── Step 9: A2A + MCP ─────────────────────────────────────────────────────
+    "mcp>=1.9.0",                      # MCP Python SDK（自定义 MCP Server）
+    "langchain-mcp-adapters>=0.1.0",   # 将 MCP 工具转换为 LangChain Tool
+    "aiosqlite>=0.20.0",               # 异步 SQLite（城市状态 DB）
+    "httpx>=0.27",                     # A2A HTTP 客户端调用
 ]
 
 [dependency-groups]

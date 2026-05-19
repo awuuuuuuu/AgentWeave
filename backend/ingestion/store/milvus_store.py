@@ -196,8 +196,11 @@ class MilvusStore:
         schema.add_field(_F_EMBED_MODEL,  DataType.VARCHAR, max_length=128)
         schema.add_field(_F_CHUNK_INDEX,  DataType.INT64)
         # enable_analyzer=True 是 BM25 Function 的前提
+        # analyzer_params: 使用 jieba 分词器，正确切分中文词组（如"分级标准"→["分级","标准"]）
+        # 不指定时默认 standard 分词器，中文连续字符不切词，BM25 几乎失效
         schema.add_field(_F_TEXT,         DataType.VARCHAR, max_length=_TEXT_MAX_BYTES,
-                         enable_analyzer=True)
+                         enable_analyzer=True,
+                         analyzer_params={"tokenizer": "jieba"})
         schema.add_field(_F_EXTRA_META,   DataType.JSON)
         schema.add_field(_F_VECTOR,       DataType.FLOAT_VECTOR, dim=self._cfg.vector_dim)
 

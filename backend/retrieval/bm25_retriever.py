@@ -68,18 +68,22 @@ class BM25Retriever(BaseRetriever):
         kb_expr = _kb_filter(knowledge_base_id)
         expr = f"({kb_expr}) and ({filter_expr})" if filter_expr else kb_expr
 
-        results = self._client.search(
-            collection_name=self._collection,
-            data=[query],
-            anns_field=_F_SPARSE_VECTOR,
-            limit=limit,
-            filter=expr,
-            search_params={
-                "metric_type": "BM25",
-                "params": {"drop_ratio_search": self._cfg.drop_ratio_search}
-            },
-            output_fields=_OUTPUT_FIELDS
-        )
+        try:
+            results = self._client.search(
+                collection_name=self._collection,
+                data=[query],
+                anns_field=_F_SPARSE_VECTOR,
+                limit=limit,
+                filter=expr,
+                search_params={
+                    "metric_type": "BM25",
+                    "params": {"drop_ratio_search": self._cfg.drop_ratio_search}
+                },
+                output_fields=_OUTPUT_FIELDS
+            )
+        except Exception as e:
+            logger.warning("BM25Retriever: Milvus 搜索失败，返回空列表: %s", e)
+            return []
 
         hits = results[0] if results else []
         chunks = []
@@ -97,5 +101,5 @@ class BM25Retriever(BaseRetriever):
                 extra_meta=e.get(_F_EXTRA_META) or {}
             ))
 
-        logger.debug("BM25Retriever: query=%r kb=%s 返回 %d 条", query[:80], knowledge_base_id, len(chunks))
+        logger.info("BM25Retriever: query=%r kb=%s 返回 %d 条", query[:80], knowledge_base_id, len(chunks))
         return chunks
