@@ -121,10 +121,20 @@ SCENARIOS: dict[str, dict] = {
             {
                 "name": "情景C-路线规划",
                 "query": "A3救护车从泰达医院出发前往港城大道388号，规划最优路线。",
-                "expected_chain": ["analyst", "reporter"],
+                "expected_chain": ["analyst"],   # 路线规划后直接 __end__，无 reporter
                 "expected_tools_ordered": ["plan_driving_route"],
                 "expect_hitl": False,
                 "expect_rag_fallback": False,
+                "expect_map_updates": True,   # plan_driving_route → 1条路线地图气泡
+            },
+            {
+                "name": "情景D-坐标定位",
+                "query": "泰达医院的经纬度坐标是多少？",
+                "expected_chain": ["analyst"],   # 坐标查询后直接 __end__
+                "expected_tools_ordered": ["geocode"],
+                "expect_hitl": False,
+                "expect_rag_fallback": False,
+                "expect_map_updates": False,  # geocode 不产生地图气泡（只作中间步骤）
             },
         ],
     },
@@ -151,10 +161,20 @@ SCENARIOS: dict[str, dict] = {
                     "救护车需要从泰达医院快速到达港城大道388号，"
                     "规划救援走廊并设置沿途路口为应急绿波。"
                 ),
-                "expected_chain": ["analyst", "hitl", "reporter"],
+                "expected_chain": ["analyst", "hitl", "reporter"],  # 含信号写操作，保留 reporter
                 "expected_tools_ordered": ["plan_driving_route"],
                 "expect_hitl": True,
                 "expect_rag_fallback": False,
+                "expect_map_updates": True,   # plan_driving_route → 路线地图气泡
+            },
+            {
+                "name": "情景C-地点定位",
+                "query": "港城大道388号的精确经纬度坐标是多少？",
+                "expected_chain": ["analyst"],  # 坐标查询后直接 __end__
+                "expected_tools_ordered": ["geocode"],
+                "expect_hitl": False,
+                "expect_rag_fallback": False,
+                "expect_map_updates": False,  # geocode 不产生地图气泡
             },
         ],
     },
@@ -285,6 +305,7 @@ class _LogCapture(logging.Handler):
         self.rag_fallback: bool = False          # 是否输出 fallback
         self.rag_citations: int = 0              # researcher 实际引用文档数（从日志读取）
         self.researcher_queries: list[str] = []  # researcher 每轮实际检索词（含重写后）
+        self.map_update_count: int = 0           # analyst 输出的地图更新条数
 
     def emit(self, record: logging.LogRecord) -> None:
         msg = record.getMessage()
@@ -323,6 +344,11 @@ class _LogCapture(logging.Handler):
         if m:
             self.researcher_queries.append(m.group(1))
 
+        # 地图更新条数：Analyst [N]: 生成分析结果 N 字，地图更新 N 条
+        m = re.search(r"地图更新 (\d+) 条", msg)
+        if m:
+            self.map_update_count += int(m.group(1))
+
 
 # ── 测试结果数据类 ────────────────────────────────────────────────────────────
 
@@ -341,6 +367,7 @@ class _CaseResult:
         self.rag_relevant: bool | None = None
         self.rag_fallback: bool = False
         self.researcher_queries: list[str] = []  # researcher 实际检索词（用于 current_task 质量检测）
+        self.map_update_count: int = 0           # analyst 输出的地图更新条数
         self.elapsed: float = 0.0
         self.errors: list[str] = []
 
@@ -401,6 +428,10 @@ class _CaseResult:
         # fallback
         if case.get("expect_rag_fallback") is False and self.rag_fallback:
             failures.append("RAG 输出了 fallback（无法回答），可能 KB 召回质量不足")
+
+        # map_updates：amap 工具被调用时应产生地图数据
+        if case.get("expect_map_updates") and self.map_update_count == 0:
+            failures.append("期望 analyst 输出地图数据（map_updates）但实际为 0 条，amap 工具可能未被调用或结果解析失败")
 
         # citation：非 fallback + 有召回 → 期望至少 1 条引用
         if (
@@ -517,6 +548,7 @@ async def _run_case(
     result.rag_fallback = capture.rag_fallback
     result.citation_count = capture.rag_citations
     result.researcher_queries = capture.researcher_queries[:]
+    result.map_update_count = capture.map_update_count
 
     # 移除日志 handler
     for name in ("agent.graph.supervisor", "agent.graph.analyst", "agent.graph.researcher"):
@@ -570,6 +602,11 @@ def _print_result(result: _CaseResult, case: dict, passed: bool, failures: list[
     ans_len = len(result.final_answer)
     ans_ok = "✓" if ans_len > 50 else "✗"
     print(f"  答案:  {ans_len} 字，引用 {result.citation_count} 条  {ans_ok}")
+
+    # 地图数据
+    if case.get("expect_map_updates") is not None:
+        map_ok = "✓" if result.map_update_count > 0 else "✗"
+        print(f"  地图:  {result.map_update_count} 条 map_update  {map_ok}  (期望: {'有' if case.get('expect_map_updates') else '无'})")
 
     # 耗时
     print(f"  耗时:  {result.elapsed:.0f}s")

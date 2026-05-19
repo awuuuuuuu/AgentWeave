@@ -52,6 +52,10 @@ class AgentState(TypedDict):
     # RAG 引用 (由 Researcher 填入, 最终输出携带)
     citations: list[dict]
 
+    # Analyst 调用 amap 工具后填入的地图数据（由 SSE 路由读取并转发给前端）
+    # 格式：[{"title": str, "center": [lng, lat], "zoom": int, "markers": [...], "route": {...}}]
+    map_updates: list[dict]
+
     # 当前用户所属机构的 MCP 连接配置（由 agent_stream 写入，Analyst 节点消费）
     # 格式：[{"name": str, "url": str, "description": str}]
     org_mcp_connections: list[dict]

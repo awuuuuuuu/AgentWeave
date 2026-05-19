@@ -104,7 +104,7 @@ DEPARTMENTS = [
                 "【关键】analyst 调用过 get_hospital_capacity 或 list_ambulances 后，派车方案已就绪，"
                 "下一步必须路由 hitl——不得路由 analyst（dispatch_ambulance 是写操作，analyst 不可自行执行）、"
                 "不得路由 reporter、不得路由 __end__。hitl 通过后再路由 reporter 输出结论。"
-                "纯路线规划（只需 plan_driving_route）不涉及写操作，analyst 后直接 reporter 即可。"
+                "纯路线规划（只需 plan_driving_route）不涉及写操作，analyst 完成后直接 __end__——路线已在地图气泡里展示，无需 reporter 重复整合。"
                 "纯急救规程/设备/药品查询（不含派车、不含路线规划，如'洗消流程''给氧步骤''转运注意事项'等）："
                 "只需路由 researcher 检索文档，researcher 完成后直接路由 reporter，无需 analyst。"
             ),
@@ -112,6 +112,8 @@ DEPARTMENTS = [
                 "先调 get_hospital_capacity() 确认各医院 ICU 可用容量，再调 list_ambulances(status='待命') 确认可用车辆，"
                 "整理派车方案后停止——dispatch_ambulance 是写操作，需等待 HITL 审批，不得自行调用。"
                 "纯路线规划任务（只调用了 geocode/plan_driving_route）直接输出路线结果即可。"
+                "【geocode 地址规范】本部门位于天津市滨海新区，调用 geocode 时必须补全城市前缀，"
+                "例如：'泰达医院' → '天津市滨海新区泰达医院'，'港城大道388号' → '天津市滨海新区港城大道388号'。"
             ),
         },
     },
@@ -152,7 +154,9 @@ DEPARTMENTS = [
                 "\n【仅路口管控任务】先调 list_intersections() 获取所有路口当前信号模式，整理变更方案后停止，"
                 "在回复末尾加上『[需要HITL审批]』标记。"
                 "\n【仅路线规划任务】先用 geocode() 分别获取起点和终点坐标，直接调用 plan_driving_route() 完成路线规划，"
-                "无需 HITL 标记。"
+                "无需 HITL 标记。路线规划完成后直接 __end__——路线已在地图气泡里展示，无需 reporter。"
+                "\n【geocode 地址规范】本部门位于天津市滨海新区，调用 geocode 时必须补全城市前缀，"
+                "例如：'港城大道388号' → '天津市滨海新区港城大道388号'，'消防大队' → '天津市滨海新区消防大队'。"
             ),
         },
     },

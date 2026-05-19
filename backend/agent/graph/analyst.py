@@ -6,7 +6,9 @@ MCP client 在整个节点执行期间保持存活，避免连接被 GC 提前�
 """
 from __future__ import annotations
 
+import json as _json
 import logging
+from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -97,6 +99,8 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
         ]
 
         answer = ""
+        _map_updates: list[dict] = []
+
         for _ in range(_MAX_TOOL_ROUNDS):
             resp: AIMessage = await llm_with_tools.ainvoke(trajectory)
             trajectory.append(resp)
@@ -110,11 +114,17 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
             tool_messages: list[ToolMessage] = []
             for tc in resp.tool_calls:
                 tool_name = tc["name"]
+                # 工具调用前推送状态
+                await adispatch_custom_event(
+                    "analyst_tool_status",
+                    {"step": "tool_call", "text": _tool_status(tool_name)},
+                )
                 if tool_name in mcp_tool_map:
                     try:
                         result = await mcp_tool_map[tool_name].ainvoke(tc["args"])
                         content = str(result)
                         logger.info("Analyst: MCP 工具 %r 返回 %d 字符", tool_name, len(content))
+                        _try_extract_map_update(tool_name, result, content, _map_updates)
                     except Exception as exc:
                         content = f"工具 {tool_name} 调用失败: {exc}"
                         logger.warning("Analyst: MCP 工具 %r 调用失败: %s", tool_name, exc)
@@ -130,10 +140,110 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
 
         # mcp_client 在此处出作用域，连接自然关闭（工具调用已全部完成）
         analyst_count = state.get("analyst_count", 0) + 1
-        logger.info("Analyst [%d]: 生成分析结果 %d 字", analyst_count, len(answer))
+        logger.info("Analyst [%d]: 生成分析结果 %d 字，地图更新 %d 条", analyst_count, len(answer), len(_map_updates))
         return {
             "messages": [AIMessage(content=answer, name="analyst")],
             "analyst_count": analyst_count,
+            "map_updates": _map_updates,
         }
 
     return analyst_node
+
+
+# ── 工具状态文字映射 ──────────────────────────────────────────────────────────
+
+_TOOL_STATUS_MAP: dict[str, str] = {
+    "geocode":              "正在解析地址坐标…",
+    "plan_driving_route":   "正在规划驾车路线…",
+    "get_hospital_capacity":"正在查询医院 ICU 容量…",
+    "list_ambulances":      "正在查询救护车状态…",
+    "dispatch_ambulance":   "正在调度救护车…",
+    "calculate_plume":      "正在计算气体扩散范围…",
+    "get_sensor_readings":  "正在读取传感器数据…",
+    "get_critical_alarms":  "正在获取高风险传感器告警…",
+    "get_incident_timeline":"正在检索事故时间线…",
+    "list_intersections":   "正在查询路口信号状态…",
+    "set_intersection_mode":"正在设置路口信号模式…",
+    "batch_set_intersections":"正在批量设置路口信号…",
+    "get_inventory":        "正在查询应急物资库存…",
+    "check_alerts":         "正在检查库存告警…",
+    "dispatch_materials":   "正在调拨应急物资…",
+    "get_equipment_status": "正在查询设备状态…",
+}
+
+
+def _tool_status(tool_name: str) -> str:
+    """返回工具调用时的用户友好状态文字。"""
+    for key, text in _TOOL_STATUS_MAP.items():
+        if key in tool_name:
+            return text
+    return f"正在调用工具 {tool_name}…"
+
+
+# ── 地图数据提取 ───────────────────────────────────────────────────────────────
+
+def _try_extract_map_update(
+    tool_name: str,
+    result: object,
+    content: str,
+    out: list[dict],
+) -> None:
+    """从 amap 工具调用结果中提取地图数据，追加到 out 列表。
+
+    工具名匹配用 in 而非 ==，兼容 MultiServerMCPClient 可能添加的服务名前缀
+    （如 amap_plan_driving_route）。
+    """
+    is_route   = "plan_driving_route" in tool_name
+    is_geocode = "geocode" in tool_name and not is_route
+    if not (is_route or is_geocode):
+        return
+
+    # result 可能是：dict、str（JSON）、list[TextContent]（MCP adapter 格式）
+    parsed: dict | None = None
+    if isinstance(result, dict):
+        parsed = result
+    elif isinstance(result, list) and result:
+        # langchain-mcp-adapters 返回 [TextContent(type='text', text='...')]
+        first = result[0]
+        text = (
+            getattr(first, "text", None)
+            or (first.get("text") if isinstance(first, dict) else None)
+            or str(first)
+        )
+        try:
+            parsed = _json.loads(text)
+        except Exception:
+            pass
+    if parsed is None:
+        try:
+            parsed = _json.loads(content)
+        except Exception:
+            return
+
+    if not isinstance(parsed, dict):
+        return
+
+    if tool_name == "plan_driving_route" and "polyline" in parsed:
+        frm = parsed.get("from", {})
+        to  = parsed.get("to", {})
+        out.append({
+            "title": "路线规划",
+            "center": [
+                (frm.get("lng", 0) + to.get("lng", 0)) / 2,
+                (frm.get("lat", 0) + to.get("lat", 0)) / 2,
+            ],
+            "zoom": 13,
+            "markers": [
+                {"position": [frm.get("lng", 0), frm.get("lat", 0)], "label": "出发点", "icon": "🔵"},
+                {"position": [to.get("lng", 0),  to.get("lat", 0)],  "label": "目的地", "icon": "📍"},
+            ],
+            "route": {
+                "from": frm,
+                "to":   to,
+                "polyline":         parsed["polyline"],
+                "distance_m":       parsed.get("distance_m", 0),
+                "duration_seconds": parsed.get("duration_seconds", 0),
+            },
+        })
+
+    # geocode 仅作为中间步骤，不单独渲染地图气泡（路线地图已包含起终点 marker）

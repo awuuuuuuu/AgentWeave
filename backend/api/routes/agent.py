@@ -14,6 +14,7 @@ SSE 事件格式
     {"type": "node_end",    "node": "supervisor",  "data": {"message_to_user": "..."}}
     {"type": "token",       "node": "researcher",  "data": {"content": "..."}}
     {"type": "interrupt",   "node": "hitl",        "data": {"tool_name": "...", "description": "...", "message": "..."}}
+    {"type": "map_update",  "data": {"title": "...", "center": [lng, lat], "zoom": 13, "markers": [...], "route": {...}}}
     {"type": "final_answer","data": {"content": "...", "citations": [...]}}
     {"type": "done",        "data": {"citations": [...]}}
     {"type": "error",       "data": {"message": "..."}}
@@ -153,6 +154,11 @@ async def _process_events(
                     "data": {"step": ev_name, "text": _RESEARCHER_STEPS[ev_name]},
                 })
 
+            # Analyst 工具调用状态推送（adispatch_custom_event → on_custom_event）
+            elif ev_type == "on_custom_event" and ev_name == "analyst_tool_status":
+                node = _infer_node(event) or "analyst"
+                yield _sse({"type": "status", "node": node, "data": ev_data})
+
             # LLM token 逐字（supervisor 使用 structured_output，跳过原始 JSON token）
             elif ev_type == "on_chat_model_stream":
                 node = _infer_node(event)
@@ -196,6 +202,9 @@ async def _process_events(
                         elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
                             _last_answer_text = m["content"]
                             break
+                    # amap 工具调用结果 → 前端地图气泡
+                    for mu in output.get("map_updates", []):
+                        yield _sse({"type": "map_update", "data": mu})
                 # supervisor 携带路由意图说明；超纲降级（无 workers）时以 message_to_user 作最终答案
                 if ev_name == "supervisor":
                     if msg := output.get("message_to_user", ""):

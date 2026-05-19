@@ -50,6 +50,28 @@ export interface HITLData {
   message: string;
 }
 
+export interface MapMarker {
+  position: [number, number];  // [lng, lat]
+  label?: string;
+  icon?: string;
+}
+
+export interface MapRoute {
+  from: { lat: number; lng: number };
+  to:   { lat: number; lng: number };
+  polyline: [number, number][];
+  distance_m: number;
+  duration_seconds: number;
+}
+
+export interface MapPayload {
+  title?: string;
+  center: [number, number];  // [lng, lat]
+  zoom?: number;
+  markers?: MapMarker[];
+  route?: MapRoute;
+}
+
 export interface AgentCard {
   name: string;
   description: string;
@@ -62,6 +84,7 @@ export type AgentSSEEvent =
   | { type: "node_end"; node: AgentName; data: { citations?: Citation[]; message_to_user?: string; answer_text?: string } }
   | { type: "status"; node: AgentName; data: { step: string; text: string } }
   | { type: "interrupt"; node: "hitl"; data: HITLData }
+  | { type: "map_update"; data: MapPayload }
   | { type: "final_answer"; data: { content: string; citations: Citation[] } }
   | { type: "done"; data: { citations: Citation[] } }
   | { type: "error"; data: { message: string } };
@@ -75,6 +98,7 @@ export interface AgentBubble {
   status: "thinking" | "streaming" | "done" | "error";
   citations: Citation[];
   hitlData?: HITLData;           // interrupt 时才有
+  mapData?: MapPayload;          // map_update 时才有
   replyTo?: { agentName: string; text: string };
   isFinalAnswer?: boolean;       // Reporter 完成后的最终汇总答案
 }

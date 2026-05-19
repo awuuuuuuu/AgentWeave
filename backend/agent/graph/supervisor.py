@@ -162,12 +162,19 @@ def build_supervisor(
         elif decision.next == "__end__" and (
             state.get("researcher_count", 0) >= 1 or state.get("analyst_count", 0) >= 1
         ):
-            logger.warning(
-                "Supervisor: 拦截 __end__（researcher_count=%d, analyst_count=%d），强制 reporter",
-                state.get("researcher_count", 0),
-                state.get("analyst_count", 0),
+            # 豁免：纯路线规划任务（analyst 调用了 amap 工具，无 KB 检索）
+            # map_updates 非空 + researcher 未介入 → 结果已在地图气泡中展示，无需 reporter 重复整合
+            is_pure_map_task = (
+                bool(state.get("map_updates"))
+                and state.get("researcher_count", 0) == 0
             )
-            decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
+            if not is_pure_map_task:
+                logger.warning(
+                    "Supervisor: 拦截 __end__（researcher_count=%d, analyst_count=%d），强制 reporter",
+                    state.get("researcher_count", 0),
+                    state.get("analyst_count", 0),
+                )
+                decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
 
         logger.info(
             "Supervisor [%d/%d]: next=%s | reason=%r",

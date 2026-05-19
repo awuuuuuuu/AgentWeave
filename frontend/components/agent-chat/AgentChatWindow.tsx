@@ -32,6 +32,7 @@ import { apiListKBs, type KnowledgeBase } from "@/lib/api";
 import { AgentMessage } from "./AgentMessage";
 import { AgentSidebar } from "./AgentSidebar";
 import { HITLCard } from "./HITLCard";
+import { MapBubble } from "./MapBubble";
 
 // ── 知识库颜色配置 ────────────────────────────────────────────────────────────
 
@@ -242,7 +243,8 @@ export function AgentChatWindow({
 
         upsertBubble(id, (prev) => ({
           ...(prev ?? { id, agent: node, citations: [], replyTo: REPLY_TO[node] }),
-          content: (prev?.content ?? "") + chunk,
+          // 若 bubble 还在 thinking 状态，content 是状态提示文字，首个 token 到来时清空
+          content: (prev?.status === "thinking" ? "" : (prev?.content ?? "")) + chunk,
           status: "streaming",
         }));
 
@@ -283,6 +285,21 @@ export function AgentChatWindow({
         }));
 
         setActiveAgent(null);
+      }
+
+      else if (event.type === "map_update") {
+        const mapId = makeBubbleId();
+        setBubbles((prev) => [
+          ...prev,
+          {
+            id: mapId,
+            agent: "analyst" as AgentName,
+            content: "",
+            status: "done",
+            citations: [],
+            mapData: event.data,
+          },
+        ]);
       }
 
       else if (event.type === "interrupt") {
@@ -575,6 +592,8 @@ export function AgentChatWindow({
                       onDecision={handleHITLDecision}
                       disabled={!hitlPending}
                     />
+                  ) : bubble.mapData ? (
+                    <MapBubble key={bubble.id} bubble={bubble} />
                   ) : (
                     <AgentMessage key={bubble.id} bubble={bubble} />
                   )
