@@ -1,0 +1,97 @@
+// ── Agent Fleet ────────────────────────────────────────────────────────────
+
+export interface AgentFleetEntry {
+  id: string;           // 'env' | 'med' | 'traf' | 'supply' | 'safety' | 'orch'
+  code: string;         // 'EN' | 'ME' | 'TR' | 'LG' | 'SF' | 'PL'
+  name: string;         // 显示名称，如 '环保局'
+  status: "idle" | "running" | "done" | "error";
+  elapsed_ms?: number;
+}
+
+// ── Card Stream ────────────────────────────────────────────────────────────
+
+export type CommandCard =
+  | { type: "user_msg";      content: string; operator?: string }
+  | { type: "orch_reasoning"; think_lines: string[]; summary: string }
+  | { type: "handoff";        from: string[]; to: string[]; label?: string; payload?: string }
+  | { type: "dispatch_plan";  agents: { code: string; name: string; task: string }[];
+                               progress: ("done" | "running" | "error" | "idle")[] }
+  | { type: "dept_report";    code: string; name: string; task: string;
+                               status: "done" | "running" | "error";
+                               elapsed_ms?: number;
+                               summary?: string;
+                               kvs?: { k: string; v: string }[];
+                               err_detail?: string }
+  | { type: "hitl_anchor";   message: string }
+  | { type: "timestamp";     label: string };
+
+// ── HITL Bar（流外固定区域）─────────────────────────────────────────────────
+
+export interface HITLNotification {
+  id: string;
+  message: string;
+  detail?: string;
+}
+
+// ── Map ────────────────────────────────────────────────────────────────────
+
+export interface MapLayer {
+  id: string;
+  name: string;
+  color: string;
+  enabled: boolean;
+}
+
+// ── Kanban Drawer ───────────────────────────────────────────────────────────
+
+export type SessionSeverity = 1 | 2 | 3; // 1=critical(red), 2=warning(amber), 3=ok(green)
+
+/** 用于 Kanban 抽屉的会话摘要（一行 = 一个 Crew 会话） */
+export interface SessionKanbanEntry {
+  id: string;
+  title: string | null;
+  severity: SessionSeverity;
+  elapsed_ms: number;             // 从创建到当前的毫秒数
+  agents: Record<string, "ok" | "running" | "error" | "idle">; // code → status
+  hitl_message?: string;          // 有 HITL 时显示文字（非null=有待审）
+  hitl_countdown_s?: number;      // 倒计时秒数
+  error_agent?: string;           // 出错的 agent code
+}
+
+/** 跨会话 HITL 队列条目 */
+export interface HITLQueueItem {
+  id: string;
+  session_id: string;
+  session_title: string | null;
+  message: string;
+  detail?: string;
+  countdown_s: number;
+  urgent: boolean;                 // true = 倒计时 < 3 min
+}
+
+/** SOP 流程阶段 */
+export interface SopStage {
+  id: string;
+  label: string;
+  status: "done" | "active" | "pending";
+}
+
+/** 分配任务条目（Kanban 把手条 + 任务列表） */
+export interface TaskEntry {
+  id: string;
+  name: string;                                          // "大气扩散评估"
+  dept_code: string;                                     // "EN"
+  dept_name: string;                                     // "环保局"
+  status: "pending" | "running" | "done" | "error";
+  elapsed_ms?: number;
+  summary?: string;                                      // 完成摘要
+}
+
+/** 看板 KPI */
+export interface KanbanKpis {
+  active_sessions: number;
+  hitl_pending: number;
+  agents_running: number;
+  errors: number;
+  completed_today: number;
+}
