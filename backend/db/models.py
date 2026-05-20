@@ -172,6 +172,8 @@ class ConversationSession(Base):
     # active / ended / deleted
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 会话类型："chat"（普通对话）| "crew"（Crew 指挥台，多 Agent 协作双栏布局）
+    session_type: Mapped[str] = mapped_column(String(16), nullable=False, default="chat")
     # 本次会话使用的知识库 IDs
     kb_ids: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     # LLM 生成的本次会话摘要（会话结束后异步写入）

@@ -31,6 +31,7 @@ def _now() -> datetime:
 
 class SessionCreate(BaseModel):
     kb_ids: list[str] = []
+    session_type: str = "chat"
 
 
 class SessionUpdate(BaseModel):
@@ -43,6 +44,7 @@ class SessionOut(BaseModel):
     id: str
     title: Optional[str]
     status: str
+    session_type: str
     message_count: int
     kb_ids: Optional[list[str]]
     created_at: datetime
@@ -82,6 +84,7 @@ async def create_session(
     session = ConversationSession(
         user_id=current_user.id,
         kb_ids=body.kb_ids or None,
+        session_type=body.session_type,
         status="active",
     )
     db.add(session)

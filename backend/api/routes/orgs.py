@@ -15,6 +15,7 @@ from __future__ import annotations
 import secrets
 import string
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -64,6 +65,15 @@ class MemberOut(BaseModel):
     id: str
     email: str
     joined_at: datetime
+
+
+class DeptOut(BaseModel):
+    id: str
+    name: str
+    dept_code: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -119,6 +129,20 @@ async def get_my_org_members(
         MemberOut(id=u.id, email=u.email, joined_at=u.created_at)
         for u in result.all()
     ]
+
+
+@router.get("/departments", response_model=list[DeptOut])
+async def list_departments(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[DeptOut]:
+    """返回所有 type=='department' 的机构（供 Crew 会话创建时选择协作部门）。"""
+    result = await db.scalars(
+        select(Organization)
+        .where(Organization.type == "department")
+        .order_by(Organization.name)
+    )
+    return [DeptOut.model_validate(o) for o in result.all()]
 
 
 @router.get("/validate", response_model=OrgValidateOut)

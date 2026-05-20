@@ -167,10 +167,17 @@ export interface Session {
   id: string;
   title: string | null;
   status: string;
+  session_type: "chat" | "crew";
   message_count: number;
   kb_ids: string[] | null;
   created_at: string;
   updated_at: string | null;
+}
+
+export interface OrgDept {
+  id: string;
+  name: string;
+  dept_code: string | null;
 }
 
 // ── 公共 API ──────────────────────────────────────────────────────────────────
@@ -210,12 +217,21 @@ export async function listSessions(): Promise<Session[]> {
   return res.json();
 }
 
-export async function createSession(kbIds: string[] = []): Promise<Session> {
+export async function createSession(
+  kbIds: string[] = [],
+  sessionType: "chat" | "crew" = "chat"
+): Promise<Session> {
   const res = await authFetch(`${API_BASE}/sessions`, {
     method: "POST",
-    body: JSON.stringify({ kb_ids: kbIds }),
+    body: JSON.stringify({ kb_ids: kbIds, session_type: sessionType }),
   });
   if (!res.ok) throw new Error("创建会话失败");
+  return res.json();
+}
+
+export async function listDepartments(): Promise<OrgDept[]> {
+  const res = await authFetch(`${API_BASE}/orgs/departments`);
+  if (!res.ok) throw new Error("获取部门列表失败");
   return res.json();
 }
 
