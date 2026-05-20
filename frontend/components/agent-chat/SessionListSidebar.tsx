@@ -8,6 +8,7 @@ import {
   IconLoader2,
   IconChevronsLeft,
   IconChevronsRight,
+  IconSitemap,
 } from "@tabler/icons-react";
 import type { Session } from "@/lib/agent-api";
 
@@ -115,6 +116,7 @@ function CollapsedSidebar({
       <div style={{ display: "flex", flexDirection: "column", gap: 3, width: "100%", alignItems: "center" }}>
         {sessions.slice(0, 8).map((s) => {
           const isActive = s.id === currentSessionId;
+          const isCrew = s.session_type === "crew";
           return (
             <button
               key={s.id}
@@ -124,17 +126,23 @@ function CollapsedSidebar({
                 width: 28,
                 height: 28,
                 borderRadius: 7,
-                border: isActive ? "0.5px solid rgba(56,122,221,0.35)" : "0.5px solid transparent",
-                background: isActive ? "rgba(56,122,221,0.12)" : "transparent",
+                border: isActive
+                  ? isCrew ? "0.5px solid rgba(200,80,70,0.35)" : "0.5px solid rgba(56,122,221,0.35)"
+                  : "0.5px solid transparent",
+                background: isActive
+                  ? isCrew ? "rgba(200,80,70,0.14)" : "rgba(56,122,221,0.12)"
+                  : "transparent",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 cursor: "pointer",
-                color: isActive ? "#85B7EB" : "#3a4252",
+                color: isActive
+                  ? isCrew ? "#e0645a" : "#85B7EB"
+                  : "#3a4252",
                 flexShrink: 0,
               }}
             >
-              <IconMessageCircle size={13} />
+              {isCrew ? <IconSitemap size={13} /> : <IconMessageCircle size={13} />}
             </button>
           );
         })}
@@ -283,6 +291,7 @@ export function SessionListSidebar({
             const isHovered = hoveredId === s.id;
             const isDeleting = deletingId === s.id;
             const isConfirming = confirmDeleteId === s.id;
+            const isCrew = s.session_type === "crew";
 
             return (
               <div key={s.id}>
@@ -300,20 +309,25 @@ export function SessionListSidebar({
                     padding: "6px 7px", borderRadius: 5, margin: "1px 0",
                     cursor: isDeleting ? "not-allowed" : "pointer",
                     opacity: isDeleting ? 0.45 : 1,
-                    background: isActive ? "rgba(56,122,221,0.12)" : isHovered ? "rgba(255,255,255,0.03)" : "transparent",
-                    border: isActive ? "0.5px solid rgba(56,122,221,0.25)" : "0.5px solid transparent",
+                    background: isActive
+                      ? isCrew ? "rgba(200,80,70,0.14)" : "rgba(56,122,221,0.12)"
+                      : isHovered ? "rgba(255,255,255,0.03)" : "transparent",
+                    borderLeft: isActive && isCrew ? "3px solid rgba(200,80,70,0.7)" : isActive ? "3px solid rgba(56,122,221,0.5)" : "3px solid transparent",
+                    border: isActive
+                      ? isCrew ? "0.5px solid rgba(200,80,70,0.30)" : "0.5px solid rgba(56,122,221,0.25)"
+                      : "0.5px solid transparent",
                     transition: "background 0.1s, opacity 0.15s",
                   }}
                 >
-                  <span style={{ color: isActive ? "#85B7EB" : "#6b7787", flexShrink: 0 }}>
+                  <span style={{ color: isCrew ? (isActive ? "#e0645a" : "#8a4a46") : (isActive ? "#85B7EB" : "#6b7787"), flexShrink: 0 }}>
                     {isDeleting
                       ? <IconLoader2 size={12} style={{ animation: "spin 1s linear infinite" }} />
-                      : <IconMessageCircle size={12} />}
+                      : isCrew ? <IconSitemap size={12} /> : <IconMessageCircle size={12} />}
                   </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{
                       fontSize: 12, fontWeight: isActive ? 500 : 400,
-                      color: isActive ? "#d8dde8" : "#9aa3b2",
+                      color: isActive ? (isCrew ? "#f0c0bc" : "#d8dde8") : "#9aa3b2",
                       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3,
                     }}>
                       {sessionLabel(s)}

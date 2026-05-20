@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { AgentChatWindow } from "@/components/agent-chat/AgentChatWindow";
 import { NewSessionDialog } from "@/components/agent-chat/NewSessionDialog";
 import { SessionListSidebar } from "@/components/agent-chat/SessionListSidebar";
+import { CommandCenterLayout } from "@/components/command-center/CommandCenterLayout";
 import {
   listSessions,
   createSession,
@@ -110,11 +111,15 @@ export default function AgentPage() {
     setDialogOpen(true);
   }
 
-  async function handleDialogConfirm(kbIds: string[]) {
+  async function handleDialogConfirm(
+    kbIds: string[],
+    sessionType: "chat" | "crew" = "chat",
+    _deptOrgIds: string[] = []
+  ) {
     setIsCreating(true);
     try {
-      const s = await createSession(kbIds);
-      setSessions((prev) => [s, ...prev]);
+      const s = await createSession(kbIds, sessionType);
+      setSessions((prev) => [s, ...(prev ?? [])]);
       router.push(`/agent?session=${s.id}`);
     } catch {
       toast.error("创建会话失败");
@@ -157,14 +162,23 @@ export default function AgentPage() {
         onDelete={handleDelete}
       />
 
-      {/* 右侧：选中会话时显示群聊窗口，否则显示引导 */}
+      {/* 右侧：按会话类型路由 */}
       {sessionId ? (
-        <AgentChatWindow
-          sessionId={sessionId}
-          sessionMessageCount={currentSession?.message_count ?? 0}
-          initialKbIds={currentSession?.kb_ids ?? undefined}
-          onSessionUpdated={loadSessions}
-        />
+        currentSession?.session_type === "crew" ? (
+          <CommandCenterLayout
+            sessionId={sessionId}
+            sessionTitle={currentSession?.title ?? undefined}
+            onSessionUpdated={loadSessions}
+            crewSessions={sessionList.filter((s) => s.session_type === "crew")}
+          />
+        ) : (
+          <AgentChatWindow
+            sessionId={sessionId}
+            sessionMessageCount={currentSession?.message_count ?? 0}
+            initialKbIds={currentSession?.kb_ids ?? undefined}
+            onSessionUpdated={loadSessions}
+          />
+        )
       ) : (
         <NoSessionState onNew={handleNew} isCreating={isCreating} />
       )}

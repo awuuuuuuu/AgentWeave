@@ -48,6 +48,40 @@ from ingestion.store.milvus_store import MilvusStore, MilvusStoreConfig
 DEMO_DIR = _SCRIPT_DIR
 
 DEPARTMENTS = [
+    # ── 顶层协调员（Crew Orchestrator）────────────────────────────────────────
+    {
+        "dept_code": "cmd_center",
+        "org_name": "应急指挥中心",
+        "org_type": "command",        # 区别于子部门 "department"，顶层编排角色
+        "username": "coordinator@pku.com",
+        "password": "demo1234",
+        "kb_name": "应急指挥中心知识库",
+        "doc_dir": DEMO_DIR / "cmd-center",
+        "mcp_connections": [],        # orchestrator 不直接调工具，由子部门各自持有 MCP
+        "dept_prompts": {
+            "supervisor_hints": (
+                "你是应急指挥中心总协调员（Crew Orchestrator），负责接收事故报告并协调下属五个部门同步响应。\n"
+                "【初始研判】先路由 researcher 检索匹配的应急预案等级与启动条件；同步路由 analyst 通过传感器确认现场态势（浓度/风向/告警级别）。\n"
+                "【分派原则】根据研判结果，按如下专责将子任务分派给相应部门（在上层 Crew 中体现为路由决策）：\n"
+                "  · EN 环保局    ──── 大气扩散建模 + 疏散方向\n"
+                "  · ME 医疗急救  ──── 伤员接诊 + 救护车调度（含 HITL）\n"
+                "  · TR 交通管控  ──── 路口信号管制 + 疏散通道（含 HITL）\n"
+                "  · LG 应急物资  ──── 防护物资调拨（含 HITL）\n"
+                "  · SF 企业安全  ──── 根因分析 + 现场处置规程\n"
+                "【HITL 原则】涉及写操作（派车/路口信号/物资调拨）的部门子任务，各部门 analyst 完成评估后必须经过 HITL 审批，不得自行执行。\n"
+                "【汇总简报】所有部门响应完成（或首批结果就绪）后，路由 reporter 生成总指挥简报，"
+                "格式：事故概况 → 各部门响应状态 → 待审批项 → 下一步行动建议。"
+            ),
+            "analyst_context": (
+                "你负责初始态势研判。依次调用：\n"
+                "1. get_incident_timeline() — 梳理事故时间线与已知伤亡信息\n"
+                "2. get_critical_alarms()   — 确认超阈值告警传感器及危险区范围\n"
+                "3. get_sensor_readings(sensor_type='氨气浓度') — 获取核心危险物浓度读数\n"
+                "整合后输出：事故类型 / 当前预案等级 / 关键数据 / 建议启动的部门，供总协调员决策分派。"
+            ),
+        },
+    },
+    # ── 五个专责部门 ──────────────────────────────────────────────────────────
     {
         "dept_code": "env_agency",
         "org_name": "环保局",
