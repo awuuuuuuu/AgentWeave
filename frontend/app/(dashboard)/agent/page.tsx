@@ -15,6 +15,7 @@ import {
   deleteSession,
   type Session,
 } from "@/lib/agent-api";
+import { apiGetMyOrg } from "@/lib/api";
 
 // ── 空状态（未选会话）────────────────────────────────────────────────────────
 
@@ -92,6 +93,7 @@ export default function AgentPage() {
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [isCommandOrg, setIsCommandOrg] = useState(false);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -104,6 +106,9 @@ export default function AgentPage() {
 
   useEffect(() => {
     loadSessions();
+    apiGetMyOrg()
+      .then((org) => setIsCommandOrg(org.type === "command"))
+      .catch(() => {});
   }, [loadSessions]);
 
   function handleNew() {
@@ -188,6 +193,7 @@ export default function AgentPage() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onConfirm={handleDialogConfirm}
+        showCrew={isCommandOrg}
       />
     </div>
   );

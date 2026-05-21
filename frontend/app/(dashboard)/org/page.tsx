@@ -312,7 +312,11 @@ export default function OrgPage() {
                   <li key={conn.name} className="flex items-start gap-3 px-4 py-3 bg-background">
                     <Plug size={14} className="text-muted-foreground mt-0.5 shrink-0" />
                     <div className="flex-1 min-w-0 space-y-0.5">
-                      <p className="text-sm font-medium truncate">{conn.name}</p>
+                      {/* 主标题：从 description 提取中文前缀（如"大气扩散模型"），无则回退到 conn.name */}
+                      <p className="text-sm font-medium truncate">
+                        {conn.description?.match(/^([\u4e00-\u9fa5·]+)/)?.[1] ?? conn.name}
+                        <span className="ml-2 text-xs font-normal font-mono text-muted-foreground">{conn.name}</span>
+                      </p>
                       <p className="text-xs text-muted-foreground font-mono truncate" title={conn.url}>
                         {conn.url}
                       </p>

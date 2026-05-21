@@ -32,6 +32,10 @@ export function AMapPanel({
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const amapRef = useRef<any>(null);          // AMap module reference
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapObjectsRef = useRef<any[]>([]);    // rendered Markers / Polylines
   const [layerState, setLayerState] = useState<MapLayer[]>(layers ?? DEFAULT_LAYERS);
   const [showLayers, setShowLayers] = useState(false);
 
@@ -56,6 +60,7 @@ export function AMapPanel({
           dragEnable: true,
         });
         mapRef.current = map;
+        amapRef.current = A; // expose module to mapEvents effect
 
         // 事件标记（橙红色）
         const pin = new A.Marker({
@@ -101,6 +106,42 @@ export function AMapPanel({
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Render new map events (markers + routes) as they arrive
+  useEffect(() => {
+    if (!mapRef.current || !mapEvents || mapEvents.length === 0) return;
+    const AMap = amapRef.current;
+    if (!AMap) return;
+
+    const event = mapEvents[mapEvents.length - 1]; // process latest event only
+
+    if (event.center) mapRef.current.setCenter(event.center);
+    if (event.zoom)   mapRef.current.setZoom(event.zoom);
+
+    event.markers?.forEach((m) => {
+      const marker = new AMap.Marker({
+        position: m.position,
+        content: `<div style="width:10px;height:10px;border-radius:50%;background:${CC.info};border:2px solid #fff;box-shadow:0 0 6px ${CC.info}"></div>`,
+        offset: new AMap.Pixel(-5, -5),
+        title: m.label ?? "",
+      });
+      marker.setMap(mapRef.current);
+      mapObjectsRef.current.push(marker);
+    });
+
+    if (event.route?.polyline?.length) {
+      const polyline = new AMap.Polyline({
+        path: event.route.polyline,
+        strokeColor: CC.ok,
+        strokeWeight: 3,
+        strokeOpacity: 0.85,
+        lineJoin: "round",
+      });
+      polyline.setMap(mapRef.current);
+      mapObjectsRef.current.push(polyline);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapEvents?.length]);
 
   function toggleLayer(id: string) {
     setLayerState((prev) =>

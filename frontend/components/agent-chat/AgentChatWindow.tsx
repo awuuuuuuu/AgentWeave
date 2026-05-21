@@ -27,6 +27,7 @@ import {
   type AgentBubble,
   type AgentName,
   type Citation,
+  type McpSource,
 } from "@/lib/agent-api";
 import { apiListKBs, type KnowledgeBase } from "@/lib/api";
 import { AgentMessage } from "./AgentMessage";
@@ -216,6 +217,8 @@ export function AgentChatWindow({
     }
 
     const nodeBubbleId: Partial<Record<AgentName, string>> = {};
+    // 记录本轮 analyst 收集到的 MCP 数据源，供 final_answer（reporter）一并展示
+    let lastMcpSources: McpSource[] | undefined;
 
     for await (const event of gen) {
       if (event.type === "node_start") {
@@ -267,6 +270,7 @@ export function AgentChatWindow({
         const id = nodeBubbleId[node];
         if (!id) continue;
         const citations: Citation[] = event.data.citations ?? [];
+        const mcpSources = event.data.mcp_sources;
         const messageToUser = event.data.message_to_user;
         const answerText = event.data.answer_text;
 
@@ -276,10 +280,16 @@ export function AgentChatWindow({
           continue;
         }
 
+        // 记录 analyst MCP 来源，reporter/final_answer 气泡一并展示
+        if (node === "analyst" && mcpSources && mcpSources.length > 0) {
+          lastMcpSources = mcpSources;
+        }
+
         upsertBubble(id, (prev) => ({
           ...(prev ?? { id, agent: node, content: "", replyTo: REPLY_TO[node] }),
           status: "done",
           citations,
+          ...(mcpSources ? { mcpSources } : {}),
           ...(messageToUser ? { content: messageToUser } : {}),
           ...(answerText ? { content: answerText } : {}),
         }));
@@ -346,6 +356,8 @@ export function AgentChatWindow({
             status: "done",
             citations: event.data.citations ?? [],
             isFinalAnswer: true,
+            // 将本轮 analyst 的 MCP 数据源一并带入 reporter 最终答案气泡
+            ...(lastMcpSources && lastMcpSources.length > 0 ? { mcpSources: lastMcpSources } : {}),
           }));
         } else {
           const finalId = makeBubbleId();
@@ -358,6 +370,7 @@ export function AgentChatWindow({
               status: "done",
               citations: event.data.citations ?? [],
               isFinalAnswer: true,
+              ...(lastMcpSources && lastMcpSources.length > 0 ? { mcpSources: lastMcpSources } : {}),
             },
           ]);
         }

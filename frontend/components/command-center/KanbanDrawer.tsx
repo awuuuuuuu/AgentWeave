@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CC, agentColor } from "./tokens";
+import { CC, agentColor, DEPT_ICONS } from "./tokens";
 import type {
   TaskEntry,
   HITLQueueItem,
@@ -63,8 +63,16 @@ function TaskChip({ task }: { task: TaskEntry }) {
       flexShrink: 0,
       animation: isRunning ? "kd-pulse 2s ease-in-out infinite" : "none",
     }}>
-      {/* 部门颜色侧条 */}
-      <div style={{ width: 3, height: 30, borderRadius: 2, background: color, flexShrink: 0 }} />
+      {/* 部门 emoji 图标 */}
+      <div style={{
+        width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+        background: `color-mix(in oklab, ${color} 14%, ${CC.panel2})`,
+        border: `1px solid color-mix(in oklab, ${color} 24%, ${CC.line})`,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: 14,
+      }}>
+        {DEPT_ICONS[task.dept_code] ?? task.dept_code.slice(0, 2)}
+      </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
         {/* 任务名 */}
@@ -76,8 +84,7 @@ function TaskChip({ task }: { task: TaskEntry }) {
         </span>
         {/* 部门 + 状态 */}
         <span style={{
-          fontSize: 9.5, fontFamily: "monospace",
-          display: "flex", alignItems: "center", gap: 4,
+          fontSize: 9.5, display: "flex", alignItems: "center", gap: 4,
           lineHeight: 1.1,
         }}>
           <span style={{ color }}>{task.dept_name}</span>
@@ -135,7 +142,7 @@ function TaskBoard({ tasks }: { tasks: TaskEntry[] }) {
                 padding: "2px 4px",
                 marginBottom: 2,
               }}>
-                <span style={{ fontSize: 10, fontWeight: 600, color: col.color, fontFamily: "monospace" }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: col.color }}>
                   {col.label}
                 </span>
                 <span style={{
@@ -159,13 +166,15 @@ function TaskBoard({ tasks }: { tasks: TaskEntry[] }) {
                     padding: "6px 8px",
                     boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
                   }}>
-                    <div style={{ fontSize: 11.5, fontWeight: 500, color: CC.text, marginBottom: 3 }}>
-                      {task.name}
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
+                      <span style={{ fontSize: 13 }}>{DEPT_ICONS[task.dept_code] ?? "🏢"}</span>
+                      <span style={{ fontSize: 11.5, fontWeight: 500, color: CC.text }}>
+                        {task.name}
+                      </span>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                       <span style={{
-                        fontSize: 9, fontFamily: "monospace",
-                        padding: "1px 5px", borderRadius: 3,
+                        fontSize: 9, padding: "1px 5px", borderRadius: 3,
                         background: `color-mix(in oklab, ${color} 12%, transparent)`,
                         color,
                       }}>
@@ -189,7 +198,7 @@ function TaskBoard({ tasks }: { tasks: TaskEntry[] }) {
               {colTasks.length === 0 && (
                 <div style={{
                   fontSize: 10, color: CC.muted2, textAlign: "center",
-                  padding: "12px 0", fontFamily: "monospace",
+                  padding: "12px 0",
                 }}>
                   —
                 </div>
@@ -216,7 +225,7 @@ function HitlQueue({
   return (
     <div style={{ overflowY: "auto", padding: "10px 14px", flex: 1 }}>
       <div style={{
-        fontSize: 10, letterSpacing: "0.1em", fontFamily: "monospace", color: CC.muted,
+        fontSize: 10, color: CC.muted,
         display: "flex", alignItems: "center", gap: 6, marginBottom: 7,
       }}>
         HITL · 跨会话
@@ -254,7 +263,7 @@ function HitlQueue({
                   fontWeight: 700, fontSize: 11,
                 }}>!</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 9, fontFamily: "monospace", color: CC.muted, marginBottom: 2 }}>
+                  <div style={{ fontSize: 9, color: CC.muted, marginBottom: 2 }}>
                     {item.session_title ?? "Crew 会话"}
                   </div>
                   <div style={{ fontSize: 11.5, fontWeight: 600, color: CC.text, lineHeight: 1.3 }}>
@@ -269,7 +278,7 @@ function HitlQueue({
                 </div>
               </div>
               {item.detail && (
-                <div style={{ padding: "0 10px 4px", fontSize: 10, fontFamily: "monospace", color: CC.muted }}>
+                <div style={{ padding: "0 10px 4px", fontSize: 10, color: CC.muted }}>
                   {item.detail}
                 </div>
               )}
@@ -330,7 +339,7 @@ export function KanbanDrawer({
     }}>
       {/* ── 把手 ── */}
       <div style={{
-        minHeight: 52,
+        minHeight: 68,
         display: "flex",
         alignItems: "center",
         padding: "0 12px",
@@ -350,7 +359,7 @@ export function KanbanDrawer({
           onMouseEnter={(e) => (e.currentTarget.style.background = CC.line)}
           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
         >
-          <span style={{ fontSize: 11, fontFamily: "monospace", color: CC.text, letterSpacing: "0.06em", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: CC.text, display: "flex", alignItems: "center", gap: 6 }}>
             🤖 协同看板
             {runningCount > 0 && (
               <span style={{ background: `color-mix(in oklab, ${CC.warn} 15%, transparent)`, color: CC.warn, padding: "1px 5px", borderRadius: 3, fontSize: 10 }}>
@@ -363,7 +372,7 @@ export function KanbanDrawer({
               </span>
             )}
           </span>
-          <span style={{ fontSize: 11, color: CC.muted, fontFamily: "monospace" }}>
+          <span style={{ fontSize: 13, color: CC.muted }}>
             {expanded ? "收起 ▴" : "展开 ▾"}
           </span>
         </div>
@@ -382,7 +391,7 @@ export function KanbanDrawer({
             <TaskChip key={task.id} task={task} />
           ))}
           {tasks.length === 0 && (
-            <span style={{ fontSize: 11, color: CC.muted, fontFamily: "monospace" }}>
+            <span style={{ fontSize: 11, color: CC.muted }}>
               暂无分配任务
             </span>
           )}
@@ -425,7 +434,7 @@ export function KanbanDrawer({
                 display: "flex", alignItems: "center", gap: 8, flexShrink: 0,
               }}>
                 <span style={{ fontSize: 11.5, fontWeight: 600, color: CC.text }}>📋 任务分配看板</span>
-                <span style={{ fontSize: 10, color: CC.muted2, fontFamily: "monospace", marginLeft: "auto" }}>
+                <span style={{ fontSize: 10, color: CC.muted2, marginLeft: "auto" }}>
                   {tasks.length} 个任务
                 </span>
               </div>
@@ -443,7 +452,7 @@ export function KanbanDrawer({
                   <span style={{
                     background: `color-mix(in oklab, ${CC.warn} 12%, transparent)`,
                     color: CC.warn, padding: "1px 6px", borderRadius: 4, fontSize: 10,
-                    fontFamily: "monospace", marginLeft: "auto",
+                    marginLeft: "auto",
                   }}>
                     {hitlQueue.length} 待批
                   </span>

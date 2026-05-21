@@ -29,12 +29,15 @@ interface NewSessionDialogProps {
     sessionType: "chat" | "crew",
     deptOrgIds: string[]
   ) => Promise<void>;
+  /** 是否显示 Crew 指挥台选项（仅 command 类型机构可用） */
+  showCrew?: boolean;
 }
 
 export function NewSessionDialog({
   open,
   onOpenChange,
   onConfirm,
+  showCrew = false,
 }: NewSessionDialogProps) {
   const [sessionType, setSessionType] = useState<"chat" | "crew">("chat");
 
@@ -52,6 +55,8 @@ export function NewSessionDialog({
 
   useEffect(() => {
     if (!open) return;
+    // 非 command 机构打开弹窗时重置为 chat
+    if (!showCrew) setSessionType("chat");
     // Load KB list for chat mode
     setKbLoading(true);
     apiListKBs()
@@ -118,48 +123,50 @@ export function NewSessionDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {/* ── 会话类型 Toggle ──────────────────────────────────────── */}
-        <div
-          style={{
-            display: "flex",
-            borderRadius: 8,
-            border: "0.5px solid rgba(255,255,255,0.1)",
-            background: "rgba(255,255,255,0.03)",
-            padding: 3,
-            gap: 3,
-          }}
-        >
-          {(["chat", "crew"] as const).map((type) => {
-            const active = sessionType === type;
-            return (
-              <button
-                key={type}
-                onClick={() => setSessionType(type)}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  padding: "7px 0",
-                  borderRadius: 6,
-                  border: "none",
-                  background: active ? "rgba(24, 95, 165, 0.85)" : "transparent",
-                  color: active ? "#fff" : "var(--color-text-secondary)",
-                  fontSize: 12,
-                  fontWeight: active ? 600 : 400,
-                  cursor: "pointer",
-                  transition: "all 0.15s",
-                }}
-              >
-                {type === "chat"
-                  ? <IconMessageCircle size={13} />
-                  : <IconSitemap size={13} />}
-                {type === "chat" ? "普通对话" : "Crew 指挥台"}
-              </button>
-            );
-          })}
-        </div>
+        {/* ── 会话类型 Toggle（仅 command 机构可见）──────────────── */}
+        {showCrew && (
+          <div
+            style={{
+              display: "flex",
+              borderRadius: 8,
+              border: "0.5px solid rgba(255,255,255,0.1)",
+              background: "rgba(255,255,255,0.03)",
+              padding: 3,
+              gap: 3,
+            }}
+          >
+            {(["chat", "crew"] as const).map((type) => {
+              const active = sessionType === type;
+              return (
+                <button
+                  key={type}
+                  onClick={() => setSessionType(type)}
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    padding: "7px 0",
+                    borderRadius: 6,
+                    border: "none",
+                    background: active ? "rgba(24, 95, 165, 0.85)" : "transparent",
+                    color: active ? "#fff" : "var(--color-text-secondary)",
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 400,
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  {type === "chat"
+                    ? <IconMessageCircle size={13} />
+                    : <IconSitemap size={13} />}
+                  {type === "chat" ? "普通对话" : "Crew 指挥台"}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* ── 内容区：KB 列表 或 部门列表 ──────────────────────────── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6, margin: "4px 0", minHeight: 120 }}>

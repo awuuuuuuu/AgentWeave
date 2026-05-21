@@ -18,7 +18,36 @@ import {
   IconCheckbox,
 
 } from "@tabler/icons-react";
-import type { AgentBubble, Citation } from "@/lib/agent-api";
+import type { AgentBubble, Citation, McpSource } from "@/lib/agent-api";
+
+const MCP_COLOR = "#0891b2"; // 青色，区别于 RAG 蓝色
+
+// MCP 工具名 → 中文展示名（前缀匹配，兼容 MultiServerMCPClient 添加的服务名前缀）
+const MCP_TOOL_NAMES: [string, string][] = [
+  ["plan_driving_route",      "路线规划"],
+  ["geocode",                 "地址解析"],
+  ["get_hospital_capacity",   "医院容量查询"],
+  ["list_ambulances",         "救护车状态"],
+  ["dispatch_ambulance",      "救护车调度"],
+  ["calculate_plume",         "气体扩散计算"],
+  ["get_sensor_readings",     "传感器读数"],
+  ["get_critical_alarms",     "高风险告警"],
+  ["get_incident_timeline",   "事故时间线"],
+  ["list_intersections",      "路口信号状态"],
+  ["set_intersection_mode",   "路口信号设置"],
+  ["batch_set_intersections", "批量路口设置"],
+  ["get_inventory",           "应急物资库存"],
+  ["check_alerts",            "库存告警"],
+  ["dispatch_materials",      "物资调拨"],
+  ["get_equipment_status",    "设备状态"],
+];
+
+function getMcpToolLabel(toolName: string): string {
+  for (const [key, label] of MCP_TOOL_NAMES) {
+    if (toolName.includes(key)) return label;
+  }
+  return toolName;
+}
 
 // ── Agent 视觉配置 ────────────────────────────────────────────────────────────
 
@@ -111,16 +140,29 @@ const MENTION_META: Record<
 function preprocess(text: string): string {
   return text
     .replace(/【(\d+)】/g, (_, n) => `⟦${n}⟧`)
-    .replace(/\[(\d+)\]/g, (_, n) => `⟦${n}⟧`);
+    .replace(/\[(\d+)\]/g, (_, n) => `⟦${n}⟧`)
+    // MCP 角标 [M1] → ⟦M1⟧，避免 remark 把方括号解析成 linkReference
+    .replace(/\[M(\d+)\]/g, (_, n) => `⟦M${n}⟧`);
 }
 
-/** 从原始正文中提取实际出现的引用编号，过滤幽灵引用 */
+/** 从原始正文中提取实际出现的 RAG 引用编号，过滤幽灵引用 */
 function extractReferencedRefs(text: string): Set<number> {
   const set = new Set<number>();
   const re = /\[(\d+)\]|【(\d+)】/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     set.add(parseInt(m[1] ?? m[2], 10));
+  }
+  return set;
+}
+
+/** 从原始正文中提取实际出现的 MCP 引用编号 */
+function extractReferencedMcpRefs(text: string): Set<number> {
+  const set = new Set<number>();
+  const re = /\[M(\d+)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    set.add(parseInt(m[1], 10));
   }
   return set;
 }
@@ -134,18 +176,24 @@ function extractReferencedRefs(text: string): Set<number> {
 
 function makeMarkdownComponents(
   citations: Citation[],
-  onCiteClick: (n: number) => void
+  onCiteClick: (n: number) => void,
+  mcpSources: McpSource[] = [],
+  onMcpClick?: (n: number) => void,
+  highlightedMcpRef?: number | null,
 ) {
   // string key 防止 refMap.get(1) vs refMap.get("1") 不匹配
   const refMap = new Map<string, Citation>();
   for (const c of citations) {
     if (c.ref != null) refMap.set(String(c.ref), c);
   }
+  const mcpMap = new Map<string, McpSource>();
+  for (const s of mcpSources) {
+    mcpMap.set(String(s.idx), s);
+  }
 
-  /** 把一段纯文本中的 @mention 和 ⟦N⟧ 都转为 React 节点 */
+  /** 把一段纯文本中的 @mention、⟦N⟧（RAG）和 ⟦MN⟧（MCP）都转为 React 节点 */
   function processStr(text: string): React.ReactNode[] {
     const result: React.ReactNode[] = [];
-    // split on @Mention（大小写不敏感）
     const mentionRe = /(@(?:Supervisor|Researcher|Analyst|Reporter|HITL))/gi;
     const parts = text.split(mentionRe);
 
@@ -166,34 +214,65 @@ function makeMarkdownComponents(
           </span>
         );
       } else {
-        // 每次 new RegExp，避免 /g 的 lastIndex 全局竞态
-        const citeRe = new RegExp("⟦(\\d+)⟧", "g");
+        // 同时匹配 ⟦N⟧（RAG）和 ⟦MN⟧（MCP），每次 new RegExp 避免 lastIndex 竞态
+        const citeRe = new RegExp("⟦(M?\\d+)⟧", "g");
         let last = 0;
         let m: RegExpExecArray | null;
         while ((m = citeRe.exec(part)) !== null) {
           if (m.index > last) result.push(part.slice(last, m.index));
-          const key = m[1];
-          const cit = refMap.get(key);
-          const valid = !!cit;
-          result.push(
-            <button
-              key={`c${pi}-${m.index}`}
-              onClick={() => valid && onCiteClick(parseInt(key, 10))}
-              title={cit?.source_file}
-              style={{
-                display: "inline-flex", alignItems: "center", justifyContent: "center",
-                minWidth: 18, height: 18, padding: "0 4px",
-                borderRadius: 4, fontSize: 11, fontWeight: 600, lineHeight: 1,
-                background: valid ? "#EEF5FD" : "var(--color-background-secondary)",
-                color: valid ? "#185FA5" : "var(--color-text-tertiary)",
-                border: `1px solid ${valid ? "#B5D4F4" : "var(--color-border-tertiary)"}`,
-                cursor: valid ? "pointer" : "default",
-                verticalAlign: "middle", position: "relative", top: -1,
-              }}
-            >
-              {key}
-            </button>
-          );
+          const key = m[1]; // e.g. "1" or "M1"
+          const isMcp = key.startsWith("M");
+
+          if (isMcp) {
+            const idx = parseInt(key.slice(1), 10);
+            const src = mcpMap.get(String(idx));
+            const isActive = highlightedMcpRef === idx;
+            result.push(
+              <button
+                key={`mcp${pi}-${m.index}`}
+                onClick={() => onMcpClick?.(idx)}
+                title={src ? `${getMcpToolLabel(src.tool_name)} · ${src.tool_name}()` : undefined}
+                style={{
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  minWidth: 22, height: 18, padding: "0 4px",
+                  borderRadius: 4, fontSize: 10, fontWeight: 700, lineHeight: 1,
+                  letterSpacing: "0.02em",
+                  background: isActive
+                    ? `color-mix(in oklab, ${MCP_COLOR} 28%, transparent)`
+                    : `color-mix(in oklab, ${MCP_COLOR} 13%, transparent)`,
+                  color: MCP_COLOR,
+                  border: `1px solid color-mix(in oklab, ${MCP_COLOR} ${isActive ? 55 : 26}%, transparent)`,
+                  cursor: onMcpClick ? "pointer" : "default",
+                  verticalAlign: "middle", position: "relative", top: -1,
+                  transition: "background 0.15s",
+                }}
+              >
+                M{idx}
+              </button>
+            );
+          } else {
+            const cit = refMap.get(key);
+            const valid = !!cit;
+            result.push(
+              <button
+                key={`c${pi}-${m.index}`}
+                onClick={() => valid && onCiteClick(parseInt(key, 10))}
+                title={cit?.source_file}
+                style={{
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  minWidth: 18, height: 18, padding: "0 4px",
+                  borderRadius: 4, fontSize: 11, fontWeight: 600, lineHeight: 1,
+                  background: valid ? "#EEF5FD" : "var(--color-background-secondary)",
+                  color: valid ? "#185FA5" : "var(--color-text-tertiary)",
+                  border: `1px solid ${valid ? "#B5D4F4" : "var(--color-border-tertiary)"}`,
+                  cursor: valid ? "pointer" : "default",
+                  verticalAlign: "middle", position: "relative", top: -1,
+                }}
+              >
+                {key}
+              </button>
+            );
+          }
           last = m.index + m[0].length;
         }
         if (last < part.length) result.push(part.slice(last));
@@ -310,48 +389,53 @@ function CitationPanel({
   bubbleId: string;
   onCiteClick: (n: number) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   if (!citations.length) return null;
 
   return (
     <div style={{ marginTop: 14 }}>
-      {/* 分隔线 */}
-      <div
+      <div style={{ height: 1, background: "var(--color-border-tertiary)", marginBottom: 8 }} />
+      {/* 折叠标题 */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
         style={{
-          height: 1,
-          background: "var(--color-border-tertiary)",
-          marginBottom: 10,
-        }}
-      />
-      {/* 标题 */}
-      <div
-        style={{
-          fontSize: 11,
-          color: "var(--color-text-tertiary)",
-          fontWeight: 500,
-          marginBottom: 6,
-          letterSpacing: "0.01em",
+          display: "flex", alignItems: "center", gap: 6,
+          background: "none", border: "none", cursor: "pointer",
+          padding: "2px 0", marginBottom: expanded ? 8 : 0, width: "100%", textAlign: "left",
         }}
       >
-        引用来源
-      </div>
-      {/* 来源列表 */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {citations.map((c, i) => {
-          // 用 ref 字段作为显示编号，与答案中 [N] 一一对应
-          const n = c.ref ?? i + 1;
-          const hl = highlightedRef === n;
-          return (
-            <CitationRow
-              key={c.chunk_id ?? String(i)}
-              id={`cite-${bubbleId}-${n}`}
-              c={c}
-              n={n}
-              highlighted={hl}
-              onClick={() => onCiteClick(n)}
-            />
-          );
-        })}
-      </div>
+        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{expanded ? "▼" : "▶"}</span>
+        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 500, letterSpacing: "0.01em" }}>
+          引用来源
+        </span>
+        <span style={{
+          fontSize: 10, padding: "0 5px", borderRadius: 3, fontWeight: 600,
+          background: "var(--color-background-secondary)",
+          border: "1px solid var(--color-border-tertiary)",
+          color: "var(--color-text-tertiary)",
+        }}>
+          {citations.length}
+        </span>
+      </button>
+
+      {expanded && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {citations.map((c, i) => {
+            const n = c.ref ?? i + 1;
+            const hl = highlightedRef === n;
+            return (
+              <CitationRow
+                key={c.chunk_id ?? String(i)}
+                id={`cite-${bubbleId}-${n}`}
+                c={c}
+                n={n}
+                highlighted={hl}
+                onClick={() => onCiteClick(n)}
+              />
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -475,6 +559,114 @@ function CitationRow({
   );
 }
 
+// ── MCP 实时数据面板 ──────────────────────────────────────────────────────────
+
+function McpPanel({
+  sources,
+  highlightedRef,
+  onMcpClick,
+}: {
+  sources: McpSource[];
+  highlightedRef: number | null;
+  onMcpClick: (n: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (!sources.length) return null;
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ height: 1, background: "var(--color-border-tertiary)", marginBottom: 8 }} />
+      {/* 折叠标题 */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          background: "none", border: "none", cursor: "pointer",
+          padding: "2px 0", marginBottom: expanded ? 8 : 0, width: "100%", textAlign: "left",
+        }}
+      >
+        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{expanded ? "▼" : "▶"}</span>
+        <span style={{
+          fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 500, letterSpacing: "0.01em",
+        }}>
+          MCP 实时数据
+        </span>
+        <span style={{
+          fontSize: 10, padding: "0 5px", borderRadius: 3, fontWeight: 600,
+          background: `color-mix(in oklab, ${MCP_COLOR} 12%, transparent)`,
+          border: `1px solid color-mix(in oklab, ${MCP_COLOR} 22%, transparent)`,
+          color: MCP_COLOR,
+        }}>
+          {sources.length}
+        </span>
+      </button>
+
+      {expanded && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {sources.map((s) => {
+            const hl = highlightedRef === s.idx;
+            return (
+              <div
+                key={s.idx}
+                onClick={() => onMcpClick(s.idx)}
+                style={{
+                  borderRadius: 7, cursor: "pointer", overflow: "hidden",
+                  border: `1px solid ${hl ? `color-mix(in oklab, ${MCP_COLOR} 45%, transparent)` : "var(--color-border-tertiary)"}`,
+                  background: hl ? `color-mix(in oklab, ${MCP_COLOR} 8%, transparent)` : "transparent",
+                  transition: "border-color 0.15s, background 0.15s",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px" }}>
+                  {/* M编号徽章 */}
+                  <span style={{
+                    flexShrink: 0, width: 24, height: 20, borderRadius: 5,
+                    background: hl ? MCP_COLOR : `color-mix(in oklab, ${MCP_COLOR} 14%, transparent)`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 10, fontWeight: 700,
+                    color: hl ? "#fff" : MCP_COLOR,
+                    transition: "background 0.15s, color 0.15s",
+                  }}>
+                    M{s.idx}
+                  </span>
+                  {/* 工具名（中文 + 原始名） */}
+                  <span style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "baseline", gap: 5 }}>
+                    <span style={{
+                      fontSize: 12, fontWeight: hl ? 500 : 400,
+                      color: hl ? MCP_COLOR : "var(--color-text-secondary)",
+                      whiteSpace: "nowrap",
+                    }}>
+                      {getMcpToolLabel(s.tool_name)}
+                    </span>
+                    <span style={{
+                      fontSize: 10, color: MCP_COLOR, opacity: 0.55,
+                      fontFamily: "monospace",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>
+                      {s.tool_name}()
+                    </span>
+                  </span>
+                </div>
+                {/* 结果预览（展开态） */}
+                {hl && (
+                  <div style={{
+                    borderTop: "0.5px solid var(--color-border-tertiary)",
+                    padding: "6px 10px 6px 42px",
+                    fontSize: 11, color: "var(--color-text-secondary)",
+                    lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                    fontFamily: "monospace",
+                  }}>
+                    {s.key_result}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 主组件 ────────────────────────────────────────────────────────────────────
 
 interface AgentMessageProps {
@@ -483,19 +675,30 @@ interface AgentMessageProps {
 
 export function AgentMessage({ bubble }: AgentMessageProps) {
   const {
-    agent, content, status, citations, replyTo,
+    agent, content, status, citations, mcpSources = [], replyTo,
     isFinalAnswer,
   } = bubble;
   const [highlightedRef, setHighlightedRef] = useState<number | null>(null);
+  const [highlightedMcpRef, setHighlightedMcpRef] = useState<number | null>(null);
 
   // 只展示正文中实际出现 [N] 的引用，过滤幽灵引用
   const referencedRefs = extractReferencedRefs(content);
   const visibleCitations = citations.filter((c) => referencedRefs.has(c.ref));
 
+  // 只展示正文中实际出现 [M1] 的 MCP 数据源
+  const referencedMcpRefs = extractReferencedMcpRefs(content);
+  const visibleMcpSources = mcpSources.filter((s) => referencedMcpRefs.has(s.idx));
+  // 若 LLM 未标注 [M1] 但仍有 MCP 调用，也全量展示（降级兜底）
+  const mcpToShow = visibleMcpSources.length > 0 ? visibleMcpSources : mcpSources;
+
   function handleCiteClick(n: number) {
     setHighlightedRef((prev) => (prev === n ? null : n));
     const el = document.getElementById(`cite-${bubble.id}-${n}`);
     el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function handleMcpClick(n: number) {
+    setHighlightedMcpRef((prev) => (prev === n ? null : n));
   }
 
   // 用户消息
@@ -634,7 +837,13 @@ export function AgentMessage({ bubble }: AgentMessageProps) {
             </span>
           ) : (
             <>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={makeMarkdownComponents(visibleCitations, handleCiteClick)}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={makeMarkdownComponents(
+                  visibleCitations, handleCiteClick,
+                  mcpToShow, handleMcpClick, highlightedMcpRef,
+                )}
+              >
                 {preprocess(content)}
               </ReactMarkdown>
               {status === "streaming" && (
@@ -649,13 +858,22 @@ export function AgentMessage({ bubble }: AgentMessageProps) {
             </>
           )}
 
-          {/* 引用来源（只展示正文中实际出现的 [N]，过滤幽灵引用） */}
+          {/* 引用来源（只展示正文中实际出现的 [N]，默认折叠） */}
           {status === "done" && visibleCitations.length > 0 && (
             <CitationPanel
               citations={visibleCitations}
               highlightedRef={highlightedRef}
               bubbleId={bubble.id}
               onCiteClick={handleCiteClick}
+            />
+          )}
+
+          {/* MCP 实时数据（青色面板，位于 RAG 引用之后） */}
+          {status === "done" && mcpToShow.length > 0 && (
+            <McpPanel
+              sources={mcpToShow}
+              highlightedRef={highlightedMcpRef}
+              onMcpClick={handleMcpClick}
             />
           )}
         </div>

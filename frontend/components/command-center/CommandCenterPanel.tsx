@@ -23,10 +23,12 @@ interface CommandCenterPanelProps {
 
 function ConvHead({
   title,
+  sessionId,
   isRunning,
   hitlCount,
 }: {
   title?: string;
+  sessionId: string;
   isRunning?: boolean;
   hitlCount: number;
 }) {
@@ -86,14 +88,17 @@ function ConvHead({
           </span>
         )}
       </div>
-      <div style={{ fontSize: 11, color: CC.muted, marginTop: 3 }}>
+      <div style={{
+        fontSize: 11, color: CC.muted, marginTop: 3,
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>
         会话 #{sessionIdShort()} · Crew 多 Agent 协作
       </div>
     </div>
   );
 
   function sessionIdShort() {
-    return "…";
+    return sessionId ? sessionId.slice(-6) : "……";
   }
 }
 
@@ -251,6 +256,7 @@ export function CommandCenterPanel({
       {/* Row 1: conv-head */}
       <ConvHead
         title={sessionTitle}
+        sessionId={sessionId}
         isRunning={isRunning}
         hitlCount={hitlCount}
       />
@@ -258,14 +264,7 @@ export function CommandCenterPanel({
       {/* Row 2: SOP progress strip */}
       <SopStrip stages={sopStages} />
 
-      {/* Row 3: hitl-bar (sticky, null = invisible) */}
-      <HITLBar
-        hitl={hitl}
-        onApprove={onApprove ?? (() => {})}
-        onReject={onReject ?? (() => {})}
-      />
-
-      {/* Row 4: stream */}
+      {/* Row 3: stream */}
       <div
         ref={streamRef}
         style={{
@@ -298,6 +297,13 @@ export function CommandCenterPanel({
           cards.map((card, i) => <CardRenderer key={i} card={card} />)
         )}
       </div>
+
+      {/* Row 4: hitl-bar — above composer so it's always visible when approval needed */}
+      <HITLBar
+        hitl={hitl}
+        onApprove={onApprove ?? (() => {})}
+        onReject={onReject ?? (() => {})}
+      />
 
       {/* Row 5: composer */}
       <Composer onSubmit={onSubmit} isRunning={isRunning} />

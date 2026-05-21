@@ -33,6 +33,11 @@ export const CC = {
   agSf: "oklch(0.37 0.15 22)",    // SF 企业安全 — 红  ~10.4:1
 } as const;
 
+/** 部门 emoji 图标（全局共用） */
+export const DEPT_ICONS: Record<string, string> = {
+  PL: "🎯", EN: "🌿", ME: "🏥", TR: "🚦", LG: "📦", SF: "🏭",
+};
+
 /** Agent 代码 → 颜色 */
 export function agentColor(code: string): string {
   const map: Record<string, string> = {

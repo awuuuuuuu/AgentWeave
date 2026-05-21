@@ -1,3 +1,12 @@
+import type { Citation } from "@/lib/agent-api";
+export type { Citation };
+
+export interface McpSource {
+  idx: number;
+  tool_name: string;
+  key_result: string;
+}
+
 // ── Agent Fleet ────────────────────────────────────────────────────────────
 
 export interface AgentFleetEntry {
@@ -11,16 +20,22 @@ export interface AgentFleetEntry {
 // ── Card Stream ────────────────────────────────────────────────────────────
 
 export type CommandCard =
-  | { type: "user_msg";      content: string; operator?: string }
-  | { type: "orch_reasoning"; think_lines: string[]; summary: string }
+  | { type: "user_msg";       content: string; operator?: string }
+  | { type: "pl_thinking";    message: string }
+  | { type: "orch_reasoning"; think_lines: string[]; summary: string;
+      incident?: string;
+      dept_tasks?: Array<{ code: string; name: string; task: string }> }
   | { type: "handoff";        from: string[]; to: string[]; label?: string; payload?: string }
   | { type: "dispatch_plan";  agents: { code: string; name: string; task: string }[];
                                progress: ("done" | "running" | "error" | "idle")[] }
   | { type: "dept_report";    code: string; name: string; task: string;
                                status: "done" | "running" | "error";
+                               phase?: "research" | "exec";
                                elapsed_ms?: number;
                                summary?: string;
                                kvs?: { k: string; v: string }[];
+                               citations?: Citation[];
+                               mcp_sources?: McpSource[];
                                err_detail?: string }
   | { type: "hitl_anchor";   message: string }
   | { type: "timestamp";     label: string };
@@ -31,6 +46,8 @@ export interface HITLNotification {
   id: string;
   message: string;
   detail?: string;
+  dept_code?: string;   // step_review 时指明执行部门
+  isProcessing?: boolean; // approve/reject 后等待后端响应期间
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────
