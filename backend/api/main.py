@@ -11,6 +11,8 @@ logging.basicConfig(
 )
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
+from psycopg.rows import dict_row
 
 # config.py 在模块级调用 load_dotenv，此处无需重复
 from config import settings
@@ -40,6 +42,7 @@ from agent.memory.long_term import LongTermMemory
 from agent.memory.user_profile import UserProfileManager
 from agent.memory.memory_manager import MemoryManager
 from agent.graph.agent_graph import build_agent_graph
+from agent.graph.crew_supervisor import build_crew_graph
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +114,26 @@ async def lifespan(app: FastAPI):
     )
 
     pg_url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    async with AsyncPostgresSaver.from_conn_string(pg_url) as checkpointer:
+
+    # 使用连接池代替单一持久连接：
+    #   min_size=0  → 空闲时不保留连接，避免 Windows TCP 层静默断开（error 10053）
+    #   max_idle=60 → 连接超过 60s 未使用自动释放
+    #   keepalives  → 连接 URI 参数，作为双重保障
+    _sep = "&" if "?" in pg_url else "?"
+    pg_url += f"{_sep}keepalives=1&keepalives_idle=20&keepalives_interval=5&keepalives_count=3"
+    async with AsyncConnectionPool(
+        conninfo=pg_url,
+        min_size=0,
+        max_size=5,
+        max_idle=60.0,
+        open=True,
+        kwargs={
+            "autocommit": True,
+            "prepare_threshold": 0,
+            "row_factory": dict_row,
+        },
+    ) as pg_pool:
+        checkpointer = AsyncPostgresSaver(conn=pg_pool)
         await checkpointer.setup()  # 建 checkpoint 表（幂等）
 
         # ShortTermMemory 与图共享同一 checkpointer，thread_id 格式对齐
@@ -132,6 +154,7 @@ async def lifespan(app: FastAPI):
             memory_manager=app.state.memory_manager,
             llm_model=settings.llm_model,
         )
+        app.state.crew_graph = build_crew_graph(checkpointer=checkpointer)
         logger.info("Startup complete.")
 
         yield
