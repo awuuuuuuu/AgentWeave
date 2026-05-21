@@ -56,6 +56,10 @@ class AgentState(TypedDict):
     # 格式：[{"title": str, "center": [lng, lat], "zoom": int, "markers": [...], "route": {...}}]
     map_updates: list[dict]
 
+    # Analyst 每次执行后填入的 MCP 工具调用结果（覆盖写，非累积）
+    # 格式：[{"idx": int, "tool_name": str, "key_result": str}]
+    mcp_sources: list[dict]
+
     # 当前用户所属机构的 MCP 连接配置（由 agent_stream 写入，Analyst 节点消费）
     # 格式：[{"name": str, "url": str, "description": str}]
     org_mcp_connections: list[dict]
