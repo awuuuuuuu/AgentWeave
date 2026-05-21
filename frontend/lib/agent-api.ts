@@ -1,8 +1,8 @@
 /**
  * Agent 群组 API
  * - GET  /agent/members        → Agent 成员列表
- * - POST /agent/stream         → 启动对话 SSE
- * - POST /agent/resume         → HITL 审批后恢复 SSE
+ * - POST /agent/stream         → 启动对话 SSE（chat / crew 共用）
+ * - POST /agent/resume         → HITL 审批后恢复 SSE（chat / crew 共用）
  *
  * 会话管理 API
  * - GET    /sessions           → 列出会话
@@ -10,13 +10,24 @@
  * - PATCH  /sessions/{id}      → 更新会话
  * - DELETE /sessions/{id}      → 删除会话
  *
- * SSE 事件格式（与 backend/api/routes/agent.py 对齐）：
+ * SSE 事件格式（chat session，与 backend/api/routes/agent.py 对齐）：
  *   {type: "node_start", node: AgentName}
  *   {type: "token",      node: AgentName, data: {content: string}}
  *   {type: "node_end",   node: AgentName, data: {citations?: Citation[]}}
  *   {type: "interrupt",  node: "hitl",    data: HITLData}
  *   {type: "done",       data: {citations: Citation[]}}
  *   {type: "error",      data: {message: string}}
+ *
+ * SSE 事件格式（crew session，来自 Crew Supervisor）：
+ *   {type: "dept_report",   data: {...}}
+ *   {type: "dispatch_plan", data: {steps: PlanStep[]}}
+ *   {type: "plan_step",     data: {step_id, status, summary?}}
+ *   {type: "map_update",    data: MapPayload}
+ *   {type: "hitl_required", data: {step_id, title, dept_code, timeout_sec}}
+ *   {type: "final_answer",  data: {content: string}}
+ *   {type: "interrupt",     data: {type: "plan_review"|"step_review", ...}}
+ *   {type: "done",          data: {}}
+ *   {type: "error",         data: {message: string}}
  */
 
 import { tokenStorage } from "./api";
@@ -78,10 +89,16 @@ export interface AgentCard {
   capabilities: string[];
 }
 
+export interface McpSource {
+  idx: number;
+  tool_name: string;
+  key_result: string;
+}
+
 export type AgentSSEEvent =
   | { type: "node_start"; node: AgentName }
   | { type: "token"; node: AgentName; data: { content: string } }
-  | { type: "node_end"; node: AgentName; data: { citations?: Citation[]; message_to_user?: string; answer_text?: string } }
+  | { type: "node_end"; node: AgentName; data: { citations?: Citation[]; mcp_sources?: McpSource[]; message_to_user?: string; answer_text?: string } }
   | { type: "status"; node: AgentName; data: { step: string; text: string } }
   | { type: "interrupt"; node: "hitl"; data: HITLData }
   | { type: "map_update"; data: MapPayload }
@@ -97,6 +114,7 @@ export interface AgentBubble {
   content: string;
   status: "thinking" | "streaming" | "done" | "error";
   citations: Citation[];
+  mcpSources?: McpSource[];      // analyst MCP 工具调用结果
   hitlData?: HITLData;           // interrupt 时才有
   mapData?: MapPayload;          // map_update 时才有
   replyTo?: { agentName: string; text: string };
@@ -110,6 +128,31 @@ export const REPLY_TO: Partial<Record<AgentName, { agentName: string; text: stri
   reporter:   { agentName: "Supervisor", text: "收到，整合最终答案" },
   hitl:       { agentName: "Supervisor", text: "需要人工确认" },
 };
+
+// ── Crew 类型 ─────────────────────────────────────────────────────────────────
+
+export interface PlanStep {
+  step_id: string;
+  title: string;
+  dept_code: string;
+  task: string;
+  is_high_risk: boolean;
+  status: string;
+  map_layer: string | null;
+  result_summary: string;
+}
+
+export type CrewSSEEvent =
+  | { type: "research_dispatch"; data: { tasks: Array<{ dept_code: string; task: string }> } }
+  | { type: "dept_report";   data: { dept_code: string; status: string; summary: string; key_facts: string[]; map_events: unknown[]; citations?: Citation[]; mcp_sources?: McpSource[] } }
+  | { type: "dispatch_plan"; data: { steps: PlanStep[] } }
+  | { type: "plan_step";     data: { step_id: string; status: string; summary?: string } }
+  | { type: "map_update";    data: MapPayload }
+  | { type: "hitl_required"; data: { step_id: string; title: string; dept_code: string; timeout_sec: number } }
+  | { type: "final_answer";  data: { content: string } }
+  | { type: "interrupt";     data: { type: "plan_review" | "step_review"; plan?: PlanStep[]; step_id?: string; title?: string; dept_code?: string } }
+  | { type: "done";          data: Record<string, never> }
+  | { type: "error";         data: { message: string } };
 
 // ── 带鉴权的 fetch（复用 api.ts 的 tokenStorage）────────────────────────────
 
@@ -125,12 +168,12 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
   });
 }
 
-// ── SSE 解析器（复用 api.ts 的模式）─────────────────────────────────────────
+// ── SSE 解析器（泛型，chat 和 crew 共用）─────────────────────────────────────
 
-async function* parseSSE(
+async function* parseSSE<T>(
   response: Response,
   signal?: AbortSignal
-): AsyncGenerator<AgentSSEEvent> {
+): AsyncGenerator<T> {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -150,7 +193,7 @@ async function* parseSSE(
         const raw = line.slice(5).trim();
         if (raw === "[DONE]") return;
         try {
-          yield JSON.parse(raw) as AgentSSEEvent;
+          yield JSON.parse(raw) as T;
         } catch {
           console.warn("[agent-api] malformed SSE line:", raw);
         }
@@ -189,7 +232,7 @@ export async function listAgentMembers(): Promise<AgentCard[]> {
   return res.json();
 }
 
-/** 启动 Agent 对话，返回 SSE 事件流 */
+/** 启动 Agent 对话（chat session），返回 SSE 事件流 */
 export async function* streamAgent(
   query: string,
   sessionId: string,
@@ -206,7 +249,44 @@ export async function* streamAgent(
     const err = await res.json().catch(() => ({ detail: "请求失败" }));
     throw new Error(err.detail ?? "Agent 请求失败");
   }
-  yield* parseSSE(res, signal);
+  yield* parseSSE<AgentSSEEvent>(res, signal);
+}
+
+/** 启动 Crew 应急会话，返回 SSE 事件流 */
+export async function* streamCrew(
+  incident: string,
+  sessionId: string,
+  selectedDeptCodes: string[] = [],
+  signal?: AbortSignal
+): AsyncGenerator<CrewSSEEvent> {
+  const res = await authFetch(`${API_BASE}/agent/stream`, {
+    method: "POST",
+    body: JSON.stringify({ query: incident, session_id: sessionId, selected_dept_codes: selectedDeptCodes }),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "请求失败" }));
+    throw new Error(err.detail ?? "Crew 请求失败");
+  }
+  yield* parseSSE<CrewSSEEvent>(res, signal);
+}
+
+/** HITL 审批后恢复 Crew 执行，返回 SSE 事件流 */
+export async function* resumeCrew(
+  sessionId: string,
+  decision: string | unknown[],  // "approve" | "reject" | PlanStep[]（HITL-1 修改计划）
+  signal?: AbortSignal
+): AsyncGenerator<CrewSSEEvent> {
+  const res = await authFetch(`${API_BASE}/agent/resume`, {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId, decision }),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "审批请求失败" }));
+    throw new Error(err.detail ?? "Crew 审批失败");
+  }
+  yield* parseSSE<CrewSSEEvent>(res, signal);
 }
 
 // ── 会话 CRUD ─────────────────────────────────────────────────────────────────
@@ -348,5 +428,5 @@ export async function* resumeAgent(
     const err = await res.json().catch(() => ({ detail: "审批请求失败" }));
     throw new Error(err.detail ?? "审批失败");
   }
-  yield* parseSSE(res, signal);
+  yield* parseSSE<AgentSSEEvent>(res, signal);
 }
