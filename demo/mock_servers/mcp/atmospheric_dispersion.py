@@ -140,6 +140,59 @@ def calculate_plume(
 
 
 @mcp.tool()
+def estimate_release_rate(
+    concentration_ppm: float,
+    distance_m: float,
+    wind_speed_ms: float,
+    stability_class: str = "D",
+) -> dict:
+    """用中心线高斯反算法，由已知点浓度估算泄漏速率。
+    适用场景：已知某传感器读数（ppm）及其距泄漏点距离，即可反推 release_rate_gs，
+    再传入 calculate_plume 计算 ERPG 疏散半径。
+
+    Args:
+        concentration_ppm: 传感器氨气浓度读数（ppm）
+        distance_m: 传感器距泄漏点距离（米），从 get_sensor_readings 的 location 字段解析
+        wind_speed_ms: 风速（m/s），来自 get_sensor_readings(sensor_type='风速')
+        stability_class: Pasquill-Gifford 稳定度（A-F，默认 D）
+
+    Returns:
+        dict 包含：release_rate_gs（估算泄漏速率 g/s），concentration_mg_m3，
+                   distance_m，note（计算说明）
+    """
+    sc = stability_class.upper()
+    if sc not in _PG_PARAMS:
+        sc = "D"
+    p = _PG_PARAMS[sc]
+    u = max(wind_speed_ms, 0.5)
+
+    c_mg = concentration_ppm * 0.703  # ppm → mg/m³（氨气 25℃）
+    x = max(distance_m, 1.0)
+    sy = _sigma(x, p["ay"], p["by"])
+    sz = _sigma(x, p["az"], p["bz"], factor=0.0015)
+
+    # 中心线 y=0：c = Q / (π·σy·σz·u)  →  Q = c·π·σy·σz·u
+    if sy <= 0 or sz <= 0:
+        q_gs = 0.0
+    else:
+        q_gs = c_mg * math.pi * sy * sz * u
+
+    return {
+        "release_rate_gs": round(q_gs, 2),
+        "concentration_ppm": concentration_ppm,
+        "concentration_mg_m3": round(c_mg, 2),
+        "distance_m": x,
+        "wind_speed_ms": u,
+        "stability_class": sc,
+        "note": (
+            f"基于 {distance_m}m 处 {concentration_ppm} ppm 实测浓度，"
+            f"高斯反算估计泄漏速率 ≈ {round(q_gs, 1)} g/s。"
+            "请将此值作为 calculate_plume 的 release_rate_gs 参数。"
+        ),
+    }
+
+
+@mcp.tool()
 def get_evacuation_direction(wind_dir_deg: float) -> dict:
     """根据风向确定疏散方向和优先控制路口。
 

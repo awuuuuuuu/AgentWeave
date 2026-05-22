@@ -103,12 +103,41 @@ DEPARTMENTS = [
             },
         ],
         "dept_prompts": {
-            "supervisor_hints": "扩散/疏散类问题：先路由 researcher 检索毒性参数和分级标准，再路由 analyst；analyst 必须先调 get_sensor_readings 取风速/风向实测值，再调 calculate_plume 计算扩散半径。",
+            "supervisor_hints": (
+                "扩散/疏散类问题：先路由 researcher 检索毒性参数和分级标准，再路由 analyst。\n"
+                "analyst 调用链（严格顺序，缺一不可）：\n"
+                "  1. get_sensor_readings(sensor_type='氨气浓度') — 获取各点实测浓度\n"
+                "  2. get_sensor_readings(sensor_type='风速')    — 获取实测风速\n"
+                "  3. get_sensor_readings(sensor_type='风向')    — 获取实测风向\n"
+                "  4. estimate_release_rate(concentration_ppm, distance_m, wind_speed_ms) — 反推泄漏速率\n"
+                "  5. calculate_plume(lat, lng, wind_speed_ms, wind_dir_deg, release_rate_gs) — 计算 ERPG 半径\n"
+                "所有参数必须来自实测值，禁止使用估算值或跳过任何步骤。"
+            ),
             "analyst_context": (
-                "调用 calculate_plume 前，必须先分两次调用 get_sensor_readings(sensor_type='风速') 和 "
-                "get_sensor_readings(sensor_type='风向')，将实测值填入 wind_speed_ms 和 wind_dir_deg 参数，不得使用估算值。"
-                "完成这两次读取后，立即调用 calculate_plume 计算扩散半径——不得再进行其他任何 get_sensor_readings 调用，"
-                "也不得使用猜测值替代 calculate_plume。"
+                "【完整调用链，必须严格按顺序执行，不得跳过任何步骤】\n"
+                "步骤1：调用 get_sensor_readings(sensor_type='氨气浓度')\n"
+                "  → 取 current_value 最大的一条读数（如 N1=890ppm，location='事故点正北50m'）\n"
+                "  → 从 location 文字解析传感器距泄漏点的距离（如'正北50m' → distance_m=50）\n\n"
+                "步骤2：调用 get_sensor_readings(sensor_type='风速')\n"
+                "  → 取 W1 气象站 A 的 current_value 作为 wind_speed_ms\n\n"
+                "步骤3：调用 get_sensor_readings(sensor_type='风向')\n"
+                "  → 取 D1 的 current_value 作为 wind_dir_deg\n\n"
+                "步骤4：调用 estimate_release_rate(\n"
+                "    concentration_ppm=<步骤1最大浓度>,\n"
+                "    distance_m=<步骤1解析的距离>,\n"
+                "    wind_speed_ms=<步骤2风速>\n"
+                "  ) → 得到 release_rate_gs\n\n"
+                "步骤5：调用 calculate_plume(\n"
+                "    lat=39.0251, lng=117.7451,\n"
+                "    wind_speed_ms=<步骤2风速>,\n"
+                "    wind_dir_deg=<步骤3风向>,\n"
+                "    release_rate_gs=<步骤4结果>\n"
+                "  ) → 得到 ERPG-1/2/3 疏散半径\n\n"
+                "【禁止使用猜测值或跳过步骤4直接调用 calculate_plume】\n\n"
+                "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
+                "数字与工具调用顺序对应：第1次工具调用的结果加[M1]，第2次加[M2]，依此类推。"
+                "例如：「氨气浓度890ppm[M1]，风速3.2m/s[M2]，风向202°[M3]，"
+                "泄漏速率≈47g/s[M4]，ERPG-2半径890m[M5]」"
             ),
         },
     },
@@ -134,20 +163,25 @@ DEPARTMENTS = [
         ],
         "dept_prompts": {
             "supervisor_hints": (
-                "派车类问题：先路由 researcher 检索接诊级别要求，再路由 analyst 查容量和车辆状态。"
+                "派车类问题：先路由 researcher 检索接诊级别要求（SOP/规程/转运标准），再路由 analyst 查实时容量和车辆状态。\n"
+                "【重要】researcher 只负责检索操作规程，不提供医院容量数字——容量数字必须由 analyst 通过 MCP 工具获取。\n"
                 "【关键】analyst 调用过 get_hospital_capacity 或 list_ambulances 后，派车方案已就绪，"
                 "下一步必须路由 hitl——不得路由 analyst（dispatch_ambulance 是写操作，analyst 不可自行执行）、"
-                "不得路由 reporter、不得路由 __end__。hitl 通过后再路由 reporter 输出结论。"
-                "纯路线规划（只需 plan_driving_route）不涉及写操作，analyst 完成后直接 __end__——路线已在地图气泡里展示，无需 reporter 重复整合。"
+                "不得路由 reporter、不得路由 __end__。hitl 通过后再路由 reporter 输出结论。\n"
+                "纯路线规划（只需 plan_driving_route）不涉及写操作，analyst 完成后直接 __end__——路线已在地图气泡里展示，无需 reporter 重复整合。\n"
                 "纯急救规程/设备/药品查询（不含派车、不含路线规划，如'洗消流程''给氧步骤''转运注意事项'等）："
                 "只需路由 researcher 检索文档，researcher 完成后直接路由 reporter，无需 analyst。"
             ),
             "analyst_context": (
-                "先调 get_hospital_capacity() 确认各医院 ICU 可用容量，再调 list_ambulances(status='待命') 确认可用车辆，"
-                "整理派车方案后停止——dispatch_ambulance 是写操作，需等待 HITL 审批，不得自行调用。"
-                "纯路线规划任务（只调用了 geocode/plan_driving_route）直接输出路线结果即可。"
+                "【绝对禁止】严禁使用知识库文档中的历史数字作为医院床位容量——这些是历史档案数字，非实时数据，不得引用。\n"
+                "【第一步】必须调用 get_hospital_capacity() MCP 工具获取各医院当前 ICU/急诊实时可用床位数，这是唯一权威数据来源。\n"
+                "【第二步】调用 list_ambulances(status='待命') 获取当前可用救护车及位置。\n"
+                "整理派车方案后停止——dispatch_ambulance 是写操作，需等待 HITL 审批，不得自行调用。\n"
+                "纯路线规划任务（只调用了 geocode/plan_driving_route）直接输出路线结果即可。\n"
                 "【geocode 地址规范】本部门位于天津市滨海新区，调用 geocode 时必须补全城市前缀，"
-                "例如：'泰达医院' → '天津市滨海新区泰达医院'，'港城大道388号' → '天津市滨海新区港城大道388号'。"
+                "例如：'泰达医院' → '天津市滨海新区泰达医院'，'港城大道388号' → '天津市滨海新区港城大道388号'。\n"
+                "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
+                "数字与工具调用顺序对应。例如：「泰达医院ICU可用5张[M1]，A01救护车待命[M2]」"
             ),
         },
     },
@@ -190,7 +224,9 @@ DEPARTMENTS = [
                 "\n【仅路线规划任务】先用 geocode() 分别获取起点和终点坐标，直接调用 plan_driving_route() 完成路线规划，"
                 "无需 HITL 标记。路线规划完成后直接 __end__——路线已在地图气泡里展示，无需 reporter。"
                 "\n【geocode 地址规范】本部门位于天津市滨海新区，调用 geocode 时必须补全城市前缀，"
-                "例如：'港城大道388号' → '天津市滨海新区港城大道388号'，'消防大队' → '天津市滨海新区消防大队'。"
+                "例如：'港城大道388号' → '天津市滨海新区港城大道388号'，'消防大队' → '天津市滨海新区消防大队'。\n"
+                "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
+                "数字与工具调用顺序对应。例如：「S3路口当前正常模式[M1]，疏散路线全长2.3km[M2]」"
             ),
         },
     },
@@ -223,7 +259,9 @@ DEPARTMENTS = [
                 "【第二步-调拨任务】任务含'调拨''出库''发放'等字眼时，check_alerts 之后必须继续调用 get_inventory() "
                 "核对标准包所需物资的实际库存数量，即使 check_alerts 返回无告警也不可跳过——无告警不等于库存充足。"
                 "【第二步-纯告警核查】问题只问'哪些物资低于阈值'时，check_alerts 结果已足够，无需再调 get_inventory。"
-                "整理完方案后停止——allocate_standard_pack 和 allocate_custom 是写操作，需等待 HITL 审批，不得自行调用。"
+                "整理完方案后停止——allocate_standard_pack 和 allocate_custom 是写操作，需等待 HITL 审批，不得自行调用。\n"
+                "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
+                "数字与工具调用顺序对应。例如：「防化服库存12套[M1]，空气呼吸器8套告警[M2]」"
             ),
         },
     },
@@ -252,7 +290,12 @@ DEPARTMENTS = [
                 "直接路由 analyst，完成后路由 reporter，无需 researcher。"
                 "所有传感器工具只读，无需 HITL。"
             ),
-            "analyst_context": "所有工具只读，可直接调用无需 HITL。根因分析时同时调 get_incident_timeline() 和 get_critical_alarms()；分析压力异常时同时查 sensor_type='压力' 和 sensor_type='温度' 做关联分析。",
+            "analyst_context": (
+                "所有工具只读，可直接调用无需 HITL。根因分析时同时调 get_incident_timeline() 和 get_critical_alarms()；"
+                "分析压力异常时同时查 sensor_type='压力' 和 sensor_type='温度' 做关联分析。\n"
+                "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
+                "数字与工具调用顺序对应。例如：「储罐压力1.8MPa超限[M1]，泄漏起始时间14:23[M2]」"
+            ),
         },
     },
 ]

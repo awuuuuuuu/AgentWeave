@@ -100,6 +100,8 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
 
         answer = ""
         _map_updates: list[dict] = []
+        _mcp_sources: list[dict] = []   # 写入 state，A2A/chat 都可直接读取
+        _tool_call_idx = 0  # 跨所有 ReAct 轮次的全局工具调用序号（M1、M2…）
 
         for _ in range(_MAX_TOOL_ROUNDS):
             resp: AIMessage = await llm_with_tools.ainvoke(trajectory)
@@ -132,6 +134,15 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                     content = f"工具 {tool_name} 不可用"
                 tool_messages.append(ToolMessage(content=content, tool_call_id=tc["id"]))
 
+                # 调用完成后记录结果（写入 state + 推送 SSE 自定义事件）
+                _tool_call_idx += 1
+                key_result = content[:400] + ("…" if len(content) > 400 else "")
+                _mcp_sources.append({"idx": _tool_call_idx, "tool_name": tool_name, "key_result": key_result})
+                await adispatch_custom_event(
+                    "analyst_tool_result",
+                    {"idx": _tool_call_idx, "tool_name": tool_name, "key_result": key_result},
+                )
+
             trajectory.extend(tool_messages)
         else:
             # 达到最大轮次，强制用最后一轮内容作为答案
@@ -140,11 +151,15 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
 
         # mcp_client 在此处出作用域，连接自然关闭（工具调用已全部完成）
         analyst_count = state.get("analyst_count", 0) + 1
-        logger.info("Analyst [%d]: 生成分析结果 %d 字，地图更新 %d 条", analyst_count, len(answer), len(_map_updates))
+        logger.info(
+            "Analyst [%d]: 生成分析结果 %d 字，地图更新 %d 条，MCP 调用 %d 次",
+            analyst_count, len(answer), len(_map_updates), len(_mcp_sources),
+        )
         return {
             "messages": [AIMessage(content=answer, name="analyst")],
             "analyst_count": analyst_count,
             "map_updates": _map_updates,
+            "mcp_sources": _mcp_sources,
         }
 
     return analyst_node
