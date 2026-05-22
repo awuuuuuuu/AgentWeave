@@ -241,7 +241,10 @@ def build_dept_a2a_app(dept_code: str, port: int) -> FastAPI:
             "capabilities": ["emergency_response", "kb_search", "mcp_tools"],
             "endpoint": f"http://localhost:{port}/a2a/tasks/send",
             "kb_ids": app.state.kb_ids,
-            "mcp_tools": [c["name"] for c in app.state.org_mcp_connections],
+            "mcp_tools": [
+                {"name": c["name"], "description": c.get("description", "")}
+                for c in app.state.org_mcp_connections
+            ],
         }
 
     @app.post("/a2a/tasks/send", response_model=A2ATaskResponse)

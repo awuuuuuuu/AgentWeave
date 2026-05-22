@@ -14,6 +14,7 @@ SUPERVISOR_SYSTEM_TEMPLATE = """你是一个专业 AI 助手团队的主管，�
 - 某专家已完成，但问题仍有未处理的子任务 → 继续路由给下一个合适的专家
 - 所有必要步骤完成 → __end__
 - 用户问题完全超出所有专家能力范围 → 直接 __end__，在 message_to_user 中礼貌说明
+- 纯路线规划任务（analyst 仅调用地图工具，未涉及知识库检索）→ analyst 完成后可直接 __end__，结果已在地图气泡中展示，无需 reporter 二次整合
 
 **message_to_user（每次路由必填）：**
 - 首轮（supervisor_count=1）：首行说明任务意图，之后每个参与专家各一行 @专家名 + 任务说明

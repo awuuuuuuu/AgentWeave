@@ -85,6 +85,35 @@ def build_supervisor(
                 "supervisor_count": supervisor_count,
             }
 
+        _analyst_cnt = state.get("analyst_count", 0)
+        if _analyst_cnt >= 1:
+            _last_analyst = next(
+                (m for m in reversed(messages) if isinstance(m, AIMessage) and getattr(m, "name", "") == "analyst"),
+                None,
+            )
+            _hitl_done = any(
+                isinstance(m, AIMessage) and getattr(m, "name", "") == "hitl" for m in messages
+            )
+            if _last_analyst and not _hitl_done and "HITL_REQUIRED" in str(_last_analyst.content):
+                _hitl_line = next(
+                    (line.strip() for line in str(_last_analyst.content).splitlines() if "HITL_REQUIRED" in line),
+                    "待执行写操作需 HITL 审批",
+                )
+                logger.info(
+                    "Supervisor [%d]: 检测到 analyst HITL_REQUIRED，强制路由 hitl: %r",
+                    supervisor_count, _hitl_line[:80],
+                )
+                return {
+                    "next_agent": "hitl",
+                    "task": _hitl_line,
+                    "supervisor_count": supervisor_count,
+                    "message_to_user": "",
+                    "pending_approval": {
+                        "description": _hitl_line,
+                        "tool_name": "human_approval_required",
+                    },
+                }
+
         # 截取最近几条，并截断过长的消息内容，防止 Analyst 长答案撑爆 prompt
         raw_recent = messages[-SUPERVISOR_CONTEXT_WINDOW:]
         recent = []
@@ -162,19 +191,17 @@ def build_supervisor(
         elif decision.next == "__end__" and (
             state.get("researcher_count", 0) >= 1 or state.get("analyst_count", 0) >= 1
         ):
-            # 豁免：纯路线规划任务（analyst 调用了 amap 工具，无 KB 检索）
-            # map_updates 非空 + researcher 未介入 → 结果已在地图气泡中展示，无需 reporter 重复整合
-            is_pure_map_task = (
-                bool(state.get("map_updates"))
-                and state.get("researcher_count", 0) == 0
+            logger.warning(
+                "Supervisor: 拦截 __end__（researcher_count=%d, analyst_count=%d），强制 reporter",
+                state.get("researcher_count", 0),
+                state.get("analyst_count", 0),
             )
-            if not is_pure_map_task:
-                logger.warning(
-                    "Supervisor: 拦截 __end__（researcher_count=%d, analyst_count=%d），强制 reporter",
-                    state.get("researcher_count", 0),
-                    state.get("analyst_count", 0),
-                )
-                decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
+            decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
+        elif decision.next == "__end__" and any(
+            isinstance(m, AIMessage) and getattr(m, "name", "") == "hitl" for m in messages
+        ):
+            logger.warning("Supervisor: HITL 已完成但 reporter 未运行，拦截 __end__ 强制 reporter")
+            decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
 
         logger.info(
             "Supervisor [%d/%d]: next=%s | reason=%r",

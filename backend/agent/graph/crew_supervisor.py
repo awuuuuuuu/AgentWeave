@@ -102,6 +102,140 @@ def _mark_step(plan: list[PlanStep], step_id: str, status: str, result_summary: 
     ]
 
 
+def _build_dept_tasks(incident: str, dept_codes: list[str]) -> dict[str, str]:
+    """模板兜底：LLM 失败时使用。也作为单元测试的直接测试对象。"""
+    templates: dict[str, str] = {
+        "env_agency": (
+            f"事故：{incident}\n"
+            "请执行完整扩散建模：调用传感器 MCP 工具获取氨气浓度/风速/风向实时读数，"
+            "反推泄漏速率后用 calculate_plume 计算 ERPG-1/2/3 疏散半径，给出具体疏散方向和管控路口清单。"
+        ),
+        "medical_ems": (
+            f"事故：{incident}\n"
+            "【仅查询评估，不需调派】请调用 get_hospital_capacity 查询各医院当前 ICU/急诊实时可用床位，"
+            "调用 list_ambulances 查询待命救护车状态，给出可接收伤员的医院清单和可出动车辆数。"
+        ),
+        "traffic_control": (
+            f"事故：{incident}\n"
+            "【仅查询评估，不需执行信号切换】请调用 list_intersections 获取周边路口实时信号状态，"
+            "分析哪些路口需要切换为应急疏散模式，给出路口清单和方案建议。"
+        ),
+        "emergency_supplies": (
+            f"事故：{incident}\n"
+            "【仅查询评估，不需调拨】请调用 check_alerts 查询告警物资，"
+            "调用 get_inventory 核查防护服/呼吸器/急救药品库存，给出充足性评估。"
+        ),
+        "enterprise_safety": (
+            f"事故：{incident}\n"
+            "请调用 get_critical_alarms 获取超阈值传感器告警，"
+            "调用 get_incident_timeline 梳理事故时间线，给出泄漏根因分析和现场处置建议。"
+        ),
+    }
+    return {
+        code: templates.get(code, f"事故：{incident}\n请提供应急响应报告。")
+        for code in dept_codes
+    }
+
+
+async def _fetch_agent_cards(dept_codes: list[str]) -> dict[str, dict]:
+    """
+    并发从各部门 A2A Server 的 /.well-known/agent.json 获取能力描述。
+    无法访问的部门返回空 dict，不影响其他部门。
+    """
+    async def fetch_one(code: str) -> tuple[str, dict]:
+        url = _A2A_URLS.get(code)
+        if not url:
+            return code, {}
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{url}/.well-known/agent.json")
+                r.raise_for_status()
+                return code, r.json()
+        except Exception:
+            logger.warning("Crew: 无法获取 %s 的 agent.json，能力描述缺失", code)
+            return code, {}
+
+    pairs = await asyncio.gather(*[fetch_one(c) for c in dept_codes])
+    return dict(pairs)
+
+
+async def _generate_dept_tasks_llm(incident: str, dept_codes: list[str]) -> dict[str, str]:
+    """
+    使用 LLM 根据事故描述，为每个参与部门动态生成专属研判任务。
+    部门能力通过 A2A /.well-known/agent.json 实时获取，不依赖硬编码。
+    LLM 调用失败时自动 fallback 到 _build_dept_tasks 模板。
+    """
+    from config import settings
+
+    agent_cards = await _fetch_agent_cards(dept_codes)
+    llm = ChatOpenAI(model=settings.llm_model, temperature=0)
+
+    def _readonly_desc(raw_desc: str) -> str:
+        """保留 MCP 描述中非写操作的部分（去掉含 ⚠️ 的分句）。"""
+        parts = raw_desc.split("；")
+        return "；".join(p for p in parts if "⚠️" not in p).strip()
+
+    # 从 agent.json 构建部门能力描述（只列只读工具，过滤写操作分句）
+    dept_lines_parts = []
+    for code in dept_codes:
+        card = agent_cards.get(code, {})
+        name = card.get("name", code)
+        all_tools = card.get("mcp_tools", [])
+        tool_parts = []
+        for t in all_tools:
+            if not isinstance(t, dict):
+                continue
+            clean = _readonly_desc(t.get("description", ""))
+            if clean:
+                tool_parts.append(f"{t['name']}（{clean}）")
+        tool_desc = "、".join(tool_parts) if tool_parts else "无只读 MCP 工具"
+        dept_lines_parts.append(
+            f"- {code}（{name}）：只读 MCP 工具={tool_desc}"
+        )
+    dept_lines = "\n".join(dept_lines_parts)
+
+    system = SystemMessage(content=(
+        "你是城市应急指挥中心任务分配 AI。根据事故描述，为每个参与部门生成专属研判任务。\n\n"
+        "生成要求：\n"
+        "1. 每个任务必须以「【研判阶段】」开头\n"
+        "2. 任务中必须包含「结合知识库规程」四个字，以触发知识库检索\n"
+        "3. 明确列出应调用的只读 MCP 工具名称（参考下方工具列表，严禁提及写操作工具）；"
+        "【状态查询优先】优先使用 list_xxx/get_xxx 类工具评估现场状态；"
+        "geocode/plan_driving_route 是路线规划工具，仅在执行阶段使用，研判阶段不得列入任务\n"
+        "4. 从事故描述中提取关键参数（地点/物质/风向/中毒人数等），写入任务文本\n"
+        "5. 任务 2-3 句话，具体可操作\n"
+        "6. 以 JSON 对象格式输出：{\"dept_code\": \"task_text\", ...}\n"
+        "7. 只输出 JSON，不含任何其他文字"
+    ))
+    human = HumanMessage(content=(
+        f"事故描述：{incident}\n\n"
+        f"参与部门及其只读 MCP 工具：\n{dept_lines}\n\n"
+        "请为每个部门生成专属研判任务 JSON："
+    ))
+
+    try:
+        resp = await llm.ainvoke([system, human])
+        content = str(resp.content).strip()
+        m = re.search(r"\{[\s\S]*\}", content)
+        if not m:
+            raise ValueError("LLM 响应中未找到 JSON")
+        tasks: dict[str, str] = json.loads(m.group())
+
+        # 补全缺失部门（LLM 可能漏掉）
+        fallback = _build_dept_tasks(incident, dept_codes)
+        for code in dept_codes:
+            if code not in tasks:
+                tasks[code] = fallback[code]
+                logger.warning("Crew: LLM 未生成 %s 的任务，已用模板补全", code)
+
+        logger.info("Crew: LLM 动态分配任务完成，部门=%s", dept_codes)
+        return tasks
+
+    except Exception:
+        logger.exception("Crew: LLM 任务分配失败，回退到模板")
+        return _build_dept_tasks(incident, dept_codes)
+
+
 # ── 节点：阶段 1 — 并发调用各部门 ────────────────────────────────────────────
 
 async def phase_dispatch(state: CrewState, config: RunnableConfig) -> dict:
@@ -109,13 +243,7 @@ async def phase_dispatch(state: CrewState, config: RunnableConfig) -> dict:
     incident = state["incident"]
     dept_codes = state.get("selected_dept_codes") or list(_A2A_URLS.keys())
 
-    dept_tasks = {
-        "env_agency":         f"事故：{incident}\n请评估大气扩散范围、疏散方向及 ERPG 半径。",
-        "medical_ems":        f"事故：{incident}\n请评估医疗资源需求，给出可出动救护车及医院容量报告。",
-        "traffic_control":    f"事故：{incident}\n请分析路口管控方案及疏散通道，给出信号灯切换建议。",
-        "emergency_supplies": f"事故：{incident}\n请核查应急物资库存，给出调拨方案建议。",
-        "enterprise_safety":  f"事故：{incident}\n请分析传感器数据，定位泄漏根因及现场处置建议。",
-    }
+    dept_tasks = await _generate_dept_tasks_llm(incident, dept_codes)
 
     logger.info("Crew: phase_dispatch 开始，部门=%s", dept_codes)
 
@@ -170,11 +298,19 @@ async def phase_aggregate(state: CrewState, config: RunnableConfig) -> dict:
         "制定一份结构化的应急执行计划（4-6 个步骤，顺序执行）。\n\n"
         "每个步骤必须包含：\n"
         "- step_id: 唯一 ID（如 step-001）\n"
-        "- title: 步骤名称，必须具体可操作（≤30字），包含关键数量/地点，"
-        "例如：「调派3辆救护车前往港城大道388号」「封闭XX路至XX路口疏散周边居民」"
-        "「启动液氨泄漏点50m隔离警戒区」；禁止用「部署救援」「管控交通」等模糊表述\n"
+        "- title: 步骤名称，必须具体可操作（≤30字），必须包含数字、地点或计量单位词，"
+        "示例：「调派3辆120救护车至港城大道388号」「切换S3/S7路口为Ⅱ级疏散模式」"
+        "「建立388号化工厂500m警戒圈」「发放12套防化服和8台呼吸器」"
+        "「港城大道388号储罐C3液氨泄漏根因排查及3项处置」；"
+        "禁止使用「部署救援」「管控交通」「处置事故」「综合分析」等无数量/地点的模糊表述\n"
         "- dept_code: 执行部门代码（env_agency/medical_ems/traffic_control/emergency_supplies/enterprise_safety）\n"
-        "- task: 给该部门的完整执行指令（2-4句，含具体数量、地点、操作目标）\n"
+        "- task: 执行指令（2-4句）。"
+        "【格式严格要求】涉及派车/信号切换/物资发放等写操作的步骤（is_high_risk=true），"
+        "task 字段必须以「【执行阶段】立即」开头，这不可省略，"
+        "例如：「【执行阶段】立即调派3辆120救护车前往港城大道388号化工厂救援，"
+        "就近转运中毒人员至泰达医院急救中心」、"
+        "「【执行阶段】立即切换港城大道388号周边S3/S7路口为Ⅱ级疏散模式」。"
+        "非写操作步骤（分析/规程/扩散评估）以「【分析阶段】」开头\n"
         "- is_high_risk: 是否高危（true/false），涉及大范围人员疏散/停工/写操作的标 true\n"
         "- map_layer: 涉及地图操作的图层 ID（如 plume_circles/ambulance_route/signal_update/evacuation_route），否则 null\n\n"
         "以 JSON 数组格式返回，不要包含其他内容。"
@@ -206,12 +342,17 @@ async def phase_aggregate(state: CrewState, config: RunnableConfig) -> dict:
 
     plan: list[PlanStep] = []
     for i, s in enumerate(raw_steps):
+        is_high_risk = bool(s.get("is_high_risk", False))
+        task = s.get("task", "")
+        # 高危步骤必须携带执行阶段标记，供下游 analyst 节点可靠检测
+        if is_high_risk and "【执行阶段】" not in task:
+            task = f"【执行阶段】立即 {task}"
         plan.append(PlanStep(
             step_id=s.get("step_id", f"step-{i+1:03d}"),
             title=s.get("title", f"步骤 {i+1}"),
             dept_code=s.get("dept_code", ""),
-            task=s.get("task", ""),
-            is_high_risk=bool(s.get("is_high_risk", False)),
+            task=task,
+            is_high_risk=is_high_risk,
             status="pending",
             map_layer=s.get("map_layer") or None,
             result_summary="",
@@ -317,10 +458,16 @@ async def hitl_bulk_highrisk(state: CrewState, config: RunnableConfig) -> dict:
     })
 
     decision_str = str(decision).strip().lower() if decision is not None else ""
-    if decision_str not in ("approve", "reject", "skip"):
-        logger.warning("Crew: 步骤 %s 收到非法 decision=%r，强制驳回", step["step_id"], decision)
+    _APPROVE_WORDS = {"approve", "approved", "yes", "confirm", "ok", "确认", "批准", "同意"}
+    _REJECT_WORDS  = {"reject", "rejected", "no", "deny", "skip", "跳过", "驳回", "拒绝"}
+    if any(w in decision_str for w in _APPROVE_WORDS):
+        decision_str = "approve"
+    elif any(w in decision_str for w in _REJECT_WORDS):
         decision_str = "reject"
-    new_status = "skipped" if decision_str in ("reject", "skip") else "approved"
+    else:
+        logger.warning("Crew: 步骤 %s 收到无法识别的 decision=%r，强制驳回", step["step_id"], decision)
+        decision_str = "reject"
+    new_status = "skipped" if decision_str == "reject" else "approved"
     logger.info("Crew: 步骤 %s %s", step["step_id"], "驳回" if new_status == "skipped" else "批准")
 
     updated_plan = [
