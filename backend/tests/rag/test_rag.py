@@ -103,7 +103,7 @@ class TestContextBuilder:
 class TestPromptTemplate:
 
     def test_rag_prompt_renders_context_and_question(self):
-        from prompts.rag_answer import RAG_PROMPT
+        from rag.prompts import RAG_PROMPT
         msgs = RAG_PROMPT.format_messages(
             context="<context>[1] some doc</context>",
             question="什么是 RAG？",
@@ -113,12 +113,12 @@ class TestPromptTemplate:
         assert "[1] some doc" in full
 
     def test_system_prompt_has_citation_placement_rule(self):
-        from prompts.rag_answer import SYSTEM
+        from rag.prompts import SYSTEM
         # 必须包含句号前引用约束（防止 parser 解析失败）
         assert "句号之前" in SYSTEM or "句末" in SYSTEM
 
     def test_system_prompt_has_small_talk_rule(self):
-        from prompts.rag_answer import SYSTEM
+        from rag.prompts import SYSTEM
         assert "问候" in SYSTEM or "日常" in SYSTEM
 
 

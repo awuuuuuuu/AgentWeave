@@ -7,7 +7,7 @@ from typing import Callable
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from prompts.rag_answer import RAG_PROMPT
+from rag.prompts import RAG_PROMPT
 from retrieval.hybrid_retriever import HybridRetriever
 from retrieval.reranker import Reranker
 from retrieval.base import BaseRetriever

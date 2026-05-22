@@ -4,9 +4,10 @@ from typing import AsyncIterator
 
 from langgraph.graph import START, END, StateGraph
 
+from langchain_openai import ChatOpenAI
+
 from ingestion.embedder.openai_embedder import OpenAIEmbedder
 from ingestion.store.milvus_store import MilvusStoreConfig
-from llms.providers.openai_provider import create_llm
 from retrieval.hybrid_retriever import HybridRetriever, HybridRetrieverConfig
 from retrieval.reranker import Reranker, RerankerConfig
 
@@ -41,7 +42,16 @@ class RAGChain:
     ) -> "RAGChain":
         """使用外部已初始化的组件构建 RAGChain，避免重复创建连接。"""
         cfg = cfg or _default_settings
-        llm = create_llm(model=cfg.llm_model, max_tokens=cfg.output_reserve_tokens)
+        llm = ChatOpenAI(
+            model=cfg.llm_model,
+            api_key=cfg.openai_api_key or None,
+            base_url=cfg.openai_base_url or None,
+            max_tokens=cfg.output_reserve_tokens,
+            temperature=0.0,
+            streaming=True,
+            max_retries=2,
+            request_timeout=60.0,
+        )
         graph = cls._build_graph(retriever, reranker, llm, cfg.max_context_tokens)
         return cls(graph, cfg)
 
@@ -69,7 +79,16 @@ class RAGChain:
                 base_url=cfg.dashscope_base_url
             ))
 
-        llm = create_llm(model=cfg.llm_model, max_tokens=cfg.output_reserve_tokens)
+        llm = ChatOpenAI(
+            model=cfg.llm_model,
+            api_key=cfg.openai_api_key or None,
+            base_url=cfg.openai_base_url or None,
+            max_tokens=cfg.output_reserve_tokens,
+            temperature=0.0,
+            streaming=True,
+            max_retries=2,
+            request_timeout=60.0,
+        )
         graph = cls._build_graph(retriever, reranker, llm, cfg.max_context_tokens)
         return cls(graph, cfg)
     

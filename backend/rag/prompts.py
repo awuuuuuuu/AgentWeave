@@ -23,7 +23,6 @@ SYSTEM = """\
 """
 
 
-
 # ---------------------------------------------------------------------------
 # User prompt（{context} 由 ContextBuilder 填充，{question} 由 API 层填充）
 # ---------------------------------------------------------------------------
@@ -38,4 +37,3 @@ RAG_PROMPT = ChatPromptTemplate.from_messages([
     ("system", SYSTEM),
     ("human", USER),
 ])
-
