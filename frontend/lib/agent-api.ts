@@ -95,11 +95,45 @@ export interface McpSource {
   key_result: string;
 }
 
+// Researcher 子图步骤 → 提示文字
+export const RESEARCHER_STEP_TEXT: Record<string, string> = {
+  retrieve: "正在检索知识库…",
+  grade:    "正在评估文档质量…",
+  rewrite:  "正在优化查询词…",
+  generate: "正在生成答案…",
+};
+
+// Analyst MCP 工具名 → 提示文字（前缀匹配）
+export const ANALYST_TOOL_TEXT: Array<[string, string]> = [
+  ["geocode",               "正在解析地址坐标…"],
+  ["plan_driving_route",    "正在规划驾车路线…"],
+  ["get_hospital_capacity", "正在查询医院 ICU 容量…"],
+  ["list_ambulances",       "正在查询救护车状态…"],
+  ["dispatch_ambulance",    "正在调度救护车…"],
+  ["calculate_plume",       "正在计算气体扩散范围…"],
+  ["get_sensor_readings",   "正在读取传感器数据…"],
+  ["get_critical_alarms",   "正在获取高风险传感器告警…"],
+  ["get_incident_timeline", "正在检索事故时间线…"],
+  ["list_intersections",    "正在查询路口信号状态…"],
+  ["set_intersection_mode", "正在设置路口信号模式…"],
+  ["batch_set_intersections","正在批量设置路口信号…"],
+  ["get_inventory",         "正在查询应急物资库存…"],
+  ["check_alerts",          "正在检查库存告警…"],
+  ["dispatch_materials",    "正在调拨应急物资…"],
+  ["get_equipment_status",  "正在查询设备状态…"],
+];
+
+export function resolveToolStatusText(toolName: string): string {
+  const match = ANALYST_TOOL_TEXT.find(([key]) => toolName.includes(key));
+  return match ? match[1] : `正在调用工具 ${toolName}…`;
+}
+
 export type AgentSSEEvent =
   | { type: "node_start"; node: AgentName }
   | { type: "token"; node: AgentName; data: { content: string } }
   | { type: "node_end"; node: AgentName; data: { citations?: Citation[]; mcp_sources?: McpSource[]; message_to_user?: string; answer_text?: string } }
-  | { type: "status"; node: AgentName; data: { step: string; text: string } }
+  | { type: "status"; node: AgentName; data: { step: string; tool_name?: string } }
+  | { type: "tool_result"; node: AgentName; data: McpSource }
   | { type: "interrupt"; node: "hitl"; data: HITLData }
   | { type: "map_update"; data: MapPayload }
   | { type: "final_answer"; data: { content: string; citations: Citation[] } }

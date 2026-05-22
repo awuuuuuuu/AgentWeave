@@ -56,13 +56,8 @@ _KNOWN_NODES = frozenset(
     {"memory_inject", "supervisor", "researcher", "analyst", "reporter"}
 )
 
-# Researcher 子图内部步骤 → 前端状态提示文字
-_RESEARCHER_STEPS: dict[str, str] = {
-    "retrieve": "正在检索知识库…",
-    "grade":    "正在评估文档质量…",
-    "rewrite":  "正在优化查询词…",
-    "generate": "正在生成答案…",
-}
+# Researcher 子图内部步骤名（文案由前端 RESEARCHER_STEP_TEXT 维护）
+_RESEARCHER_STEPS = frozenset({"retrieve", "grade", "rewrite", "generate"})
 
 
 # ── 请求/响应 Schema ──────────────────────────────────────────────────────────
@@ -80,10 +75,6 @@ class AgentResumeRequest(BaseModel):
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
-
-def _get_graph(request: Request):
-    return request.app.state.agent_graph
-
 
 def _get_graph_by_type(request: Request, session_type: str):
     if session_type == "crew":
@@ -183,13 +174,17 @@ async def _process_events(
                 yield _sse({
                     "type": "status",
                     "node": "researcher",
-                    "data": {"step": ev_name, "text": _RESEARCHER_STEPS[ev_name]},
+                    "data": {"step": ev_name},
                 })
 
-            # Analyst 工具调用状态推送（adispatch_custom_event → on_custom_event）
+            # Analyst 工具调用状态推送：调用前（tool_status）+ 调用后结果（tool_result）
             elif ev_type == "on_custom_event" and ev_name == "analyst_tool_status":
                 node = _infer_node(event) or "analyst"
                 yield _sse({"type": "status", "node": node, "data": ev_data})
+
+            elif ev_type == "on_custom_event" and ev_name == "analyst_tool_result":
+                node = _infer_node(event) or "analyst"
+                yield _sse({"type": "tool_result", "node": node, "data": ev_data})
 
             # LLM token 逐字（supervisor 使用 structured_output，跳过原始 JSON token）
             elif ev_type == "on_chat_model_stream":
@@ -495,7 +490,7 @@ async def agent_stream(
         req.session_id, req.kb_ids, len(org_mcp_connections),
     )
 
-    graph = _get_graph(request)
+    graph = _get_graph_by_type(request, "chat")
     config = _make_config(req.session_id, current_user.id)
 
     # 检查线程是否已存在：

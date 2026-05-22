@@ -24,6 +24,8 @@ import {
   msgTobubble,
   bubbleToMsg,
   REPLY_TO,
+  RESEARCHER_STEP_TEXT,
+  resolveToolStatusText,
   type AgentBubble,
   type AgentName,
   type Citation,
@@ -258,11 +260,31 @@ export function AgentChatWindow({
         const node = event.node;
         const id = nodeBubbleId[node];
         if (!id) continue;
+        const { step, tool_name } = event.data;
+        const text =
+          node === "analyst" && tool_name
+            ? resolveToolStatusText(tool_name)
+            : (RESEARCHER_STEP_TEXT[step] ?? step);
         upsertBubble(id, (prev) => ({
           ...(prev ?? { id, agent: node, citations: [], replyTo: REPLY_TO[node] }),
-          content: event.data.text,
+          content: text,
           status: "thinking",
         }));
+      }
+
+      else if (event.type === "tool_result") {
+        const node = event.node;
+        const id = nodeBubbleId[node];
+        if (!id) continue;
+        upsertBubble(id, (prev) => {
+          const base = prev ?? { id, agent: node, content: "", citations: [], replyTo: REPLY_TO[node] };
+          const existing = base.mcpSources ?? [];
+          const alreadyExists = existing.some((s) => s.idx === event.data.idx);
+          return {
+            ...base,
+            mcpSources: alreadyExists ? existing : [...existing, event.data],
+          };
+        });
       }
 
       else if (event.type === "node_end") {
