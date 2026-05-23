@@ -16,7 +16,7 @@ SSE 事件格式（chat session）
     {"type": "done",        "data": {"citations": [...]}}
     {"type": "error",       "data": {"message": "..."}}
 
-SSE 事件格式（crew session，来自 Crew Supervisor 自定义事件）
+SSE 事件格式（weave session，来自 Weave Supervisor 自定义事件）
 -------------------------------------------------------------
     {"type": "dept_report",   "data": {"dept_code": ..., "status": ..., "summary": ..., "key_facts": [...]}}
     {"type": "dispatch_plan", "data": {"steps": [...]}}
@@ -66,7 +66,7 @@ class AgentChatRequest(BaseModel):
     query: str
     session_id: str
     kb_ids: list[str] = []
-    selected_dept_codes: list[str] = []  # crew session only
+    selected_dept_codes: list[str] = []  # weave session only
 
 
 class AgentResumeRequest(BaseModel):
@@ -77,8 +77,8 @@ class AgentResumeRequest(BaseModel):
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 def _get_graph_by_type(request: Request, session_type: str):
-    if session_type == "crew":
-        return request.app.state.crew_graph
+    if session_type == "weave":
+        return request.app.state.weave_graph
     return request.app.state.agent_graph
 
 
@@ -93,7 +93,7 @@ async def _get_session_type(session_id: str, user_id: str, db: AsyncSession) -> 
     if not row:
         return "chat"
     stype = row.session_type or "chat"
-    if stype not in ("chat", "crew"):
+    if stype not in ("chat", "weave"):
         logger.warning("未知会话类型 session=%s type=%r，回退为 chat", session_id, stype)
         return "chat"
     return stype
@@ -325,16 +325,16 @@ async def _process_events(
         yield _sse({"type": "error", "data": {"message": user_msg}})
 
 
-# ── Crew SSE 事件处理器 ───────────────────────────────────────────────────────
+# ── Weave SSE 事件处理器 ───────────────────────────────────────────────────────
 
-async def _process_crew_events(
+async def _process_weave_events(
     event_source: AsyncGenerator[dict, None],
     request: Request,
     session_id: str,
 ) -> AsyncGenerator[str, None]:
     """
-    遍历 crew_graph.astream_events()，将 em_event 自定义事件和 HITL interrupt 转为前端 SSE。
-    事件数据格式：{type: str, data: dict}，与 crew_supervisor.py 中的 adispatch_custom_event 对齐。
+    遍历 weave_graph.astream_events()，将 em_event 自定义事件和 HITL interrupt 转为前端 SSE。
+    事件数据格式：{type: str, data: dict}，与 weave_supervisor.py 中的 adispatch_custom_event 对齐。
 
     设计要点：
     - interrupt 检测到后继续排水（不 return/aclose），让 event_source 自然耗尽。
@@ -351,14 +351,14 @@ async def _process_crew_events(
                 continue
 
             if await request.is_disconnected():
-                logger.info("Crew SSE: 客户端断开 session=%s", session_id)
+                logger.info("Weave SSE: 客户端断开 session=%s", session_id)
                 return
 
             ev_type = event.get("event", "")
             ev_name = event.get("name", "")
             ev_data = event.get("data", {})
 
-            # Crew 自定义事件（dept_report / dispatch_plan / plan_step / map_update / hitl_required / final_answer）
+            # Weave 自定义事件（dept_report / dispatch_plan / plan_step / map_update / hitl_required / final_answer）
             if ev_type == "on_custom_event" and ev_name == "em_event":
                 yield _sse(ev_data)  # ev_data 已是 {type, data} 结构
 
@@ -374,11 +374,11 @@ async def _process_crew_events(
             yield _sse({"type": "done", "data": {}})
 
     except asyncio.CancelledError:
-        logger.info("Crew SSE: 任务取消 session=%s", session_id)
+        logger.info("Weave SSE: 任务取消 session=%s", session_id)
         raise
     except Exception as exc:
-        logger.exception("Crew SSE: 错误 session=%s", session_id)
-        yield _sse({"type": "error", "data": {"message": str(exc) or "Crew 执行出错"}})
+        logger.exception("Weave SSE: 错误 session=%s", session_id)
+        yield _sse({"type": "error", "data": {"message": str(exc) or "Weave 执行出错"}})
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -438,9 +438,9 @@ async def agent_stream(
 
     session_type = await _get_session_type(req.session_id, current_user.id, db)
 
-    # ── Crew 会话（应急指挥台） ────────────────────────────────────────────────
-    if session_type == "crew":
-        graph = _get_graph_by_type(request, "crew")
+    # ── Weave 会话（应急指挥台） ────────────────────────────────────────────────
+    if session_type == "weave":
+        graph = _get_graph_by_type(request, "weave")
         config = _make_config(req.session_id, current_user.id)
 
         existing = await graph.aget_state(config)
@@ -450,7 +450,7 @@ async def agent_stream(
             # 已有线程：追加用户消息（续命令 / 追加指令）
             graph_input: Any = {"messages": [HumanMessage(content=query)]}
         else:
-            # 首轮：query 即事故描述，初始化完整 CrewState
+            # 首轮：query 即事故描述，初始化完整 WeaveState
             graph_input = {
                 "session_id": req.session_id,
                 "user_id": current_user.id,
@@ -464,20 +464,20 @@ async def agent_stream(
                 "messages": [HumanMessage(content=query)],
             }
 
-        logger.info("crew_stream: session=%s dept_codes=%s", req.session_id, req.selected_dept_codes)
+        logger.info("weave_stream: session=%s dept_codes=%s", req.session_id, req.selected_dept_codes)
 
-        async def crew_event_gen():
+        async def weave_event_gen():
             try:
                 event_source = graph.astream_events(graph_input, config=config, version="v2")
-                async for chunk in _process_crew_events(event_source, request, req.session_id):
+                async for chunk in _process_weave_events(event_source, request, req.session_id):
                     yield chunk
             except asyncio.CancelledError:
-                logger.info("Crew stream 生成器取消 session=%s", req.session_id)
+                logger.info("Weave stream 生成器取消 session=%s", req.session_id)
                 raise
             finally:
                 yield "data: [DONE]\n\n"
 
-        return StreamingResponse(crew_event_gen(), media_type="text/event-stream")
+        return StreamingResponse(weave_event_gen(), media_type="text/event-stream")
 
     # ── Chat 会话（普通 Agent 对话） ──────────────────────────────────────────
     # 读取当前用户 org 的 MCP 连接配置和部门专属 prompt
@@ -562,19 +562,19 @@ async def agent_resume(
 
     resume_command = Command(resume=req.decision)
 
-    if session_type == "crew":
-        async def crew_resume_gen():
+    if session_type == "weave":
+        async def weave_resume_gen():
             try:
                 event_source = graph.astream_events(resume_command, config=config, version="v2")
-                async for chunk in _process_crew_events(event_source, request, req.session_id):
+                async for chunk in _process_weave_events(event_source, request, req.session_id):
                     yield chunk
             except asyncio.CancelledError:
-                logger.info("Crew resume 生成器取消 session=%s", req.session_id)
+                logger.info("Weave resume 生成器取消 session=%s", req.session_id)
                 raise
             finally:
                 yield "data: [DONE]\n\n"
 
-        return StreamingResponse(crew_resume_gen(), media_type="text/event-stream")
+        return StreamingResponse(weave_resume_gen(), media_type="text/event-stream")
 
     async def event_gen():
         try:
@@ -633,7 +633,7 @@ async def get_agent_state(
         "interrupted": bool(state.next),
         "message_count": len(sv.get("messages", [])),
     }
-    if session_type == "crew":
+    if session_type == "weave":
         base.update({
             "phase": sv.get("phase", ""),
             "current_step": sv.get("current_step", 0),

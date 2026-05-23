@@ -63,7 +63,7 @@ export interface MapLayer {
 
 export type SessionSeverity = 1 | 2 | 3; // 1=critical(red), 2=warning(amber), 3=ok(green)
 
-/** 用于 Kanban 抽屉的会话摘要（一行 = 一个 Crew 会话） */
+/** 用于 Kanban 抽屉的会话摘要（一行 = 一个 Weave 会话） */
 export interface SessionKanbanEntry {
   id: string;
   title: string | null;

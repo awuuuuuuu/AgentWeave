@@ -1,5 +1,5 @@
 """
-Phase 2 — 各部门数据质量测试（crew_integration）
+Phase 2 — 各部门数据质量测试（weave_integration）
 
 验证每个部门 A2A Server 的研判响应：
 - status == "completed"
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.crew.evaluators import (
+from tests.weave.evaluators import (
     RESEARCH_MCP_WHITELIST,
     SELECTED_DEPTS,
     check_key_facts_have_numbers,
@@ -20,7 +20,7 @@ from tests.crew.evaluators import (
     check_mcp_whitelist,
 )
 
-pytestmark = pytest.mark.crew_integration
+pytestmark = pytest.mark.weave_integration
 
 
 class TestDeptResponseStatus:

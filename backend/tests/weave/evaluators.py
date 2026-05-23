@@ -1,5 +1,5 @@
 """
-Crew 测试评估函数库。
+Weave 测试评估函数库。
 
 每个函数返回 (passed: bool, diagnosis_message: str)。
 diagnosis_message 在 passed=False 时包含调优建议，
@@ -68,7 +68,7 @@ def check_dept_keywords(dept_code: str, task_text: str) -> tuple[bool, str]:
     return False, (
         f"[{dept_code}] 任务文本缺少领域关键词（期望至少一个：{keywords}）\n"
         f"  实际文本前100字：{task_text[:100]}\n"
-        f"  调优建议：检查 crew_supervisor._build_dept_tasks 中该部门的模板"
+        f"  调优建议：检查 weave_supervisor._build_dept_tasks 中该部门的模板"
     )
 
 

@@ -42,7 +42,7 @@ from agent.memory.long_term import LongTermMemory
 from agent.memory.user_profile import UserProfileManager
 from agent.memory.memory_manager import MemoryManager
 from agent.graph.agent_graph import build_agent_graph
-from agent.graph.crew_supervisor import build_crew_graph
+from agent.graph.weave_supervisor import build_weave_graph
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ async def lifespan(app: FastAPI):
             memory_manager=app.state.memory_manager,
             llm_model=settings.llm_model,
         )
-        app.state.crew_graph = build_crew_graph(checkpointer=checkpointer)
+        app.state.weave_graph = build_weave_graph(checkpointer=checkpointer)
         logger.info("Startup complete.")
 
         yield

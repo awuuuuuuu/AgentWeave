@@ -1,7 +1,7 @@
 """
-Crew（应急指挥）图状态定义
+Weave 图状态定义
 
-与 AgentState 完全独立——Crew Supervisor 是并发 A2A 编排图，
+与 AgentState 完全独立——Weave Supervisor 是并发 A2A 编排图，
 不做 RAG 检索路由，State 字段完全不同。
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ class PlanStep(TypedDict):
     result_summary: str            # 执行完成后填入
 
 
-class CrewState(TypedDict):
+class WeaveState(TypedDict):
     # ── 会话元数据 ──────────────────────────────────────────────────────────
     session_id: str
     user_id: str

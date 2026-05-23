@@ -136,7 +136,7 @@ async def list_departments(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[DeptOut]:
-    """返回所有 type=='department' 的机构（供 Crew 会话创建时选择协作部门）。"""
+    """返回所有 type=='department' 的机构（供 Weave 会话创建时选择协作部门）。"""
     result = await db.scalars(
         select(Organization)
         .where(Organization.type == "department")

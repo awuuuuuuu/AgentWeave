@@ -1,8 +1,8 @@
 /**
  * Agent 群组 API
  * - GET  /agent/members        → Agent 成员列表
- * - POST /agent/stream         → 启动对话 SSE（chat / crew 共用）
- * - POST /agent/resume         → HITL 审批后恢复 SSE（chat / crew 共用）
+ * - POST /agent/stream         → 启动对话 SSE（chat / weave 共用）
+ * - POST /agent/resume         → HITL 审批后恢复 SSE（chat / weave 共用）
  *
  * 会话管理 API
  * - GET    /sessions           → 列出会话
@@ -18,7 +18,7 @@
  *   {type: "done",       data: {citations: Citation[]}}
  *   {type: "error",      data: {message: string}}
  *
- * SSE 事件格式（crew session，来自 Crew Supervisor）：
+ * SSE 事件格式（weave session，来自 Weave Supervisor）：
  *   {type: "dept_report",   data: {...}}
  *   {type: "dispatch_plan", data: {steps: PlanStep[]}}
  *   {type: "plan_step",     data: {step_id, status, summary?}}
@@ -163,7 +163,7 @@ export const REPLY_TO: Partial<Record<AgentName, { agentName: string; text: stri
   hitl:       { agentName: "Supervisor", text: "需要人工确认" },
 };
 
-// ── Crew 类型 ─────────────────────────────────────────────────────────────────
+// ── Weave 类型 ─────────────────────────────────────────────────────────────────
 
 export interface PlanStep {
   step_id: string;
@@ -176,7 +176,7 @@ export interface PlanStep {
   result_summary: string;
 }
 
-export type CrewSSEEvent =
+export type WeaveSSEEvent =
   | { type: "research_dispatch"; data: { tasks: Array<{ dept_code: string; task: string }> } }
   | { type: "dept_report";   data: { dept_code: string; status: string; summary: string; key_facts: string[]; map_events: unknown[]; citations?: Citation[]; mcp_sources?: McpSource[] } }
   | { type: "dispatch_plan"; data: { steps: PlanStep[] } }
@@ -202,7 +202,7 @@ async function authFetch(url: string, init?: RequestInit): Promise<Response> {
   });
 }
 
-// ── SSE 解析器（泛型，chat 和 crew 共用）─────────────────────────────────────
+// ── SSE 解析器（泛型，chat 和 weave 共用）─────────────────────────────────────
 
 async function* parseSSE<T>(
   response: Response,
@@ -244,7 +244,7 @@ export interface Session {
   id: string;
   title: string | null;
   status: string;
-  session_type: "chat" | "crew";
+  session_type: "chat" | "weave";
   message_count: number;
   kb_ids: string[] | null;
   created_at: string;
@@ -286,13 +286,13 @@ export async function* streamAgent(
   yield* parseSSE<AgentSSEEvent>(res, signal);
 }
 
-/** 启动 Crew 应急会话，返回 SSE 事件流 */
-export async function* streamCrew(
+/** 启动 Weave 应急会话，返回 SSE 事件流 */
+export async function* streamWeave(
   incident: string,
   sessionId: string,
   selectedDeptCodes: string[] = [],
   signal?: AbortSignal
-): AsyncGenerator<CrewSSEEvent> {
+): AsyncGenerator<WeaveSSEEvent> {
   const res = await authFetch(`${API_BASE}/agent/stream`, {
     method: "POST",
     body: JSON.stringify({ query: incident, session_id: sessionId, selected_dept_codes: selectedDeptCodes }),
@@ -300,17 +300,17 @@ export async function* streamCrew(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "请求失败" }));
-    throw new Error(err.detail ?? "Crew 请求失败");
+    throw new Error(err.detail ?? "Weave 请求失败");
   }
-  yield* parseSSE<CrewSSEEvent>(res, signal);
+  yield* parseSSE<WeaveSSEEvent>(res, signal);
 }
 
-/** HITL 审批后恢复 Crew 执行，返回 SSE 事件流 */
-export async function* resumeCrew(
+/** HITL 审批后恢复 Weave 执行，返回 SSE 事件流 */
+export async function* resumeWeave(
   sessionId: string,
   decision: string | unknown[],  // "approve" | "reject" | PlanStep[]（HITL-1 修改计划）
   signal?: AbortSignal
-): AsyncGenerator<CrewSSEEvent> {
+): AsyncGenerator<WeaveSSEEvent> {
   const res = await authFetch(`${API_BASE}/agent/resume`, {
     method: "POST",
     body: JSON.stringify({ session_id: sessionId, decision }),
@@ -318,9 +318,9 @@ export async function* resumeCrew(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "审批请求失败" }));
-    throw new Error(err.detail ?? "Crew 审批失败");
+    throw new Error(err.detail ?? "Weave 审批失败");
   }
-  yield* parseSSE<CrewSSEEvent>(res, signal);
+  yield* parseSSE<WeaveSSEEvent>(res, signal);
 }
 
 // ── 会话 CRUD ─────────────────────────────────────────────────────────────────
@@ -333,7 +333,7 @@ export async function listSessions(): Promise<Session[]> {
 
 export async function createSession(
   kbIds: string[] = [],
-  sessionType: "chat" | "crew" = "chat"
+  sessionType: "chat" | "weave" = "chat"
 ): Promise<Session> {
   const res = await authFetch(`${API_BASE}/sessions`, {
     method: "POST",

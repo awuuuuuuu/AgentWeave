@@ -118,7 +118,7 @@ export default function AgentPage() {
 
   async function handleDialogConfirm(
     kbIds: string[],
-    sessionType: "chat" | "crew" = "chat",
+    sessionType: "chat" | "weave" = "chat",
     _deptOrgIds: string[] = []
   ) {
     setIsCreating(true);
@@ -169,12 +169,12 @@ export default function AgentPage() {
 
       {/* 右侧：按会话类型路由 */}
       {sessionId ? (
-        currentSession?.session_type === "crew" ? (
+        currentSession?.session_type === "weave" ? (
           <CommandCenterLayout
             sessionId={sessionId}
             sessionTitle={currentSession?.title ?? undefined}
             onSessionUpdated={loadSessions}
-            crewSessions={sessionList.filter((s) => s.session_type === "crew")}
+            weaveSessions={sessionList.filter((s) => s.session_type === "weave")}
           />
         ) : (
           <AgentChatWindow
@@ -193,7 +193,7 @@ export default function AgentPage() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onConfirm={handleDialogConfirm}
-        showCrew={isCommandOrg}
+        showWeave={isCommandOrg}
       />
     </div>
   );

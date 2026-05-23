@@ -48,7 +48,7 @@ from ingestion.store.milvus_store import MilvusStore, MilvusStoreConfig
 DEMO_DIR = _SCRIPT_DIR
 
 DEPARTMENTS = [
-    # ── 顶层协调员（Crew Orchestrator）────────────────────────────────────────
+    # ── 顶层协调员（Weave Orchestrator）────────────────────────────────────────
     {
         "dept_code": "cmd_center",
         "org_name": "应急指挥中心",
@@ -60,9 +60,9 @@ DEPARTMENTS = [
         "mcp_connections": [],        # orchestrator 不直接调工具，由子部门各自持有 MCP
         "dept_prompts": {
             "supervisor_hints": (
-                "你是应急指挥中心总协调员（Crew Orchestrator），负责接收事故报告并协调下属五个部门同步响应。\n"
+                "你是应急指挥中心总协调员（Weave Orchestrator），负责接收事故报告并协调下属五个部门同步响应。\n"
                 "【初始研判】先路由 researcher 检索匹配的应急预案等级与启动条件；同步路由 analyst 通过传感器确认现场态势（浓度/风向/告警级别）。\n"
-                "【分派原则】根据研判结果，按如下专责将子任务分派给相应部门（在上层 Crew 中体现为路由决策）：\n"
+                "【分派原则】根据研判结果，按如下专责将子任务分派给相应部门（在上层 Weave 中体现为路由决策）：\n"
                 "  · EN 环保局    ──── 大气扩散建模 + 疏散方向\n"
                 "  · ME 医疗急救  ──── 伤员接诊 + 救护车调度（含 HITL）\n"
                 "  · TR 交通管控  ──── 路口信号管制 + 疏散通道（含 HITL）\n"

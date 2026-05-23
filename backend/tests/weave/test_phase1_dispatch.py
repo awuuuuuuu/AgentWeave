@@ -1,5 +1,5 @@
 """
-Phase 1 — 研判指令质量测试（crew_unit）
+Phase 1 — 研判指令质量测试（weave_unit）
 
 测试 _build_dept_tasks（LLM 动态分配的 fallback 模板）的规范性：
 - 包含事故描述
@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import pytest
 
-from tests.crew.evaluators import INCIDENT, SELECTED_DEPTS, check_dept_keywords
+from tests.weave.evaluators import INCIDENT, SELECTED_DEPTS, check_dept_keywords
 
-pytestmark = pytest.mark.crew_unit
+pytestmark = pytest.mark.weave_unit
 
 
 @pytest.fixture(scope="module")
 def dept_tasks() -> dict[str, str]:
-    from agent.graph.crew_supervisor import _build_dept_tasks
+    from agent.graph.weave_supervisor import _build_dept_tasks
     return _build_dept_tasks(INCIDENT, SELECTED_DEPTS)
 
 
@@ -58,13 +58,13 @@ class TestDispatchTaskContent:
 
 class TestDispatchCustomDeptCodes:
     def test_partial_dept_selection(self):
-        from agent.graph.crew_supervisor import _build_dept_tasks
+        from agent.graph.weave_supervisor import _build_dept_tasks
         partial = ["env_agency", "medical_ems"]
         tasks = _build_dept_tasks(INCIDENT, partial)
         assert set(tasks.keys()) == set(partial)
 
     def test_unknown_dept_gets_fallback_task(self):
-        from agent.graph.crew_supervisor import _build_dept_tasks
+        from agent.graph.weave_supervisor import _build_dept_tasks
         tasks = _build_dept_tasks(INCIDENT, ["unknown_dept"])
         assert "unknown_dept" in tasks
         assert INCIDENT[:15] in tasks["unknown_dept"]

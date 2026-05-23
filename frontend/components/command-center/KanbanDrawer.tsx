@@ -264,7 +264,7 @@ function HitlQueue({
                 }}>!</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 9, color: CC.muted, marginBottom: 2 }}>
-                    {item.session_title ?? "Crew 会话"}
+                    {item.session_title ?? "Weave 会话"}
                   </div>
                   <div style={{ fontSize: 11.5, fontWeight: 600, color: CC.text, lineHeight: 1.3 }}>
                     {item.message}

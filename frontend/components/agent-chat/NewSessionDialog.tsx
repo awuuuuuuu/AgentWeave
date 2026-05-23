@@ -26,27 +26,27 @@ interface NewSessionDialogProps {
   onOpenChange: (open: boolean) => void;
   onConfirm: (
     kbIds: string[],
-    sessionType: "chat" | "crew",
+    sessionType: "chat" | "weave",
     deptOrgIds: string[]
   ) => Promise<void>;
-  /** 是否显示 Crew 指挥台选项（仅 command 类型机构可用） */
-  showCrew?: boolean;
+  /** 是否显示 Weave 指挥台选项（仅 command 类型机构可用） */
+  showWeave?: boolean;
 }
 
 export function NewSessionDialog({
   open,
   onOpenChange,
   onConfirm,
-  showCrew = false,
+  showWeave = false,
 }: NewSessionDialogProps) {
-  const [sessionType, setSessionType] = useState<"chat" | "crew">("chat");
+  const [sessionType, setSessionType] = useState<"chat" | "weave">("chat");
 
   // chat mode
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [selectedKbIds, setSelectedKbIds] = useState<Set<string>>(new Set());
   const [kbLoading, setKbLoading] = useState(false);
 
-  // crew mode
+  // weave mode
   const [depts, setDepts] = useState<OrgDept[]>([]);
   const [selectedDeptIds, setSelectedDeptIds] = useState<Set<string>>(new Set());
   const [deptsLoading, setDeptsLoading] = useState(false);
@@ -56,7 +56,7 @@ export function NewSessionDialog({
   useEffect(() => {
     if (!open) return;
     // 非 command 机构打开弹窗时重置为 chat
-    if (!showCrew) setSessionType("chat");
+    if (!showWeave) setSessionType("chat");
     // Load KB list for chat mode
     setKbLoading(true);
     apiListKBs()
@@ -67,7 +67,7 @@ export function NewSessionDialog({
       .catch(() => { setKbs([]); setSelectedKbIds(new Set()); })
       .finally(() => setKbLoading(false));
 
-    // Load department list for crew mode
+    // Load department list for weave mode
     setDeptsLoading(true);
     listDepartments()
       .then((list) => {
@@ -108,8 +108,8 @@ export function NewSessionDialog({
     }
   }
 
-  const isCrew = sessionType === "crew";
-  const loading = isCrew ? deptsLoading : kbLoading;
+  const isWeave = sessionType === "weave";
+  const loading = isWeave ? deptsLoading : kbLoading;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -117,14 +117,14 @@ export function NewSessionDialog({
         <DialogHeader>
           <DialogTitle>新建会话</DialogTitle>
           <DialogDescription>
-            {isCrew
-              ? "Crew 模式：多 Agent 协作指挥台，选择参与的部门"
+            {isWeave
+              ? "Weave 模式：多 Agent 协作指挥台，选择参与的部门"
               : "普通对话：选择知识库，Agent 将从中检索相关内容"}
           </DialogDescription>
         </DialogHeader>
 
         {/* ── 会话类型 Toggle（仅 command 机构可见）──────────────── */}
-        {showCrew && (
+        {showWeave && (
           <div
             style={{
               display: "flex",
@@ -135,7 +135,7 @@ export function NewSessionDialog({
               gap: 3,
             }}
           >
-            {(["chat", "crew"] as const).map((type) => {
+            {(["chat", "weave"] as const).map((type) => {
               const active = sessionType === type;
               return (
                 <button
@@ -161,7 +161,7 @@ export function NewSessionDialog({
                   {type === "chat"
                     ? <IconMessageCircle size={13} />
                     : <IconSitemap size={13} />}
-                  {type === "chat" ? "普通对话" : "Crew 指挥台"}
+                  {type === "chat" ? "普通对话" : "Weave 指挥台"}
                 </button>
               );
             })}
@@ -176,8 +176,8 @@ export function NewSessionDialog({
               <Skeleton style={{ height: 44, borderRadius: 8 }} />
               <Skeleton style={{ height: 44, borderRadius: 8 }} />
             </>
-          ) : isCrew ? (
-            /* ── Crew：部门 checkbox ── */
+          ) : isWeave ? (
+            /* ── Weave：部门 checkbox ── */
             depts.length === 0 ? (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "24px 0", color: "var(--color-text-tertiary)" }}>
                 <IconUsers size={28} style={{ opacity: 0.4 }} />
@@ -274,7 +274,7 @@ export function NewSessionDialog({
         {/* 提示文案 */}
         {!loading && (
           <p style={{ fontSize: 12, color: "var(--color-text-tertiary)", margin: "0 0 4px" }}>
-            {isCrew
+            {isWeave
               ? selectedDeptIds.size === 0
                 ? "未选择部门时将使用系统默认配置"
                 : `已选 ${selectedDeptIds.size} 个部门参与协作`
@@ -289,7 +289,7 @@ export function NewSessionDialog({
             取消
           </Button>
           <Button onClick={handleConfirm} disabled={confirming || loading}>
-            {confirming ? "创建中…" : isCrew ? "启动 Crew" : "开始对话"}
+            {confirming ? "创建中…" : isWeave ? "启动 Weave" : "开始对话"}
           </Button>
         </DialogFooter>
       </DialogContent>

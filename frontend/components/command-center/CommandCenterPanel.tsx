@@ -53,7 +53,7 @@ function ConvHead({
           }}
         />
         <span style={{ fontSize: 13, fontWeight: 600, color: CC.text }}>
-          {title ?? "新 Crew 会话"}
+          {title ?? "新 Weave 会话"}
         </span>
         {isRunning && (
           <span
@@ -92,7 +92,7 @@ function ConvHead({
         fontSize: 11, color: CC.muted, marginTop: 3,
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
       }}>
-        会话 #{sessionIdShort()} · Crew 多 Agent 协作
+        会话 #{sessionIdShort()} · Weave 多 Agent 协作
       </div>
     </div>
   );
@@ -291,7 +291,7 @@ export function CommandCenterPanel({
           >
             <div style={{ fontSize: 28, opacity: 0.3 }}>⚡</div>
             <div style={{ fontSize: 13 }}>等待指令</div>
-            <div style={{ fontSize: 11, opacity: 0.7 }}>在下方输入框发送第一条消息，启动 Crew</div>
+            <div style={{ fontSize: 11, opacity: 0.7 }}>在下方输入框发送第一条消息，启动 Weave</div>
           </div>
         ) : (
           cards.map((card, i) => <CardRenderer key={i} card={card} />)

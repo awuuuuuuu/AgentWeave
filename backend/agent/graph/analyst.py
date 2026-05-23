@@ -43,7 +43,7 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
 
         # 执行模式检测（三重来源，优先级从高到低）：
         # 1. state["task"] —— supervisor 在 HITL 批准后写入（单部门直接调用场景）
-        # 2. HumanMessage  —— Crew Orchestrator 通过 A2A 发送的任务消息
+        # 2. HumanMessage  —— Weave Orchestrator 通过 A2A 发送的任务消息
         # 3. hitl AIMessage —— 同 session 内已完成 HITL，说明已获授权
         _hitl_done = any(
             isinstance(m, AIMessage) and getattr(m, "name", "") == "hitl"

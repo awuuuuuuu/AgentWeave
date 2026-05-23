@@ -1,7 +1,7 @@
 [project]
-name = "ragent"
+name = "agent-weave"
 version = "0.1.0"
-description = "Enterprise-grade Agent+RAG system"
+description = "Multi-department collaborative Agent platform — each department with private RAG knowledge base and MCP tools"
 requires-python = ">=3.11"
 dependencies = [
     # ── Step 1: 文档摄入 ──────────────────────────────────────────────────────

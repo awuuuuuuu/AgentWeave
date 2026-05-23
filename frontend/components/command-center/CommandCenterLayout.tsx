@@ -14,9 +14,9 @@ import type {
   SopStage,
 } from "./types";
 import {
-  streamCrew,
-  resumeCrew,
-  type CrewSSEEvent,
+  streamWeave,
+  resumeWeave,
+  type WeaveSSEEvent,
   type MapPayload,
   type PlanStep,
   type Session,
@@ -30,7 +30,7 @@ const DEPT_META: Record<string, { code: string; name: string }> = {
   enterprise_safety:  { code: "SF", name: "企业安全" },
 };
 
-// 研判阶段固定顺序（与 crew_supervisor.py _A2A_URLS 顺序一致）
+// 研判阶段固定顺序（与 weave_supervisor.py _A2A_URLS 顺序一致）
 const RESEARCH_DEPTS = [
   { dept_code: "env_agency",         code: "EN", name: "环保局" },
   { dept_code: "medical_ems",        code: "ME", name: "医疗急救" },
@@ -65,14 +65,14 @@ interface CommandCenterLayoutProps {
   sessionId: string;
   sessionTitle?: string;
   onSessionUpdated?: () => void;
-  crewSessions?: Session[];
+  weaveSessions?: Session[];
   hitlQueue?: HITLQueueItem[];
 }
 
 export function CommandCenterLayout({
   sessionId,
   sessionTitle,
-  crewSessions = [],
+  weaveSessions = [],
   hitlQueue = [],
 }: CommandCenterLayoutProps) {
   const [cards, setCards] = useState<CommandCard[]>([]);
@@ -84,7 +84,7 @@ export function CommandCenterLayout({
   const [pendingInterrupt, setPendingInterrupt] = useState<{
     type: string; plan?: PlanStep[]; step_id?: string; title?: string;
   } | null>(null);
-  const [title, setTitle] = useState(sessionTitle ?? "新 Crew 会话");
+  const [title, setTitle] = useState(sessionTitle ?? "新 Weave 会话");
 
   const abortRef               = useRef<AbortController | null>(null);
   const streamSettleRef        = useRef<Promise<void>>(Promise.resolve()); // 当前流结束后 resolve
@@ -119,15 +119,15 @@ export function CommandCenterLayout({
     setTasks([]);
     setIsRunning(false);
     setPendingInterrupt(null);
-    setTitle(sessionTitle ?? "新 Crew 会话");
+    setTitle(sessionTitle ?? "新 Weave 会话");
   }, [sessionId, sessionTitle]);
 
   // ── Event processor (uses only functional setState, no stale closure issues) ─
 
-  function processEvent(event: CrewSSEEvent) {
+  function processEvent(event: WeaveSSEEvent) {
     switch (event.type) {
       case "research_dispatch": {
-        // crew_supervisor 在 A2A 调用前推送，包含每个部门的实际任务文本
+        // weave_supervisor 在 A2A 调用前推送，包含每个部门的实际任务文本
         const tasks = event.data.tasks;
 
         deptCardIdxRef.current = {};
@@ -449,7 +449,7 @@ export function CommandCenterLayout({
     }
   }
 
-  async function runStream(gen: AsyncGenerator<CrewSSEEvent>, ac: AbortController) {
+  async function runStream(gen: AsyncGenerator<WeaveSSEEvent>, ac: AbortController) {
     try {
       for await (const event of gen) {
         if (ac.signal.aborted) break;
@@ -457,7 +457,7 @@ export function CommandCenterLayout({
       }
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
-        console.error("[crew] stream error", err);
+        console.error("[weave] stream error", err);
         setCards((prev) => [
           ...prev,
           { type: "timestamp" as const, label: `连接错误：${String(err)}` },
@@ -504,7 +504,7 @@ export function CommandCenterLayout({
         return next;
       });
 
-      streamSettleRef.current = runStream(streamCrew(query, sessionId, [], ac.signal), ac);
+      streamSettleRef.current = runStream(streamWeave(query, sessionId, [], ac.signal), ac);
       await streamSettleRef.current;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -531,7 +531,7 @@ export function CommandCenterLayout({
     const ac = new AbortController();
     abortRef.current = ac;
 
-    streamSettleRef.current = runStream(resumeCrew(sessionId, decision, ac.signal), ac);
+    streamSettleRef.current = runStream(resumeWeave(sessionId, decision, ac.signal), ac);
     await streamSettleRef.current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, pendingInterrupt]);
@@ -549,14 +549,14 @@ export function CommandCenterLayout({
     const ac = new AbortController();
     abortRef.current = ac;
 
-    streamSettleRef.current = runStream(resumeCrew(sessionId, "reject", ac.signal), ac);
+    streamSettleRef.current = runStream(resumeWeave(sessionId, "reject", ac.signal), ac);
     await streamSettleRef.current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, pendingInterrupt]);
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
-  const kpis = buildKpis(crewSessions, hitlQueue);
+  const kpis = buildKpis(weaveSessions, hitlQueue);
 
   return (
     <div

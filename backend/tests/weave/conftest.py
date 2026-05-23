@@ -1,5 +1,5 @@
-# backend/tests/crew/conftest.py
-"""Crew 测试套件共享 fixtures 和 pytest marker 注册。"""
+# backend/tests/weave/conftest.py
+"""Weave 测试套件共享 fixtures 和 pytest marker 注册。"""
 from __future__ import annotations
 
 import asyncio
@@ -16,11 +16,11 @@ load_dotenv(Path(__file__).parents[2] / ".env")
 
 def pytest_configure(config):
     config.addinivalue_line(
-        "markers", "crew_unit: 无外部依赖，CI 默认运行"
+        "markers", "weave_unit: 无外部依赖，CI 默认运行"
     )
     config.addinivalue_line(
         "markers",
-        "crew_integration: 需要 A2A Server 在线（localhost:9001-9005），手动触发",
+        "weave_integration: 需要 A2A Server 在线（localhost:9001-9005），手动触发",
     )
 
 
@@ -39,7 +39,7 @@ A2A_PORTS: dict[str, int] = {
 def a2a_available() -> dict[str, int]:
     """
     检查所有 A2A Server 连通性。
-    任意 server 不可达则整批 crew_integration 测试 skip。
+    任意 server 不可达则整批 weave_integration 测试 skip。
     返回 {dept_code: port} 供下游 fixture 使用。
     """
     async def _check():
@@ -63,7 +63,7 @@ def a2a_available() -> dict[str, int]:
 
 async def _fetch_dept_responses() -> dict[str, dict]:
     """直接向各部门 A2A Server 发送研判任务，返回响应字典。"""
-    from agent.graph.crew_supervisor import _generate_dept_tasks_llm
+    from agent.graph.weave_supervisor import _generate_dept_tasks_llm
     dept_tasks = await _generate_dept_tasks_llm(INCIDENT, SELECTED_DEPTS)
 
     async def call_one(dept_code: str, port: int) -> tuple[str, dict]:
@@ -98,9 +98,9 @@ def dept_responses(a2a_available) -> dict[str, dict]:
 
 # ── 执行计划（module-scoped） ─────────────────────────────────────────────────
 
-async def _build_crew_plan(dept_reports: dict[str, dict]) -> list[dict]:
+async def _build_weave_plan(dept_reports: dict[str, dict]) -> list[dict]:
     """调用 phase_aggregate 生成执行计划（adispatch_custom_event mock 掉）。"""
-    from agent.graph.crew_supervisor import phase_aggregate
+    from agent.graph.weave_supervisor import phase_aggregate
 
     state = {
         "session_id": "test-session",
@@ -115,7 +115,7 @@ async def _build_crew_plan(dept_reports: dict[str, dict]) -> list[dict]:
         "messages": [],
     }
     with patch(
-        "agent.graph.crew_supervisor.adispatch_custom_event",
+        "agent.graph.weave_supervisor.adispatch_custom_event",
         new=AsyncMock(return_value=None),
     ):
         result = await phase_aggregate(state, config={"configurable": {}})
@@ -123,9 +123,9 @@ async def _build_crew_plan(dept_reports: dict[str, dict]) -> list[dict]:
 
 
 @pytest.fixture(scope="module")
-def crew_plan(dept_responses) -> list[dict]:
+def weave_plan(dept_responses) -> list[dict]:
     """执行计划：phase_aggregate 的输出，每个测试模块共享一次 LLM 调用。"""
-    return asyncio.run(_build_crew_plan(dept_responses))
+    return asyncio.run(_build_weave_plan(dept_responses))
 
 
 # ── 执行阶段结果（module-scoped） ─────────────────────────────────────────────
@@ -135,7 +135,7 @@ async def _run_execution(plan: list[dict]) -> dict[str, tuple[dict, dict]]:
     对计划中有写操作 MCP 要求的步骤，直接调用 A2A Server 执行任务。
     返回 {step_id: (step, a2a_response)}。
     """
-    from agent.graph.crew_supervisor import _call_dept_a2a
+    from agent.graph.weave_supervisor import _call_dept_a2a
 
     EXECUTION_MCP_WHITELIST: dict[str, list[str]] = {
         "medical_ems":        ["dispatch_ambulance", "recall_ambulance"],
@@ -170,6 +170,6 @@ async def _run_execution(plan: list[dict]) -> dict[str, tuple[dict, dict]]:
 
 
 @pytest.fixture(scope="module")
-def execution_results(crew_plan, a2a_available) -> dict[str, tuple[dict, dict]]:
+def execution_results(weave_plan, a2a_available) -> dict[str, tuple[dict, dict]]:
     """执行阶段结果，每个测试模块共享一次。"""
-    return asyncio.run(_run_execution(crew_plan))
+    return asyncio.run(_run_execution(weave_plan))

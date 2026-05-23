@@ -1,5 +1,5 @@
 """
-Phase 4 — 执行阶段 MCP 写操作 + 地图数据测试（crew_integration）
+Phase 4 — 执行阶段 MCP 写操作 + 地图数据测试（weave_integration）
 
 仅测试有写操作 MCP 要求的部门步骤（EXECUTION_MCP_WHITELIST 非空）：
 - 执行结果 status == "completed"
@@ -10,22 +10,22 @@ from __future__ import annotations
 
 import pytest
 
-from tests.crew.evaluators import (
+from tests.weave.evaluators import (
     EXECUTION_MCP_WHITELIST,
     EXPECTED_MAP_LAYERS,
     check_map_event_coordinates,
     check_mcp_whitelist,
 )
 
-pytestmark = pytest.mark.crew_integration
+pytestmark = pytest.mark.weave_integration
 
 
 class TestExecutionStatus:
     def test_at_least_one_step_executed(self, execution_results):
         assert execution_results, (
             "执行阶段无任何步骤被执行\n"
-            "  可能原因：crew_plan 中所有需写操作的步骤状态不为 pending/approved\n"
-            "  调试建议：打印 crew_plan 中各步骤的 status 和 dept_code"
+            "  可能原因：weave_plan 中所有需写操作的步骤状态不为 pending/approved\n"
+            "  调试建议：打印 weave_plan 中各步骤的 status 和 dept_code"
         )
 
     def test_all_executed_steps_completed(self, execution_results):
