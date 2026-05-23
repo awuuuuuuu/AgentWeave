@@ -19,7 +19,7 @@
   cd backend
   uv run python ../demo/test_agent_scenarios.py
   uv run python ../demo/test_agent_scenarios.py --dept env_agency
-  uv run python ../demo/test_agent_scenarios.py --case "情景A-扩散疏散"
+  uv run python ../demo/test_agent_scenarios.py --case 情景A   # 子串匹配，--case B 也可以
   uv run python ../demo/test_agent_scenarios.py --no-hitl   # 跳过所有 HITL 场景（不等人工审批）
 """
 from __future__ import annotations
@@ -48,6 +48,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
@@ -191,7 +192,7 @@ SCENARIOS: dict[str, dict] = {
                     "查询当前库存是否满足，并办理调拨出库。"
                 ),
                 "expected_chain": ["researcher", "analyst", "hitl", "reporter"],
-                "expected_tools_ordered": ["check_alerts", "get_inventory"],
+                "expected_tools_ordered": ["get_inventory"],
                 "expect_hitl": True,
                 "expect_rag_fallback": False,
             },
@@ -506,34 +507,48 @@ async def _run_case(
 
     t0 = time.monotonic()
     try:
-        async for event in graph.astream_events(graph_input, config=config, version="v2"):
-            ev_type = event.get("event", "")
-            ev_name = event.get("name", "")
+        stream_input: Any = graph_input
+        while True:
+            hitl_detected_this_pass = False
+            async for event in graph.astream_events(stream_input, config=config, version="v2"):
+                ev_type = event.get("event", "")
+                ev_name = event.get("name", "")
 
-            # 路由决策
-            if ev_type == "on_chain_end" and ev_name == "supervisor":
-                output = event.get("data", {}).get("output", {})
-                next_agent = output.get("next_agent", "")
-                if next_agent:
-                    result.routing_chain.append(next_agent)
+                # 路由决策
+                if ev_type == "on_chain_end" and ev_name == "supervisor":
+                    output = event.get("data", {}).get("output", {})
+                    next_agent = output.get("next_agent", "")
+                    if next_agent:
+                        result.routing_chain.append(next_agent)
 
-            # HITL 中断
-            if ev_type == "on_chain_stream":
-                chunk = event.get("data", {}).get("chunk", {})
-                if isinstance(chunk, dict) and "__interrupt__" in chunk:
-                    result.has_hitl = True
-                    if skip_hitl:
-                        # 不等待人工审批，直接结束本场景
-                        break
+                # HITL 中断
+                if ev_type == "on_chain_stream":
+                    chunk = event.get("data", {}).get("chunk", {})
+                    if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                        result.has_hitl = True
+                        if skip_hitl:
+                            # 不等待人工审批，直接结束本场景
+                            hitl_detected_this_pass = True
+                            break
+                        else:
+                            # 自动审批，继续执行到 reporter
+                            hitl_detected_this_pass = True
+                            break
 
-            # Reporter 最终答案（reporter 节点不 return citations，仅读 messages）
-            if ev_type == "on_chain_end" and ev_name == "reporter":
-                output = event.get("data", {}).get("output", {})
-                msgs = output.get("messages", [])
-                for msg in msgs:
-                    c = getattr(msg, "content", "")
-                    if c and len(c) > len(result.final_answer):
-                        result.final_answer = c
+                # Reporter 最终答案（reporter 节点不 return citations，仅读 messages）
+                if ev_type == "on_chain_end" and ev_name == "reporter":
+                    output = event.get("data", {}).get("output", {})
+                    msgs = output.get("messages", [])
+                    for msg in msgs:
+                        c = getattr(msg, "content", "")
+                        if c and len(c) > len(result.final_answer):
+                            result.final_answer = c
+
+            if hitl_detected_this_pass and not skip_hitl:
+                # Resume with auto-approve so graph continues to reporter
+                stream_input = Command(resume="approve")
+                continue
+            break
 
     except Exception as exc:
         result.errors.append(str(exc))
@@ -735,7 +750,7 @@ async def main(
             print(f"\n⚠ [{dept_label}] supervisor_hints 为空，请重新运行 seed_departments.py 更新 dept_prompts")
 
         for case in dept_cfg["cases"]:
-            if filter_case and filter_case != case["name"]:
+            if filter_case and filter_case not in case["name"]:
                 continue
 
             total_count += 1

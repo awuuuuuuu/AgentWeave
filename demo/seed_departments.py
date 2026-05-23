@@ -94,7 +94,7 @@ DEPARTMENTS = [
             {
                 "name": "atmospheric_dispersion",
                 "url": "http://localhost:8101/mcp",
-                "description": "大气扩散模型（只读）：calculate_plume 计算 ERPG-1/2/3 疏散半径；get_evacuation_direction 根据风向给出疏散方向和优先管控路口",
+                "description": "大气扩散模型（只读）：estimate_release_rate 根据传感器浓度/距离/风速反推泄漏速率（g/s）；calculate_plume 输入泄漏速率和气象参数计算 ERPG-1/2/3 疏散半径；get_evacuation_direction 根据风向给出疏散方向和优先管控路口",
             },
             {
                 "name": "enterprise_sensor",
@@ -104,36 +104,37 @@ DEPARTMENTS = [
         ],
         "dept_prompts": {
             "supervisor_hints": (
-                "扩散/疏散类问题：先路由 researcher 检索毒性参数和分级标准，再路由 analyst。\n"
-                "analyst 调用链（严格顺序，缺一不可）：\n"
-                "  1. get_sensor_readings(sensor_type='氨气浓度') — 获取各点实测浓度\n"
-                "  2. get_sensor_readings(sensor_type='风速')    — 获取实测风速\n"
-                "  3. get_sensor_readings(sensor_type='风向')    — 获取实测风向\n"
-                "  4. estimate_release_rate(concentration_ppm, distance_m, wind_speed_ms) — 反推泄漏速率\n"
-                "  5. calculate_plume(lat, lng, wind_speed_ms, wind_dir_deg, release_rate_gs) — 计算 ERPG 半径\n"
-                "所有参数必须来自实测值，禁止使用估算值或跳过任何步骤。"
+                "扩散/疏散类问题：先路由 researcher 检索毒性参数和分级标准，再路由 analyst 执行扩散建模（依次调用传感器读取、泄漏速率推算、扩散半径计算）。\n"
+                "analyst 完成后路由 reporter 输出疏散方案结论。"
             ),
             "analyst_context": (
                 "【完整调用链，必须严格按顺序执行，不得跳过任何步骤】\n"
                 "步骤1：调用 get_sensor_readings(sensor_type='氨气浓度')\n"
-                "  → 取 current_value 最大的一条读数（如 N1=890ppm，location='事故点正北50m'）\n"
-                "  → 从 location 文字解析传感器距泄漏点的距离（如'正北50m' → distance_m=50）\n\n"
+                "  → 取返回列表中 current_value 最大的一条读数\n"
+                "  → 从该条记录的 location 字段解析传感器距泄漏点的距离（如'正北50m' → distance_m=50）\n"
+                "  → 若工具调用失败或返回空列表，在报告中注明'氨气浓度数据不可用'，终止后续步骤并输出当前已知信息\n\n"
                 "步骤2：调用 get_sensor_readings(sensor_type='风速')\n"
-                "  → 取 W1 气象站 A 的 current_value 作为 wind_speed_ms\n\n"
+                "  → 取返回列表中气象站类传感器的 current_value 作为 wind_speed_ms\n"
+                "  → 若返回多条，取最近更新（update_time 最新）的一条\n"
+                "  → 若工具调用失败，使用保守默认值 wind_speed_ms=1.0，并在报告中标注为估算值\n\n"
                 "步骤3：调用 get_sensor_readings(sensor_type='风向')\n"
-                "  → 取 D1 的 current_value 作为 wind_dir_deg\n\n"
+                "  → 取返回列表中风向传感器的 current_value 作为 wind_dir_deg\n"
+                "  → 若工具调用失败，使用默认值 wind_dir_deg=0，并在报告中标注为估算值\n\n"
                 "步骤4：调用 estimate_release_rate(\n"
                 "    concentration_ppm=<步骤1最大浓度>,\n"
                 "    distance_m=<步骤1解析的距离>,\n"
                 "    wind_speed_ms=<步骤2风速>\n"
-                "  ) → 得到 release_rate_gs\n\n"
+                "  ) → 得到 release_rate_gs\n"
+                "  → 若工具调用失败，使用保守默认值 release_rate_gs=10.0，并在报告中标注为估算值\n\n"
                 "步骤5：调用 calculate_plume(\n"
-                "    lat=39.0251, lng=117.7451,\n"
+                "    lat=<从 get_incident_timeline 或事故描述中提取的事故点纬度，默认 39.0251>,\n"
+                "    lng=<从 get_incident_timeline 或事故描述中提取的事故点经度，默认 117.7451>,\n"
                 "    wind_speed_ms=<步骤2风速>,\n"
                 "    wind_dir_deg=<步骤3风向>,\n"
                 "    release_rate_gs=<步骤4结果>\n"
-                "  ) → 得到 ERPG-1/2/3 疏散半径\n\n"
-                "【禁止使用猜测值或跳过步骤4直接调用 calculate_plume】\n\n"
+                "  ) → 得到 ERPG-1/2/3 疏散半径\n"
+                "  → 若工具调用失败，在报告中注明'扩散半径计算不可用'，仅输出已收集的传感器数据\n\n"
+                "【禁止使用猜测值或跳过步骤4直接调用 calculate_plume；默认值仅在工具明确失败时使用】\n\n"
                 "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
                 "数字与工具调用顺序对应：第1次工具调用的结果加[M1]，第2次加[M2]，依此类推。"
                 "例如：「氨气浓度890ppm[M1]，风速3.2m/s[M2]，风向202°[M3]，"
@@ -163,21 +164,18 @@ DEPARTMENTS = [
         ],
         "dept_prompts": {
             "supervisor_hints": (
-                "派车类问题：先路由 researcher 检索接诊级别要求（SOP/规程/转运标准），再路由 analyst 查实时容量和车辆状态。\n"
-                "【重要】researcher 只负责检索操作规程，不提供医院容量数字——容量数字必须由 analyst 通过 MCP 工具获取。\n"
-                "【关键】analyst 调用过 get_hospital_capacity 或 list_ambulances 后，派车方案已就绪，"
-                "下一步必须路由 hitl——不得路由 analyst（dispatch_ambulance 是写操作，analyst 不可自行执行）、"
-                "不得路由 reporter、不得路由 __end__。hitl 通过后再路由 reporter 输出结论。\n"
-                "纯路线规划（只需 plan_driving_route）不涉及写操作，analyst 完成后直接 __end__——路线已在地图气泡里展示，无需 reporter 重复整合。\n"
-                "纯急救规程/设备/药品查询（不含派车、不含路线规划，如'洗消流程''给氧步骤''转运注意事项'等）："
-                "只需路由 researcher 检索文档，researcher 完成后直接路由 reporter，无需 analyst。"
+                "含'【研判阶段】'：先路由 researcher 检索接诊规程，再路由 analyst 调用 get_hospital_capacity 和 list_ambulances，路由 reporter 输出建议。\n"
+                "含'【执行阶段】'：直接路由 analyst，current_task 开头必须保留「【执行阶段】已授权」标记，analyst 完成后路由 reporter。\n"
+                "含'【分析阶段】'：视内容路由 researcher 或 analyst，无需 HITL。\n"
+                "其他任务（路线规划）：analyst 完成后直接 reporter，无需 HITL。"
             ),
             "analyst_context": (
-                "【绝对禁止】严禁使用知识库文档中的历史数字作为医院床位容量——这些是历史档案数字，非实时数据，不得引用。\n"
-                "【第一步】必须调用 get_hospital_capacity() MCP 工具获取各医院当前 ICU/急诊实时可用床位数，这是唯一权威数据来源。\n"
-                "【第二步】调用 list_ambulances(status='待命') 获取当前可用救护车及位置。\n"
-                "整理派车方案后停止——dispatch_ambulance 是写操作，需等待 HITL 审批，不得自行调用。\n"
-                "纯路线规划任务（只调用了 geocode/plan_driving_route）直接输出路线结果即可。\n"
+                "【执行阶段】当任务含「【执行阶段】」时，必须调用 dispatch_ambulance 实际执行调度（不得仅输出评估建议）：\n"
+                "先调 get_hospital_capacity() + list_ambulances() 确认资源，再用 geocode() 获取事故地点坐标，\n"
+                "最后调用 dispatch_ambulance(ambulance_id, dest_lat, dest_lng, patient_type) 完成派车（已授权，无需 HITL）。\n"
+                "【研判阶段】调用 get_hospital_capacity() 和 list_ambulances() 评估后整理方案即可，"
+                "勿调用 dispatch_ambulance（需 HITL）。严禁引用知识库历史数字作为实时床位。\n"
+                "纯路线规划任务直接调用 geocode/plan_driving_route 并输出结果。\n"
                 "【geocode 地址规范】本部门位于天津市滨海新区，调用 geocode 时必须补全城市前缀，"
                 "例如：'泰达医院' → '天津市滨海新区泰达医院'，'港城大道388号' → '天津市滨海新区港城大道388号'。\n"
                 "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
@@ -207,26 +205,25 @@ DEPARTMENTS = [
         ],
         "dept_prompts": {
             "supervisor_hints": (
-                "管控类问题：先路由 researcher 检索预案等级定义，再路由 analyst 查路口现状并整理变更方案。"
-                "【关键】analyst 调用过 list_intersections 后，路口方案已就绪，"
-                "下一步必须路由 hitl——apply_evacuation_plan 和 set_mode 是写操作，"
-                "不得路由 reporter 或 __end__，即使 researcher 和 analyst 均已完成也不例外。"
-                "路线+信号联合任务（如救援走廊）：analyst 完成路线规划和路口识别后，同样必须路由 hitl 审批信号设置，再路由 reporter。"
+                "含'【研判阶段】'：先路由 researcher（current_task 须明确检索目标，如「Ⅲ级预案路口信号管制模式与路口清单」，禁止使用'相关内容'等模糊表述），"
+                "再路由 analyst 调用 list_intersections 查询路口实时状态。"
+                "若任务含信号切换写操作请求，analyst 完成评估后路由 hitl 审批；否则路由 reporter 输出方案。\n"
+                "含'【执行阶段】'：直接路由 analyst（已获上层指挥中心 HITL 授权，本级无需再路由 hitl），analyst 完成后路由 reporter。\n"
+                "含'【分析阶段】'：视内容路由 researcher 或 analyst，无需 HITL。\n"
+                "其他任务（路线规划）：analyst 调用 geocode + plan_driving_route 完成后直接 reporter，无需 HITL。"
             ),
             "analyst_context": (
-                "【绝对禁令】apply_evacuation_plan 和 set_mode 是写操作，在 HITL 审批前严禁调用，"
-                "即使 supervisor 指令要求'设置'或'批量管控'也不得执行——analyst 只能读取状态并输出文字方案。"
-                "\n【路线+信号联合任务】先用 geocode() 获取起点和终点坐标，调用 plan_driving_route() 规划路线，"
-                "然后调用 list_intersections() 获取沿线路口现状，整理需要切换为应急绿波的路口列表后停止，"
-                "在回复末尾加上『[需要HITL审批]』标记。"
-                "\n【仅路口管控任务】先调 list_intersections() 获取所有路口当前信号模式，整理变更方案后停止，"
-                "在回复末尾加上『[需要HITL审批]』标记。"
-                "\n【仅路线规划任务】先用 geocode() 分别获取起点和终点坐标，直接调用 plan_driving_route() 完成路线规划，"
-                "无需 HITL 标记。路线规划完成后直接 __end__——路线已在地图气泡里展示，无需 reporter。"
-                "\n【geocode 地址规范】本部门位于天津市滨海新区，调用 geocode 时必须补全城市前缀，"
-                "例如：'港城大道388号' → '天津市滨海新区港城大道388号'，'消防大队' → '天津市滨海新区消防大队'。\n"
+                "【路口管控任务】先调 list_intersections() 获取所有路口当前信号模式，整理查询结果。\n"
+                "【执行阶段任务】当任务中含「【执行阶段】」时，先调 list_intersections() 查看路口当前状态，"
+                "然后调用信号管控工具执行切换（已获上层授权）。\n"
+                "【研判阶段任务】apply_evacuation_plan 和 set_mode 是写操作，研判阶段只能读取状态并输出文字方案，写操作须经 HITL 审批。\n"
+                "【路线+信号联合任务】先用 geocode() 获取起点和终点坐标，调用 plan_driving_route() 规划路线，"
+                "然后调用 list_intersections() 获取沿线路口现状，整理后停止。\n"
+                "【仅路线规划任务】用 geocode() 获取坐标，调用 plan_driving_route() 完成路线规划，直接 __end__。\n"
+                "【geocode 地址规范】本部门位于天津市滨海新区，调用 geocode 时必须补全城市前缀，"
+                "例如：'港城大道388号' → '天津市滨海新区港城大道388号'。\n"
                 "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
-                "数字与工具调用顺序对应。例如：「S3路口当前正常模式[M1]，疏散路线全长2.3km[M2]」"
+                "例如：「S3路口当前正常模式[M1]，疏散路线全长2.3km[M2]」"
             ),
         },
     },
@@ -247,19 +244,20 @@ DEPARTMENTS = [
         ],
         "dept_prompts": {
             "supervisor_hints": (
-                "调拨类问题：先路由 researcher 检索标准包定义和最低储备要求，再路由 analyst 查库存告警。"
-                "allocate_standard_pack 和 allocate_custom 是写操作，analyst 完成后必须路由 hitl 审批。"
-                "告警核查/补充建议类（如'哪些物资低于阈值''给出补充建议'）："
-                "先路由 researcher 检索各类物资的额定储量标准和补充触发条件，"
-                "再路由 analyst 调用 check_alerts 获取实时告警状态。"
-                "analyst 完成后路由 reporter 输出建议，无需 HITL。"
+                "含'【研判阶段】'：先路由 researcher（current_task 须明确写出要检索的具体信息，如「Ⅲ级标准包物资清单及数量要求」，禁止使用'相关内容'等模糊表述），"
+                "再路由 analyst 调用 check_alerts 和 get_inventory 查询。"
+                "若任务含调拨出库请求，analyst 完成评估后路由 hitl 审批；否则路由 reporter 输出评估。\n"
+                "含'【执行阶段】'：直接路由 analyst，current_task 开头必须保留「【执行阶段】已授权」标记，analyst 完成后路由 reporter。\n"
+                "含'【分析阶段】'：视内容路由 researcher 或 analyst，无需 HITL。\n"
+                "其他查询（不含阶段标记，如库存告警、补充建议等）：先路由 researcher（current_task 须明确写出要检索的具体数值，"
+                "如「各物资最低储备量（预警线）数值及不足时补充措施」，禁止使用'相关内容'等泛化表述），"
+                "再路由 analyst 调用 check_alerts 对照分析，reporter 整合输出；无需 HITL。"
             ),
             "analyst_context": (
-                "【第一步】必须先调用 check_alerts()——无论任务是调拨还是核查，都要先获取告警状态，不可跳过。"
-                "【第二步-调拨任务】任务含'调拨''出库''发放'等字眼时，check_alerts 之后必须继续调用 get_inventory() "
-                "核对标准包所需物资的实际库存数量，即使 check_alerts 返回无告警也不可跳过——无告警不等于库存充足。"
-                "【第二步-纯告警核查】问题只问'哪些物资低于阈值'时，check_alerts 结果已足够，无需再调 get_inventory。"
-                "整理完方案后停止——allocate_standard_pack 和 allocate_custom 是写操作，需等待 HITL 审批，不得自行调用。\n"
+                "【执行阶段】当任务含「【执行阶段】」时：调用 check_alerts() 和 get_inventory() 核实库存后，"
+                "立即调用 allocate_standard_pack（按预案等级）或 allocate_custom（自定义）执行调拨（上层已授权，无需 HITL）。\n"
+                "【研判阶段】调用 check_alerts() 和 get_inventory() 后整理评估方案即可，"
+                "勿调用 allocate_*（写操作，需 HITL）。\n"
                 "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
                 "数字与工具调用顺序对应。例如：「防化服库存12套[M1]，空气呼吸器8套告警[M2]」"
             ),
@@ -282,13 +280,12 @@ DEPARTMENTS = [
         ],
         "dept_prompts": {
             "supervisor_hints": (
-                "根因分析类（含'根本原因''诱因''原因分析'等关键词）："
-                "先路由 researcher 检索事故快报和设备安全数据，再路由 analyst 获取实时告警和时间线，最后 reporter 综合分析。"
-                "处置方法/防护规程类（含'处置方案''防护装备''处置方法'且无实时查询需求）："
-                "直接路由 researcher 检索处置规程，完成后路由 reporter，无需 analyst。"
-                "纯传感器/时间线查询（含'梳理时间线''查超限读数''超过阈值'且无需查文档）："
-                "直接路由 analyst，完成后路由 reporter，无需 researcher。"
-                "所有传感器工具只读，无需 HITL。"
+                "含'【研判阶段】'：严格按三步执行——"
+                "①路由 researcher 检索事故处置规程（1次，检索完即停）；"
+                "②无论 researcher 是否找到文档，必须继续路由 analyst 调用 get_critical_alarms 和 get_incident_timeline 获取实时传感器数据；"
+                "③路由 reporter 综合知识库结果和实时数据生成报告。analyst 步骤不可跳过。\n"
+                "含'【执行阶段】'或'【分析阶段】'：所有工具只读，路由 analyst 进行实时数据分析，reporter 输出，无需 HITL。\n"
+                "其他任务：视内容路由 researcher 或 analyst，所有传感器工具只读，无需 HITL。"
             ),
             "analyst_context": (
                 "所有工具只读，可直接调用无需 HITL。根因分析时同时调 get_incident_timeline() 和 get_critical_alarms()；"
@@ -460,8 +457,11 @@ async def seed(
     pipeline: IngestionPipeline,
     store: MilvusStore,
     clear: bool = False,
+    dept_filter: str | None = None,
 ) -> None:
     for dept in DEPARTMENTS:
+        if dept_filter and dept["dept_code"] != dept_filter:
+            continue
         kb_id = await _setup_dept(sf, dept)
 
         if clear:
@@ -486,10 +486,16 @@ async def main() -> None:
         action="store_true",
         help="清除各知识库现有向量数据和文档记录后重新摄入",
     )
+    parser.add_argument(
+        "--dept",
+        default=None,
+        help="只处理指定部门（dept_code），如 emergency_supplies，留空则处理全部",
+    )
     args = parser.parse_args()
 
     if args.clear:
-        print("⚠️  --clear 模式：将清除所有知识库数据后重新摄入\n")
+        scope = f"部门 {args.dept}" if args.dept else "所有知识库"
+        print(f"⚠️  --clear 模式：将清除 {scope} 数据后重新摄入\n")
 
     engine = create_async_engine(
         settings.database_url,
@@ -509,7 +515,7 @@ async def main() -> None:
     ))
     pipeline = IngestionPipeline(embedder=embedder, store=store, splitter=splitter)
 
-    await seed(sf, pipeline, store, clear=args.clear)
+    await seed(sf, pipeline, store, clear=args.clear, dept_filter=args.dept)
     await engine.dispose()
 
 
