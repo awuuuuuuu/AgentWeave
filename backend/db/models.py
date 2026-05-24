@@ -46,6 +46,8 @@ class Organization(Base):
     invite_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
     # 部门代码（种子脚本用），如 "medical_ems" / "traffic_control"
     dept_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # A2A Server 地址，如 "http://localhost:9001"（department 类型专用）
+    a2a_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # MCP 连接配置列表：[{"name": str, "url": str, "description": str}]
     mcp_connections: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
