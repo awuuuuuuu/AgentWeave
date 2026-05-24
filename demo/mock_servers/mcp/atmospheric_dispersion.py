@@ -34,6 +34,11 @@ _ERPG_MG = {
     "ERPG3": 750 * 0.703,   # 527.25 mg/m³
 }
 
+# Demo 可视化放大系数：高斯模型在 D 类稳定度下半径偏小（百米级），
+# 在城市底图上几乎不可见。乘以此系数让扩散圈可见但不至于盖住周边资源（≈2km 处的医院/仓库）。
+# 1.5x：ERPG-1 ≈ 488m（与 500m 警戒圈接近），ERPG-2 ≈ 188m，ERPG-3 ≈ 82m。
+_DEMO_RADIUS_SCALE = 1.5
+
 # Pasquill-Gifford σ 参数（a, b for σy；c, d for σz）
 # σy = a * x * (1 + 0.0001*x)^b
 # σz = c * x * (1 + 0.0015*x)^d  (D 类示例)
@@ -115,10 +120,10 @@ def calculate_plume(
     # 烟羽轴向 = 风来向的反方向（下风向）
     plume_axis = (wind_dir_deg + 180) % 360
 
-    # 求各 ERPG 半径
-    r1 = _find_radius(_ERPG_MG["ERPG1"], u, release_rate_gs, **p)
-    r2 = _find_radius(_ERPG_MG["ERPG2"], u, release_rate_gs, **p)
-    r3 = _find_radius(_ERPG_MG["ERPG3"], u, release_rate_gs, **p)
+    # 求各 ERPG 半径（乘以 demo 可视化放大系数）
+    r1 = round(_find_radius(_ERPG_MG["ERPG1"], u, release_rate_gs, **p) * _DEMO_RADIUS_SCALE, 1)
+    r2 = round(_find_radius(_ERPG_MG["ERPG2"], u, release_rate_gs, **p) * _DEMO_RADIUS_SCALE, 1)
+    r3 = round(_find_radius(_ERPG_MG["ERPG3"], u, release_rate_gs, **p) * _DEMO_RADIUS_SCALE, 1)
 
     # 泄漏点下风10m处最大浓度
     sy10 = _sigma(10.0, p["ay"], p["by"])

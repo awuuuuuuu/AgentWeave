@@ -38,15 +38,23 @@ _STANDARD_PACKS: dict[str, list[dict]] = {
 }
 
 
+_WAREHOUSE_LOCATION = {
+    "name": "滨海新区应急物资中转站",
+    "lat": 39.1200,
+    "lng": 117.7050,
+    "address": "天津市滨海新区港城路（距事故点约2km）",
+}
+
+
 @mcp.tool()
-async def get_inventory(category: str | None = None) -> list[dict]:
+async def get_inventory(category: str | None = None) -> dict:
     """查询应急物资库存。
 
     Args:
         category: 可选类别过滤（如"个人防护"/"医疗物资"等），None 返回全部
 
     Returns:
-        库存列表，每项包含 id/name/category/quantity/unit/alert_threshold
+        {warehouse: {name, lat, lng, address}, items: [...库存列表，每项含 id/name/category/quantity/unit/alert_threshold...]}
     """
     async with aiosqlite.connect(DB) as db:
         db.row_factory = aiosqlite.Row
@@ -60,7 +68,10 @@ async def get_inventory(category: str | None = None) -> list[dict]:
                 "SELECT * FROM warehouse_inventory ORDER BY category, name"
             )
         rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    return {
+        "warehouse": _WAREHOUSE_LOCATION,
+        "items": [dict(r) for r in rows],
+    }
 
 
 async def _deduct_items(db: aiosqlite.Connection, items: list[dict]) -> list[dict]:

@@ -141,13 +141,23 @@ async def get_critical_alarms() -> list[dict]:
 
 
 @mcp.tool()
-async def get_incident_timeline() -> list[dict]:
-    """返回事故快报时间线（2026-05-16 港城大道388号氨气泄漏事故）。
+async def get_incident_timeline() -> dict:
+    """返回事故快报时间线 + 物理泄漏源位置（2026-05-16 港城大道388号氨气泄漏事故）。
 
     Returns:
-        时间线事件列表，每项包含 time/event/level/operator
+        dict 含：
+        - source_location: 物理泄漏源（液氨输送管道法兰处）的名称与经纬度
+        - timeline: 时间线事件列表，每项含 time/event/level/operator
     """
-    return _INCIDENT_TIMELINE
+    return {
+        "source_location": {
+            "name": "C3 液氨储罐法兰",
+            "equipment_id": "TANK-C3",
+            "lat": 39.1180,
+            "lng": 117.7280,
+        },
+        "timeline": _INCIDENT_TIMELINE,
+    }
 
 
 if __name__ == "__main__":

@@ -31,6 +31,9 @@ _SCRIPT_DIR = Path(__file__).parent
 _BACKEND_DIR = _SCRIPT_DIR.parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
+# demo 目录入 path，供导入同目录的 city_state.init_db（自动重建 city_state.db）
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
 
 import bcrypt
 from sqlalchemy import delete, select
@@ -86,6 +89,7 @@ DEPARTMENTS = [
         "dept_code": "env_agency",
         "org_name": "环保局",
         "org_type": "department",
+        "a2a_url": "http://localhost:9001",
         "username": "environment@pku.com",
         "password": "demo1234",
         "kb_name": "环保局应急知识库",
@@ -127,8 +131,8 @@ DEPARTMENTS = [
                 "  ) → 得到 release_rate_gs\n"
                 "  → 若工具调用失败，使用保守默认值 release_rate_gs=10.0，并在报告中标注为估算值\n\n"
                 "步骤5：调用 calculate_plume(\n"
-                "    lat=<从 get_incident_timeline 或事故描述中提取的事故点纬度，默认 39.0251>,\n"
-                "    lng=<从 get_incident_timeline 或事故描述中提取的事故点经度，默认 117.7451>,\n"
+                "    lat=39.1180,"
+                "    lng=117.7280,"
                 "    wind_speed_ms=<步骤2风速>,\n"
                 "    wind_dir_deg=<步骤3风向>,\n"
                 "    release_rate_gs=<步骤4结果>\n"
@@ -146,6 +150,7 @@ DEPARTMENTS = [
         "dept_code": "medical_ems",
         "org_name": "医疗急救(120)",
         "org_type": "department",
+        "a2a_url": "http://localhost:9002",
         "username": "medical@pku.com",
         "password": "demo1234",
         "kb_name": "医疗急救知识库",
@@ -172,7 +177,10 @@ DEPARTMENTS = [
             "analyst_context": (
                 "【执行阶段】当任务含「【执行阶段】」时，必须调用 dispatch_ambulance 实际执行调度（不得仅输出评估建议）：\n"
                 "先调 get_hospital_capacity() + list_ambulances() 确认资源，再用 geocode() 获取事故地点坐标，\n"
-                "最后调用 dispatch_ambulance(ambulance_id, dest_lat, dest_lng, patient_type) 完成派车（已授权，无需 HITL）。\n"
+                "调用 dispatch_ambulance(ambulance_id, dest_lat, dest_lng, patient_type) 完成派车（已授权，无需 HITL）。\n"
+                "【执行阶段必须出图】派车成功后，紧接着调用 plan_driving_route 生成救护车实际行驶路线，"
+                "from 用 list_ambulances 返回的该车 lat/lng（待命点），to 用 geocode 得到的事故点坐标，"
+                "确保地图上绘制出派遣轨迹；此步不可省略。\n"
                 "【研判阶段】调用 get_hospital_capacity() 和 list_ambulances() 评估后整理方案即可，"
                 "勿调用 dispatch_ambulance（需 HITL）。严禁引用知识库历史数字作为实时床位。\n"
                 "纯路线规划任务直接调用 geocode/plan_driving_route 并输出结果。\n"
@@ -187,6 +195,7 @@ DEPARTMENTS = [
         "dept_code": "traffic_control",
         "org_name": "交通管控",
         "org_type": "department",
+        "a2a_url": "http://localhost:9003",
         "username": "traffic@pku.com",
         "password": "demo1234",
         "kb_name": "交通管制知识库",
@@ -216,6 +225,9 @@ DEPARTMENTS = [
                 "【路口管控任务】先调 list_intersections() 获取所有路口当前信号模式，整理查询结果。\n"
                 "【执行阶段任务】当任务中含「【执行阶段】」时，先调 list_intersections() 查看路口当前状态，"
                 "然后调用信号管控工具执行切换（已获上层授权）。\n"
+                "【执行阶段必须出图】信号切换成功后，紧接着调用 geocode + plan_driving_route 绘制疏散主通道："
+                "from 用事故点坐标，to 用疏散方向的主要出口/集结点（如沿风向上风向的安全区），"
+                "确保地图上绘制出疏散路线；此步不可省略。\n"
                 "【研判阶段任务】apply_evacuation_plan 和 set_mode 是写操作，研判阶段只能读取状态并输出文字方案，写操作须经 HITL 审批。\n"
                 "【路线+信号联合任务】先用 geocode() 获取起点和终点坐标，调用 plan_driving_route() 规划路线，"
                 "然后调用 list_intersections() 获取沿线路口现状，整理后停止。\n"
@@ -231,6 +243,7 @@ DEPARTMENTS = [
         "dept_code": "emergency_supplies",
         "org_name": "应急物资",
         "org_type": "department",
+        "a2a_url": "http://localhost:9004",
         "username": "supply@pku.com",
         "password": "demo1234",
         "kb_name": "应急物资知识库",
@@ -240,6 +253,11 @@ DEPARTMENTS = [
                 "name": "warehouse",
                 "url": "http://localhost:8104/mcp",
                 "description": "应急物资仓库：get_inventory 查询库存（可按类别过滤）；check_alerts 查询低于预警线的物资；allocate_standard_pack⚠️ 按预案等级发放标准包（写操作，需HITL）；allocate_custom⚠️ 自定义调拨（写操作，需HITL）",
+            },
+            {
+                "name": "amap",
+                "url": "http://localhost:8106/mcp",
+                "description": "高德地图：plan_driving_route 规划驾车路线，返回时长/距离/途经坐标点；geocode 将地址字符串转换为经纬度",
             },
         ],
         "dept_prompts": {
@@ -256,6 +274,9 @@ DEPARTMENTS = [
             "analyst_context": (
                 "【执行阶段】当任务含「【执行阶段】」时：调用 check_alerts() 和 get_inventory() 核实库存后，"
                 "立即调用 allocate_standard_pack（按预案等级）或 allocate_custom（自定义）执行调拨（上层已授权，无需 HITL）。\n"
+                "【执行阶段必须出图】调拨成功后，紧接着调用 plan_driving_route 绘制物资运输路线，"
+                "from 用 get_inventory 返回的 warehouse.lat/lng（仓库坐标），to 用 geocode 得到的事故点坐标，"
+                "确保地图上绘制出运输轨迹；此步不可省略。\n"
                 "【研判阶段】调用 check_alerts() 和 get_inventory() 后整理评估方案即可，"
                 "勿调用 allocate_*（写操作，需 HITL）。\n"
                 "【MCP引用标注】在汇报中引用MCP工具获取的实时数据时，请在数据后加[M数字]标注，"
@@ -267,6 +288,7 @@ DEPARTMENTS = [
         "dept_code": "enterprise_safety",
         "org_name": "企业安全",
         "org_type": "department",
+        "a2a_url": "http://localhost:9005",
         "username": "safety@pku.com",
         "password": "demo1234",
         "kb_name": "企业安全知识库",
@@ -341,6 +363,7 @@ async def _setup_dept(
                 invite_code=_gen_invite_code(),
                 mcp_connections=dept["mcp_connections"],
                 dept_prompts=dept.get("dept_prompts"),
+                a2a_url=dept.get("a2a_url"),
             )
             db.add(org)
             await db.flush()
@@ -349,7 +372,9 @@ async def _setup_dept(
             org.mcp_connections = dept["mcp_connections"]
             if "dept_prompts" in dept:
                 org.dept_prompts = dept["dept_prompts"]
-            print(f"[跳过] 机构已存在: {dept['org_name']} — 更新 mcp_connections + dept_prompts")
+            if "a2a_url" in dept:
+                org.a2a_url = dept["a2a_url"]
+            print(f"[跳过] 机构已存在: {dept['org_name']} — 更新 mcp_connections + dept_prompts + a2a_url")
 
         # 用户
         user = await db.scalar(select(User).where(User.email == dept["username"]))
@@ -491,7 +516,19 @@ async def main() -> None:
         default=None,
         help="只处理指定部门（dept_code），如 emergency_supplies，留空则处理全部",
     )
+    parser.add_argument(
+        "--skip-db",
+        action="store_true",
+        help="跳过 city_state.db 重建（默认每次运行都重建，使 demo 实时数据与坐标保持最新）",
+    )
     args = parser.parse_args()
+
+    # 默认先重建 city_state.db（医院/救护车/路口/传感器坐标），免去单独运行 city_state.py
+    if not args.skip_db:
+        from city_state import init_db
+        print("🗺️  重建 city_state.db（实时态势数据）...")
+        await init_db()
+        print()
 
     if args.clear:
         scope = f"部门 {args.dept}" if args.dept else "所有知识库"
