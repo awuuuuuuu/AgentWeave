@@ -1,22 +1,22 @@
 """
 Weave Supervisor 图
 
-拓扑：
+拓扑（单 HITL）：
     START → phase_dispatch → phase_aggregate → hitl_plan_review
-          → hitl_bulk_highrisk ──(还有高危步骤)──▶ hitl_bulk_highrisk（循环）
-                               ──(全部完成)──────▶ execute_all_parallel → final_report → END
+          → execute_all_parallel → final_report → END
 
 SSE 事件（通过 adispatch_custom_event "em_event" 推流）：
     dept_report    — 每个部门 A2A 返回后立即推送
-    dispatch_plan  — LLM 生成执行计划后推送（HITL-1 触发前）
-    hitl_required  — 高危步骤批量审批前逐一推送
+    dispatch_plan  — LLM 生成执行计划后推送（HITL 触发前）
     plan_step      — 每步 running / done / failed 状态变更（并行，多步同时 running）
     map_update     — 步骤执行产生地理数据时推送
     final_answer   — 综合报告完成时推送
 
-HITL resume 值约定：
-    HITL-1（计划审批）：resume = list[PlanStep]（修改后计划）或 "approve"
-    HITL-2（单步高危审批）：resume = "approve" | "reject"（每次只审批一个步骤，通过条件边循环）
+HITL resume 值约定（单次审批）：
+    "approve"          — 批准全部步骤
+    "reject"           — 拒绝，跳过全部步骤
+    list[PlanStep]     — 用户编辑/部分批准后的计划；每步 status 字段由前端设置：
+                           "pending" = 执行   "skipped" = 略过
 """
 from __future__ import annotations
 
@@ -27,13 +27,18 @@ import re
 import uuid
 from typing import Any
 
+# 高德路线合成：module-level lock 防止并发步骤重复初始化 MCP client
+_amap_init_lock = asyncio.Lock()
+
 import httpx
 from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RunnableConfig, interrupt
 
+from .map_extract import extract_map_update
 from .weave_state import WeaveState, PlanStep
 
 logger = logging.getLogger(__name__)
@@ -49,17 +54,31 @@ _A2A_URLS: dict[str, str] = {
 
 _A2A_TIMEOUT = 120
 
+# 路线合成用的高德 MCP 地址（部署配置；非业务坐标）
+_AMAP_MCP_URL = "http://localhost:8106/mcp"
+
+# 需要路线合成的部门 → 路线图层。
+# 仅覆盖坐标来源明确、LLM geocode 易出错的部门（救护车/仓库起点由研判 marker 给定）。
+# traffic_control 已移除：其路线由 LLM 直接 geocode + plan_driving_route 生成，
+# 坐标来自真实地名，supervisor 无法从研判 marker 推断更准确的疏散出口。
+_DEPT_ROUTE_LAYER: dict[str, str] = {
+    "medical_ems":        "ambulance_route",
+    "emergency_supplies": "supply_route",
+}
+
 
 # ── 辅助：A2A HTTP 调用 ───────────────────────────────────────────────────────
 
 async def _call_dept_a2a(
     dept_code: str,
     task: str,
+    a2a_urls: dict[str, str] | None = None,
     context: dict | None = None,
     timeout: int = _A2A_TIMEOUT,
 ) -> dict:
     """向部门 A2A Server 发送任务，返回响应 dict。网络/超时异常时返回 failed 格式，不抛出。"""
-    base_url = _A2A_URLS.get(dept_code)
+    resolved = a2a_urls or _A2A_URLS
+    base_url = resolved.get(dept_code)
     if not base_url:
         return {
             "dept_code": dept_code, "status": "failed",
@@ -92,6 +111,148 @@ async def _call_dept_a2a(
             "summary": f"部门 {dept_code} 通信错误: {exc}",
             "key_facts": [], "map_events": [], "citations": [],
         }
+
+
+def _infer_layer(me: dict) -> str:
+    """从 map_event 形态推断图层 ID（analyst 未标 layer 时的兜底）。"""
+    if me.get("layer"):
+        return me["layer"]
+    if me.get("route"):
+        return "routes"
+    if me.get("circles"):
+        return "plume"
+    return "resources"
+
+
+def _derive_incident_center(dept_reports: dict[str, dict]) -> list[float] | None:
+    """从研判阶段已有的实时数据推导事故中心（数据驱动，无硬编码坐标）。
+
+    优先级：
+    1. 🏭 事故源 marker（get_incident_timeline 的 source_location，最权威）
+    2. ERPG 扩散圆心（env_agency calculate_plume）
+    3. 传感器 marker 质心（多个 💨 报警传感器围绕泄漏点）
+
+    全部数据缺失 → 返回 None，调用方决定不出图。
+    """
+    # 1. incident_source marker (🏭)
+    for rep in dept_reports.values():
+        for me in rep.get("map_events", []) or []:
+            if me.get("layer") == "incident_source":
+                for m in me.get("markers", []) or []:
+                    if m.get("position"):
+                        return m["position"]
+
+    # 2. ERPG 圆心
+    for rep in dept_reports.values():
+        for me in rep.get("map_events", []) or []:
+            for c in me.get("circles", []) or []:
+                if c.get("center"):
+                    return c["center"]
+
+    # 3. 传感器 marker 质心
+    positions: list[list[float]] = []
+    for rep in dept_reports.values():
+        for me in rep.get("map_events", []) or []:
+            if me.get("layer") == "sensors":
+                for m in me.get("markers", []) or []:
+                    if m.get("position"):
+                        positions.append(m["position"])
+    if positions:
+        return [
+            sum(p[0] for p in positions) / len(positions),
+            sum(p[1] for p in positions) / len(positions),
+        ]
+    return None
+
+
+# ── 兜底路线合成：LLM 漏调 plan_driving_route 时由 supervisor 直接出图 ──────────
+
+def _resolve_route_endpoints(
+    step: PlanStep, dept_reports: dict[str, dict]
+) -> tuple[float, float, float, float] | None:
+    """从研判阶段 dept_reports 的已知坐标推断路线起终点。
+
+    返回 (from_lat, from_lng, to_lat, to_lng)；无法解析时返回 None（不强行出图）。
+    事故中心走 _derive_incident_center 三级推导（incident_source → ERPG → 传感器质心），
+    起终点资源（🚑 / 📦 / 路口）来自对应部门研判 marker。
+    """
+    incident = _derive_incident_center(dept_reports)
+    if incident is None:
+        return None
+
+    ambulance: list[float] | None = None
+    warehouse: list[float] | None = None
+    intersections: list[list[float]] = []
+    for rep in dept_reports.values():
+        for me in rep.get("map_events", []) or []:
+            for m in me.get("markers", []) or []:
+                pos = m.get("position")
+                if not pos:
+                    continue
+                icon = m.get("icon", "")
+                if icon == "🚑" and ambulance is None:
+                    ambulance = pos
+                elif icon == "📦" and warehouse is None:
+                    warehouse = pos
+                elif me.get("layer") == "signals" or icon in ("🚦", "🚫", "🟢", "⬆️", "🔴"):
+                    intersections.append(pos)
+
+    def _pack(frm: list[float], to: list[float]) -> tuple[float, float, float, float]:
+        # marker position 是 [lng, lat]；amap plan_driving_route 要 (lat, lng, lat, lng)
+        return (frm[1], frm[0], to[1], to[0])
+
+    route_kind = _DEPT_ROUTE_LAYER.get(step["dept_code"])
+    if route_kind == "ambulance_route" and ambulance:
+        return _pack(ambulance, incident)
+    if route_kind == "supply_route" and warehouse:
+        return _pack(warehouse, incident)
+    if route_kind == "evacuation_route" and intersections:
+        # 取离事故点最远的路口作为疏散出口方向
+        far = max(intersections, key=lambda p: (p[0] - incident[0]) ** 2 + (p[1] - incident[1]) ** 2)
+        return _pack(incident, far)
+    return None
+
+
+# 模块级缓存：同时持有 client（保持 HTTP 会话存活）和 tool 对象。
+# client 不缓存会在函数返回后被 GC，导致 tool 内部的连接失效。
+_amap_client_cache: MultiServerMCPClient | None = None
+_amap_tool_cache: object | None = None
+
+
+async def _synthesize_route(step: PlanStep, dept_reports: dict[str, dict]) -> dict | None:
+    """LLM 未产出路线时，由 supervisor 直接调高德 MCP 合成 polyline。失败返回 None。"""
+    global _amap_client_cache, _amap_tool_cache
+    endpoints = _resolve_route_endpoints(step, dept_reports)
+    if not endpoints:
+        return None
+    from_lat, from_lng, to_lat, to_lng = endpoints
+    try:
+        # double-check locking：先快速检查（无锁），未命中时再加锁做二次检查，
+        # 防止并发步骤同时进入 await client.get_tools() 导致重复初始化。
+        if _amap_tool_cache is None:
+            async with _amap_init_lock:
+                if _amap_tool_cache is None:
+                    client = MultiServerMCPClient(
+                        {"amap": {"url": _AMAP_MCP_URL, "transport": "streamable_http"}}
+                    )
+                    tools = await client.get_tools()
+                    tool = next((t for t in tools if "plan_driving_route" in t.name), None)
+                    if tool is None:
+                        return None
+                    # 两者同时写入：client 必须存活，否则 tool 的 HTTP 会话被 GC 关闭
+                    _amap_client_cache = client
+                    _amap_tool_cache = tool
+        return await _amap_tool_cache.ainvoke({  # type: ignore[union-attr]
+            "from_lat": from_lat, "from_lng": from_lng,
+            "to_lat": to_lat, "to_lng": to_lng,
+        })
+    except Exception as exc:
+        logger.warning("Weave: 步骤 %s 兜底路线合成失败: %s", step["step_id"], exc)
+        # 缓存失效时清空，下次重新初始化（在锁内清空保证一致性）
+        async with _amap_init_lock:
+            _amap_client_cache = None
+            _amap_tool_cache = None
+        return None
 
 
 def _mark_step(plan: list[PlanStep], step_id: str, status: str, result_summary: str = "") -> list[PlanStep]:  # noqa: F401 — kept for external callers
@@ -137,13 +298,15 @@ def _build_dept_tasks(incident: str, dept_codes: list[str]) -> dict[str, str]:
     }
 
 
-async def _fetch_agent_cards(dept_codes: list[str]) -> dict[str, dict]:
+async def _fetch_agent_cards(dept_codes: list[str], a2a_urls: dict[str, str] | None = None) -> dict[str, dict]:
     """
     并发从各部门 A2A Server 的 /.well-known/agent.json 获取能力描述。
     无法访问的部门返回空 dict，不影响其他部门。
     """
+    resolved = a2a_urls or _A2A_URLS
+
     async def fetch_one(code: str) -> tuple[str, dict]:
-        url = _A2A_URLS.get(code)
+        url = resolved.get(code)
         if not url:
             return code, {}
         try:
@@ -159,7 +322,7 @@ async def _fetch_agent_cards(dept_codes: list[str]) -> dict[str, dict]:
     return dict(pairs)
 
 
-async def _generate_dept_tasks_llm(incident: str, dept_codes: list[str]) -> dict[str, str]:
+async def _generate_dept_tasks_llm(incident: str, dept_codes: list[str], a2a_urls: dict[str, str] | None = None) -> dict[str, str]:
     """
     使用 LLM 根据事故描述，为每个参与部门动态生成专属研判任务。
     部门能力通过 A2A /.well-known/agent.json 实时获取，不依赖硬编码。
@@ -167,7 +330,7 @@ async def _generate_dept_tasks_llm(incident: str, dept_codes: list[str]) -> dict
     """
     from config import settings
 
-    agent_cards = await _fetch_agent_cards(dept_codes)
+    agent_cards = await _fetch_agent_cards(dept_codes, a2a_urls=a2a_urls)
     llm = ChatOpenAI(model=settings.llm_model, temperature=0)
 
     def _readonly_desc(raw_desc: str) -> str:
@@ -241,9 +404,10 @@ async def _generate_dept_tasks_llm(incident: str, dept_codes: list[str]) -> dict
 async def phase_dispatch(state: WeaveState, config: RunnableConfig) -> dict:
     """并发向所有选定部门 A2A Server 发送初始研判任务。每个部门返回后立即推送 dept_report 事件。"""
     incident = state["incident"]
-    dept_codes = state.get("selected_dept_codes") or list(_A2A_URLS.keys())
+    a2a_urls: dict[str, str] = state.get("a2a_urls") or _A2A_URLS
+    dept_codes = state.get("selected_dept_codes") or list(a2a_urls.keys())
 
-    dept_tasks = await _generate_dept_tasks_llm(incident, dept_codes)
+    dept_tasks = await _generate_dept_tasks_llm(incident, dept_codes, a2a_urls=a2a_urls)
 
     logger.info("Weave: phase_dispatch 开始，部门=%s", dept_codes)
 
@@ -253,10 +417,11 @@ async def phase_dispatch(state: WeaveState, config: RunnableConfig) -> dict:
         {
             "type": "research_dispatch",
             "data": {
+                "incident": incident,
                 "tasks": [
                     {"dept_code": code, "task": dept_tasks.get(code, f"事故：{incident}\n请提供应急响应报告。")}
                     for code in dept_codes
-                ]
+                ],
             },
         },
         config=config,
@@ -266,7 +431,7 @@ async def phase_dispatch(state: WeaveState, config: RunnableConfig) -> dict:
 
     async def call_and_emit(code: str) -> None:
         task = dept_tasks.get(code, f"事故：{incident}\n请提供应急响应报告。")
-        result = await _call_dept_a2a(code, task)
+        result = await _call_dept_a2a(code, task, a2a_urls=a2a_urls)
         dept_reports[code] = result
         await adispatch_custom_event(
             "em_event",
@@ -287,10 +452,23 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
     from config import settings
     llm = ChatOpenAI(model=settings.llm_model, temperature=0)
 
+    def _fmt_report(code: str, r: dict) -> str:
+        metrics = r.get("metrics", []) or []
+        if metrics:
+            rows = "\n".join(
+                f"| {m.get('label', '')} | {m.get('value', '')} {m.get('unit', '')} | {m.get('severity', '')} |"
+                for m in metrics
+            )
+            metrics_block = f"关键指标:\n| 指标 | 值 | 严重度 |\n|---|---|---|\n{rows}"
+        else:
+            # 降级：无结构化指标时回退到 key_facts 文本
+            metrics_block = f"关键信息: {'; '.join(r.get('key_facts', []))}"
+        return (
+            f"【{code}】\n状态: {r.get('status')}\n摘要: {r.get('summary', '')}\n{metrics_block}"
+        )
+
     reports_text = "\n\n".join(
-        f"【{code}】\n状态: {r.get('status')}\n摘要: {r.get('summary', '')}\n"
-        f"关键信息: {'; '.join(r.get('key_facts', []))}"
-        for code, r in state["dept_reports"].items()
+        _fmt_report(code, r) for code, r in state["dept_reports"].items()
     )
 
     system = SystemMessage(content=(
@@ -364,6 +542,61 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
         config=config,
     )
 
+    # ── 汇总底图：合并所有部门资源标记，推送一次 map_update ──────────────────
+    all_markers: list[dict] = []
+    for report in state["dept_reports"].values():
+        for me in report.get("map_events", []):
+            all_markers.extend(me.get("markers", []))
+
+    if all_markers:
+        lngs_bm = [m["position"][0] for m in all_markers if m.get("position")]
+        lats_bm = [m["position"][1] for m in all_markers if m.get("position")]
+        center_bm = (
+            [sum(lngs_bm) / len(lngs_bm), sum(lats_bm) / len(lats_bm)]
+            if lngs_bm else [117.7148, 39.1290]
+        )
+        await adispatch_custom_event(
+            "em_event",
+            {
+                "type": "map_update",
+                "data": {
+                    "title": "研判阶段资源底图",
+                    "center": center_bm,
+                    "zoom": 12,
+                    "markers": all_markers,
+                    "layer": "resources",
+                },
+            },
+            config=config,
+        )
+        logger.info("Weave: 底图已推送，共 %d 个资源标记", len(all_markers))
+
+    # ── 物理警戒圈：500m 硬隔离线（区别于 ERPG 化学扩散圈）──────────────────────
+    # 事故中心走 _derive_incident_center 三级数据驱动推导，无硬编码坐标
+    incident_center = _derive_incident_center(state["dept_reports"])
+    if incident_center is not None:
+        await adispatch_custom_event(
+            "em_event",
+            {
+                "type": "map_update",
+                "data": {
+                    "title": "物理警戒线 500m",
+                    "center": incident_center,
+                    "zoom": 14,
+                    "layer": "cordon",
+                    "circles": [{
+                        "center": incident_center,
+                        "radius": 500,
+                        "color": "#dc2626",
+                        "label": "物理警戒线 500m",
+                    }],
+                },
+            },
+            config=config,
+        )
+    else:
+        logger.info("Weave: 无 ERPG 圆心可推断事故中心，跳过 cordon 推送")
+
     logger.info("Weave: 执行计划已生成，共 %d 步", len(plan))
     return {"dispatch_plan": plan}
 
@@ -383,15 +616,36 @@ def _default_plan(state: WeaveState) -> list[dict]:
     ]
 
 
-# ── 节点：HITL-1 — 执行计划审批 ─────────────────────────────────────────────
+# ── 节点：HITL — 单次综合审批 ────────────────────────────────────────────────
 
 async def hitl_plan_review(state: WeaveState) -> dict:
-    """暂停等待指挥长审批执行计划。resume 值：list（修改后的计划）或 "approve"。"""
-    logger.info("Weave: HITL-1 挂起，等待计划审批")
+    """
+    单次 HITL：暂停等待指挥长审批执行计划。
 
-    resume_val: Any = interrupt({"type": "plan_review", "plan": state["dispatch_plan"]})
+    resume 值约定：
+        "approve"       — 批准全部，所有步骤 status → pending
+        "reject"        — 拒绝，所有步骤 status → skipped（execute_all_parallel 无事可做）
+        list[dict]      — 用户编辑/部分批准的计划；每步 status 由前端已设置
+                          ("pending" = 执行，"skipped" = 略过)
+    """
+    _HITL_TIMEOUT_SEC = 300  # 指挥长审批超时（5 分钟），前端倒计时到 0 后自动发 reject
+    logger.info("Weave: HITL 挂起，等待计划审批（%d 步，超时 %ds）", len(state["dispatch_plan"]), _HITL_TIMEOUT_SEC)
+
+    resume_val: Any = interrupt({
+        "type": "plan_review",
+        "plan": state["dispatch_plan"],
+        "timeout_sec": _HITL_TIMEOUT_SEC,
+    })
+
+    if resume_val == "reject":
+        rejected_plan: list[PlanStep] = [
+            {**s, "status": "skipped"} for s in state["dispatch_plan"]  # type: ignore[misc]
+        ]
+        logger.info("Weave: HITL 拒绝，全部步骤跳过")
+        return {"dispatch_plan": rejected_plan, "current_step": 0, "phase": "executing"}
 
     if isinstance(resume_val, list):
+        # 前端传回完整计划列表，每步 status 字段已由前端设置
         approved_plan: list[PlanStep] = [
             PlanStep(
                 step_id=s.get("step_id", f"step-{i+1:03d}"),
@@ -399,88 +653,24 @@ async def hitl_plan_review(state: WeaveState) -> dict:
                 dept_code=s.get("dept_code", ""),
                 task=s.get("task", ""),
                 is_high_risk=bool(s.get("is_high_risk", False)),
-                status="pending",
+                # 保留前端设置的 status（pending/skipped），兜底 pending
+                status=s.get("status", "pending"),
                 map_layer=s.get("map_layer"),
                 result_summary="",
             )
             for i, s in enumerate(resume_val)
         ]
-        logger.info("Weave: HITL-1 批准（修改后计划，%d 步）", len(approved_plan))
+        n_exec  = sum(1 for s in approved_plan if s["status"] == "pending")
+        n_skip  = sum(1 for s in approved_plan if s["status"] == "skipped")
+        logger.info("Weave: HITL 批准（编辑后计划：执行 %d 步，跳过 %d 步）", n_exec, n_skip)
         return {"dispatch_plan": approved_plan, "current_step": 0, "phase": "executing"}
 
-    logger.info("Weave: HITL-1 批准（原计划）")
-    return {"current_step": 0, "phase": "executing"}
-
-
-# ── 节点：HITL-2 单步 — 每次调用只审批一个高危步骤 ────────────────────────────
-#
-# 设计原则：每次节点调用只包含一个 interrupt()，与普通会话 hitl_node 保持一致。
-# 通过 _route_after_highrisk 条件边循环回自身，直到所有高危步骤审批完毕。
-# 避免在同一节点内多次调用 interrupt()——LangGraph 的 replay 机制对此不可靠。
-
-async def hitl_bulk_highrisk(state: WeaveState, config: RunnableConfig) -> dict:
-    """
-    审批当前第一个待审批高危步骤（单次 interrupt）。
-    审批结果写入 dispatch_plan[step_id].status：
-        "approved" → 批准，进入执行阶段
-        "skipped"  → 驳回，跳过执行
-
-    条件边 _route_after_highrisk 决定是否继续循环。
-    """
-    pending = [s for s in state["dispatch_plan"] if s["is_high_risk"] and s["status"] == "pending"]
-
-    if not pending:
-        logger.info("Weave: 无待审批高危步骤，跳过")
-        return {}
-
-    step = pending[0]  # 每次只处理第一个
-    logger.info("Weave: HITL-2 审批步骤 %s（%s）", step["step_id"], step["title"])
-
-    await adispatch_custom_event(
-        "em_event",
-        {
-            "type": "hitl_required",
-            "data": {
-                "step_id": step["step_id"],
-                "title": step["title"],
-                "dept_code": step["dept_code"],
-                "timeout_sec": 300,
-            },
-        },
-        config=config,
-    )
-
-    decision = interrupt({
-        "type": "step_review",
-        "step_id": step["step_id"],
-        "title": step["title"],
-        "dept_code": step["dept_code"],
-    })
-
-    decision_str = str(decision).strip().lower() if decision is not None else ""
-    _APPROVE_WORDS = {"approve", "approved", "yes", "confirm", "ok", "确认", "批准", "同意"}
-    _REJECT_WORDS  = {"reject", "rejected", "no", "deny", "skip", "跳过", "驳回", "拒绝"}
-    if any(w in decision_str for w in _APPROVE_WORDS):
-        decision_str = "approve"
-    elif any(w in decision_str for w in _REJECT_WORDS):
-        decision_str = "reject"
-    else:
-        logger.warning("Weave: 步骤 %s 收到无法识别的 decision=%r，强制驳回", step["step_id"], decision)
-        decision_str = "reject"
-    new_status = "skipped" if decision_str == "reject" else "approved"
-    logger.info("Weave: 步骤 %s %s", step["step_id"], "驳回" if new_status == "skipped" else "批准")
-
-    updated_plan = [
-        {**s, "status": new_status} if s["step_id"] == step["step_id"] else s
-        for s in state["dispatch_plan"]
+    # "approve" 或其他值 → 全部批准
+    approved_all: list[PlanStep] = [
+        {**s, "status": "pending"} for s in state["dispatch_plan"]  # type: ignore[misc]
     ]
-    return {"dispatch_plan": updated_plan}
-
-
-def _route_after_highrisk(state: WeaveState) -> str:
-    """还有待审批高危步骤 → 循环；全部完成 → 进入执行阶段。"""
-    pending = [s for s in state["dispatch_plan"] if s["is_high_risk"] and s["status"] == "pending"]
-    return "hitl_bulk_highrisk" if pending else "execute_all_parallel"
+    logger.info("Weave: HITL 全部批准（%d 步）", len(approved_all))
+    return {"dispatch_plan": approved_all, "current_step": 0, "phase": "executing"}
 
 
 # ── 节点：并行执行所有步骤 ────────────────────────────────────────────────────
@@ -497,6 +687,7 @@ async def execute_all_parallel(state: WeaveState, config: RunnableConfig) -> dic
         return {}
 
     logger.info("Weave: 并行执行 %d 个步骤", len(steps_to_run))
+    a2a_urls: dict[str, str] = state.get("a2a_urls") or _A2A_URLS
 
     async def _run_one(step: PlanStep) -> tuple[str, str, dict]:
         """返回 (step_id, exec_status, result_dict)；异常时补发 plan_step(failed) 防止前端卡死。"""
@@ -506,11 +697,43 @@ async def execute_all_parallel(state: WeaveState, config: RunnableConfig) -> dic
             config=config,
         )
         try:
-            result = await _call_dept_a2a(step["dept_code"], step["task"])
+            result = await _call_dept_a2a(step["dept_code"], step["task"], a2a_urls=a2a_urls)
             exec_status = "done" if result.get("status") == "completed" else "failed"
 
+            # route-need 由 dept_code 判定（不依赖 LLM map_layer，后者常漏标 supply_route）
+            needs_route = step["dept_code"] in _DEPT_ROUTE_LAYER
+
+            # 路线类步骤：丢弃 LLM 自产路线事件。
+            # LLM 在执行阶段常对地名/地址做 geocode，结果易误命中外地（如"应急物资中转站"→山东龙口），
+            # 导致跨渤海的错误路线。改由 supervisor 用研判阶段已知坐标（救护车/仓库 marker + ERPG 圆心）权威合成。
+            if needs_route:
+                result["map_events"] = [
+                    me for me in result.get("map_events", []) if not me.get("route")
+                ]
+
             for me in result.get("map_events", []):
+                # 注入 step_id（前端 marker↔执行卡联动）+ 兜底 layer（前端图层 toggle 分桶）
+                me.setdefault("layer", step.get("map_layer") or _infer_layer(me))
+                me["step_id"] = step["step_id"]
+                me["dept_code"] = step["dept_code"]
                 await adispatch_custom_event("em_event", {"type": "map_update", "data": me}, config=config)
+
+            # ── 路线类步骤：始终用已知坐标合成权威路线（不信任 LLM geocode）──
+            if exec_status == "done" and needs_route:
+                route_result = await _synthesize_route(step, state["dept_reports"])
+                if route_result:
+                    synth_out: list[dict] = []
+                    extract_map_update("plan_driving_route", route_result, "", synth_out, step["dept_code"])
+                    for me in synth_out:
+                        me["layer"] = "routes"
+                        me["step_id"] = step["step_id"]
+                        me["dept_code"] = step["dept_code"]
+                        me["synthesized"] = True
+                        result.setdefault("map_events", []).append(me)
+                        await adispatch_custom_event("em_event", {"type": "map_update", "data": me}, config=config)
+                    logger.info("Weave: 步骤 %s 合成权威路线 %d 条", step["step_id"], len(synth_out))
+                else:
+                    logger.warning("Weave: 步骤 %s 需要路线但端点解析失败（研判阶段缺少对应资源 marker）", step["step_id"])
 
             await adispatch_custom_event(
                 "em_event",
@@ -581,7 +804,7 @@ async def final_report(state: WeaveState, config: RunnableConfig) -> dict:
     llm = ChatOpenAI(model=settings.llm_model, temperature=0)
 
     steps_text = "\n".join(
-        f"  · {s['title']}（{s['status']}）: {s.get('result_summary', '')[:100]}"
+        f"  · {s['title']}（{s['status']}）: {s.get('result_summary', '')[:300]}"
         for s in state["dispatch_plan"]
     )
     prompt = (
@@ -615,9 +838,9 @@ def build_weave_graph(checkpointer: Any) -> Any:
     """
     构建并返回编译后的 Weave Supervisor 图。
 
-    新拓扑（线性，无条件边）：
+    拓扑（单 HITL，线性无条件边）：
         START → phase_dispatch → phase_aggregate → hitl_plan_review
-              → hitl_bulk_highrisk → execute_all_parallel → final_report → END
+              → execute_all_parallel → final_report → END
 
     参数
     ----
@@ -628,23 +851,16 @@ def build_weave_graph(checkpointer: Any) -> Any:
     graph.add_node("phase_dispatch",       phase_dispatch)
     graph.add_node("phase_aggregate",      phase_aggregate)
     graph.add_node("hitl_plan_review",     hitl_plan_review)
-    graph.add_node("hitl_bulk_highrisk",   hitl_bulk_highrisk)
     graph.add_node("execute_all_parallel", execute_all_parallel)
     graph.add_node("final_report",         final_report)
 
     graph.add_edge(START,                  "phase_dispatch")
     graph.add_edge("phase_dispatch",       "phase_aggregate")
     graph.add_edge("phase_aggregate",      "hitl_plan_review")
-    graph.add_edge("hitl_plan_review",     "hitl_bulk_highrisk")
-    # 条件边：还有待审批高危步骤则循环回自身，否则进入执行阶段
-    graph.add_conditional_edges(
-        "hitl_bulk_highrisk",
-        _route_after_highrisk,
-        ["hitl_bulk_highrisk", "execute_all_parallel"],
-    )
+    graph.add_edge("hitl_plan_review",     "execute_all_parallel")
     graph.add_edge("execute_all_parallel", "final_report")
     graph.add_edge("final_report",         END)
 
     compiled = graph.compile(checkpointer=checkpointer)
-    logger.info("WeaveGraph: 编译完成（并行执行模式）")
+    logger.info("WeaveGraph: 编译完成（单 HITL 线性模式）")
     return compiled

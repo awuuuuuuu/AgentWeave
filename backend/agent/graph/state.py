@@ -72,6 +72,11 @@ class AgentState(TypedDict):
     org_supervisor_hints: str   # 注入 Supervisor system prompt 末尾
     org_analyst_context: str    # 注入 Analyst system prompt 末尾
 
+    # 部门代码（仅 A2A 部门图设置；用于地图数据着色 + 路线 dept_code 标注）
+    dept_code: str
+    # 是否要求 Reporter 在末尾附结构化 metrics JSON（仅 A2A 部门图开启，避免污染普通对话）
+    emit_metrics: bool
+
 
 # ── Researcher 子图状态 ───────────────────────────────────────────────────────
 

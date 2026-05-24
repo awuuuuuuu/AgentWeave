@@ -6,13 +6,13 @@ MCP client 在整个节点执行期间保持存活，避免连接被 GC 提前�
 """
 from __future__ import annotations
 
-import json as _json
 import logging
 from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
+from .map_extract import extract_map_update
 from .prompts import ANALYST_SYSTEM
 from .state import AgentState
 
@@ -37,6 +37,7 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
 
     async def analyst_node(state: AgentState) -> dict:
         task = state.get("task", "")
+        dept_code = state.get("dept_code", "")
         messages = state.get("messages", [])
         recent = messages[-ANALYST_CONTEXT_WINDOW:]
         mcp_connections = state.get("org_mcp_connections") or []
@@ -44,10 +45,16 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
         # 执行模式检测（三重来源，优先级从高到低）：
         # 1. state["task"] —— supervisor 在 HITL 批准后写入（单部门直接调用场景）
         # 2. HumanMessage  —— Weave Orchestrator 通过 A2A 发送的任务消息
-        # 3. hitl AIMessage —— 同 session 内已完成 HITL，说明已获授权
+        # 3. hitl AIMessage —— 本轮（最后一条 HumanMessage 之后）已完成 HITL，说明已获授权
+        #    注意：只检查本轮范围，避免历史会话的 hitl 消息污染后续轮次的执行模式判断
+        last_human_idx = max(
+            (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)),
+            default=-1,
+        )
+        msgs_this_turn = messages[last_human_idx + 1:] if last_human_idx >= 0 else []
         _hitl_done = any(
             isinstance(m, AIMessage) and getattr(m, "name", "") == "hitl"
-            for m in messages
+            for m in msgs_this_turn
         )
         is_execution_task = (
             "【执行阶段】" in (state.get("task") or "")
@@ -78,14 +85,23 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                         len(mcp_tools), [t.name for t in mcp_tools],
                     )
             except Exception as exc:
-                logger.warning("Analyst: MCP 工具加载失败，降级为无工具模式: %s", exc)
+                logger.warning("Analyst: MCP 工具加载失败: %s", exc)
                 mcp_tools = []
 
+        # MCP 连接已配置但工具加载为空：直接报错，不降级为无工具模式。
+        # 降级会让 LLM 输出"我要做什么"的计划文本，看起来像执行但什么都没发生，误导用户。
         if not mcp_tools and mcp_connections:
             logger.warning(
-                "Analyst: MCP 连接配置存在 %d 条但工具加载为空，LLM 将在无工具模式下运行",
+                "Analyst: MCP 连接配置存在 %d 条但工具加载为空，返回错误提示",
                 len(mcp_connections),
             )
+            return {
+                "messages": [AIMessage(
+                    content="⚠️ 无法连接 MCP 工具服务，实时数据查询失败。请确认 MCP 服务已启动后重试。",
+                    name="analyst",
+                )],
+                "analyst_count": state.get("analyst_count", 0) + 1,
+            }
 
         # ── bind_tools：执行阶段在 schema 层面移除 HITL 限制 ────────────────────
         # model_copy / setattr 对 MCP adapter 工具类不可靠；
@@ -214,7 +230,7 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                             result = await mcp_tool_map[tool_name].ainvoke(tc["args"])
                             content = str(result)
                             logger.info("Analyst: MCP 工具 %r 返回 %d 字符", tool_name, len(content))
-                            _try_extract_map_update(tool_name, result, content, _map_updates)
+                            extract_map_update(tool_name, result, content, _map_updates, dept_code)
                         except Exception as exc:
                             content = f"工具 {tool_name} 调用失败: {exc}"
                             logger.warning("Analyst: MCP 工具 %r 调用失败: %s", tool_name, exc)
@@ -262,7 +278,7 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                         try:
                             result = await mcp_tool_map[tool_name].ainvoke(tc["args"])
                             content = str(result)
-                            _try_extract_map_update(tool_name, result, content, _map_updates)
+                            extract_map_update(tool_name, result, content, _map_updates, dept_code)
                         except Exception as exc:
                             content = f"工具 {tool_name} 调用失败: {exc}"
                     else:
@@ -297,72 +313,3 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
         }
 
     return analyst_node
-
-
-# ── 地图数据提取 ───────────────────────────────────────────────────────────────
-
-def _try_extract_map_update(
-    tool_name: str,
-    result: object,
-    content: str,
-    out: list[dict],
-) -> None:
-    """从 amap 工具调用结果中提取地图数据，追加到 out 列表。
-
-    工具名匹配用 in 而非 ==，兼容 MultiServerMCPClient 可能添加的服务名前缀
-    （如 amap_plan_driving_route）。
-    """
-    is_route   = "plan_driving_route" in tool_name
-    is_geocode = "geocode" in tool_name and not is_route
-    if not (is_route or is_geocode):
-        return
-
-    # result 可能是：dict、str（JSON）、list[TextContent]（MCP adapter 格式）
-    parsed: dict | None = None
-    if isinstance(result, dict):
-        parsed = result
-    elif isinstance(result, list) and result:
-        # langchain-mcp-adapters 返回 [TextContent(type='text', text='...')]
-        first = result[0]
-        text = (
-            getattr(first, "text", None)
-            or (first.get("text") if isinstance(first, dict) else None)
-            or str(first)
-        )
-        try:
-            parsed = _json.loads(text)
-        except Exception:
-            pass
-    if parsed is None:
-        try:
-            parsed = _json.loads(content)
-        except Exception:
-            return
-
-    if not isinstance(parsed, dict):
-        return
-
-    if "plan_driving_route" in tool_name and "polyline" in parsed:
-        frm = parsed.get("from", {})
-        to  = parsed.get("to", {})
-        out.append({
-            "title": "路线规划",
-            "center": [
-                (frm.get("lng", 0) + to.get("lng", 0)) / 2,
-                (frm.get("lat", 0) + to.get("lat", 0)) / 2,
-            ],
-            "zoom": 13,
-            "markers": [
-                {"position": [frm.get("lng", 0), frm.get("lat", 0)], "label": "出发点", "icon": "🔵"},
-                {"position": [to.get("lng", 0),  to.get("lat", 0)],  "label": "目的地", "icon": "📍"},
-            ],
-            "route": {
-                "from": frm,
-                "to":   to,
-                "polyline":         parsed["polyline"],
-                "distance_m":       parsed.get("distance_m", 0),
-                "duration_seconds": parsed.get("duration_seconds", 0),
-            },
-        })
-
-    # geocode 仅作为中间步骤，不单独渲染地图气泡（路线地图已包含起终点 marker）

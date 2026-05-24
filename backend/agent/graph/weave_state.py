@@ -33,6 +33,9 @@ class WeaveState(TypedDict):
     incident: str                       # 用户输入的事故描述
     selected_dept_codes: list[str]      # 指挥官选定的参与部门
 
+    # ── 部门 A2A 地址表（会话启动时从 DB 注入，避免在节点内访问 DB）──────────
+    a2a_urls: dict[str, str]            # dept_code → A2A base URL
+
     # ── 阶段数据 ────────────────────────────────────────────────────────────
     dept_reports: dict[str, dict]       # dept_code → A2ATaskResponse dict
     dispatch_plan: list[PlanStep]       # LLM 生成的执行计划

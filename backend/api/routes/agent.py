@@ -143,6 +143,7 @@ async def _process_events(
         _last_answer_text: str = ""
         _last_citations: list = []
         _final_answer_sent: bool = False
+        _analyst_token_seen: bool = False  # 检测 analyst 是否产生过 token（无则为早返回）
 
         initial_state = await graph.aget_state(config)
         if initial_state and initial_state.values:
@@ -193,6 +194,8 @@ async def _process_events(
                     continue
                 chunk = ev_data.get("chunk")
                 if chunk and hasattr(chunk, "content") and chunk.content:
+                    if node == "analyst":
+                        _analyst_token_seen = True
                     yield _sse({
                         "type": "token",
                         "node": node,
@@ -220,15 +223,21 @@ async def _process_events(
                             break
                     _last_citations = output.get("citations", [])
                 elif ev_name == "analyst":
-                    # 只更新追踪变量，不写 data["answer_text"]
                     msgs = output.get("messages", [])
+                    _early_return_msg: str = ""
                     for m in reversed(msgs):
                         if isinstance(m, AIMessage) and m.content:
                             _last_answer_text = m.content
+                            _early_return_msg = m.content
                             break
                         elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
                             _last_answer_text = m["content"]
+                            _early_return_msg = m["content"]
                             break
+                    # MCP 离线早返回：没有 token 流但有消息内容，需作为 answer_text 发出，否则气泡为空
+                    if not _analyst_token_seen and _early_return_msg:
+                        data["answer_text"] = _early_return_msg
+                    _analyst_token_seen = False  # 重置供下一次 analyst 调用使用
                     # 直接从 node output 读取 mcp_sources（analyst 写入 state）
                     if mcp_sources := output.get("mcp_sources", []):
                         data["mcp_sources"] = mcp_sources
@@ -391,6 +400,24 @@ async def list_members(
     return get_agent_cards()
 
 
+async def _load_a2a_urls(db: AsyncSession) -> dict[str, str]:
+    """从 DB 加载指挥中心 Agent Registry 中已注册的部门 A2A 地址。
+
+    """
+    result = await db.scalars(
+        select(Organization).where(Organization.type == "department")
+    )
+    urls: dict[str, str] = {}
+    for org in result.all():
+        if not org.dept_code:
+            continue
+        if org.a2a_url:
+            urls[org.dept_code] = org.a2a_url
+        else:
+            logger.warning("_load_a2a_urls: 部门 %s 未配置 a2a_url，已跳过", org.dept_code)
+    return urls
+
+
 async def _get_org_mcp_connections(user: User, db: AsyncSession) -> list[dict]:
     """读取用户所在机构的 MCP 连接配置；无机构或无连接时返回空列表。"""
     if not user.org_id:
@@ -451,11 +478,14 @@ async def agent_stream(
             graph_input: Any = {"messages": [HumanMessage(content=query)]}
         else:
             # 首轮：query 即事故描述，初始化完整 WeaveState
+            # 从 DB 加载各部门 A2A 地址（避免在图节点内访问 DB）
+            a2a_urls = await _load_a2a_urls(db)
             graph_input = {
                 "session_id": req.session_id,
                 "user_id": current_user.id,
                 "incident": query,
                 "selected_dept_codes": req.selected_dept_codes,
+                "a2a_urls": a2a_urls,
                 "dept_reports": {},
                 "dispatch_plan": [],
                 "current_step": 0,
@@ -642,3 +672,43 @@ async def get_agent_state(
     else:
         base["citations"] = sv.get("citations", [])
     return base
+
+
+class WeaveDeptOut(BaseModel):
+    dept_code: str
+    name: str
+    a2a_url: str | None = None
+    a2a_port: int | None = None   # 从 a2a_url 解析，向后兼容前端
+
+
+def _parse_port(url: str | None) -> int | None:
+    if not url:
+        return None
+    try:
+        from urllib.parse import urlparse
+        return urlparse(url).port
+    except Exception:
+        return None
+
+
+@router.get("/weave/depts", response_model=list[WeaveDeptOut])
+async def list_weave_depts(
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[WeaveDeptOut]:
+    """返回 Weave 会话可用的部门列表（从 DB 加载）。"""
+    result = await db.scalars(
+        select(Organization)
+        .where(Organization.type == "department")
+        .order_by(Organization.name)
+    )
+    depts = []
+    for org in result.all():
+        if org.dept_code:
+            depts.append(WeaveDeptOut(
+                dept_code=org.dept_code,
+                name=org.name,
+                a2a_url=org.a2a_url,
+                a2a_port=_parse_port(org.a2a_url),
+            ))
+    return depts

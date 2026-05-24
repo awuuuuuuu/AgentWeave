@@ -31,7 +31,7 @@ from fastapi import FastAPI
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -56,7 +56,7 @@ logging.basicConfig(
 class A2ATaskRequest(BaseModel):
     task_id: str
     task: str
-    context: dict = {}
+    context: dict = Field(default_factory=dict)
     timeout_sec: int = 90
 
 
@@ -66,12 +66,21 @@ class McpSource(BaseModel):
     key_result: str
 
 
+class DeptMetric(BaseModel):
+    label: str                       # 指标名，如 "ERPG-2 半径"
+    value: str = ""                  # 指标值，如 "890"
+    unit: str = ""                   # 单位，如 "m"
+    severity: str = ""               # critical | warn | ok | info（空=未分级）
+    source_idx: int | None = None    # 关联 mcp_sources[idx]，供前端点跳
+
+
 class A2ATaskResponse(BaseModel):
     task_id: str
     dept_code: str
     status: Literal["completed", "failed", "timeout"]
     summary: str = ""
     key_facts: list[str] = []
+    metrics: list[DeptMetric] = []
     map_events: list[dict] = []
     citations: list[dict] = []
     mcp_sources: list[McpSource] = []
@@ -115,6 +124,52 @@ def _extract_key_facts(text: str, max_facts: int = 8) -> list[str]:
         if len(facts) >= max_facts:
             break
     return facts
+
+
+_METRICS_BLOCK_RE = re.compile(
+    r"```(?:json)?\s*\n?\s*(?:\"?metrics\"?\s*[:=]\s*)?(\[[\s\S]*?\])\s*```",
+    re.IGNORECASE,
+)
+
+
+def _extract_metrics(summary: str, key_facts: list[str]) -> tuple[list[DeptMetric], str]:
+    """从 reporter 输出末尾解析 metrics JSON 代码块。
+
+    返回 (metrics, cleaned_summary)：
+    - 成功：解析 JSON → list[DeptMetric]，并从 summary 中剥离该代码块（避免前端显示裸 JSON）
+    - 失败/缺失：降级用 key_facts 包装为 [{label: 整行, value: ""}]，summary 原样返回
+    """
+    import json as _json
+
+    # 取最后一个匹配，避免正文内的示例代码块被误命中
+    matches = list(_METRICS_BLOCK_RE.finditer(summary))
+    m = matches[-1] if matches else None
+    if m:
+        try:
+            raw = _json.loads(m.group(1))
+            metrics: list[DeptMetric] = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label", "")).strip()
+                if not label:
+                    continue
+                metrics.append(DeptMetric(
+                    label=label,
+                    value=str(item.get("value", "")).strip(),
+                    unit=str(item.get("unit", "")).strip(),
+                    severity=str(item.get("severity", "")).strip().lower(),
+                    source_idx=item.get("source_idx") if isinstance(item.get("source_idx"), int) else None,
+                ))
+            if metrics:
+                cleaned = summary[: m.start()].rstrip() + summary[m.end():]
+                return metrics, cleaned.rstrip()
+        except Exception:
+            logger.warning("A2A: metrics JSON 解析失败，降级用 key_facts")
+
+    # 降级：把 key_facts 当作无结构化值的指标行
+    fallback = [DeptMetric(label=f) for f in key_facts[:8]]
+    return fallback, summary
 
 
 # ── 核心：自动 HITL 批准执行器 ───────────────────────────────────────────────
@@ -263,6 +318,8 @@ def build_dept_a2a_app(dept_code: str, port: int) -> FastAPI:
             "org_mcp_summary": _build_mcp_summary(mcp_connections),
             "org_supervisor_hints": app.state.org_supervisor_hints,
             "org_analyst_context": app.state.org_analyst_context,
+            "dept_code": dept_code,
+            "emit_metrics": True,
             "next_agent": "",
             "task": "",
             "message_to_user": "",
@@ -302,16 +359,21 @@ def build_dept_a2a_app(dept_code: str, port: int) -> FastAPI:
                 for i, s in enumerate(result.get("mcp_sources", []))
             ]
 
+            # 解析结构化指标（剥离 summary 末尾的 metrics JSON 代码块）
+            key_facts = _extract_key_facts(summary)
+            metrics, summary = _extract_metrics(summary, key_facts)
+
             logger.info(
-                "A2A[%s]: task_id=%s 完成 duration=%dms summary_len=%d mcp_calls=%d",
-                dept_code, body.task_id, duration_ms, len(summary), len(mcp_sources),
+                "A2A[%s]: task_id=%s 完成 duration=%dms summary_len=%d mcp_calls=%d metrics=%d",
+                dept_code, body.task_id, duration_ms, len(summary), len(mcp_sources), len(metrics),
             )
             return A2ATaskResponse(
                 task_id=body.task_id,
                 dept_code=dept_code,
                 status="completed",
                 summary=summary,
-                key_facts=_extract_key_facts(summary),
+                key_facts=key_facts,
+                metrics=metrics,
                 map_events=map_events,
                 citations=citations,
                 mcp_sources=mcp_sources,
