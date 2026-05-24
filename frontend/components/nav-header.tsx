@@ -14,7 +14,7 @@ import {
 const navItems = [
   { href: "/knowledge", label: "知识库", icon: BookOpen },
   { href: "/chat", label: "对话", icon: MessageSquare },
-  { href: "/agent", label: "群组", icon: Users },
+  { href: "/agent", label: "协同", icon: Users },
   { href: "/org", label: "部门", icon: Building2 },
 ];
 

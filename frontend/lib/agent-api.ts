@@ -64,15 +64,26 @@ export interface HITLData {
 export interface MapMarker {
   position: [number, number];  // [lng, lat]
   label?: string;
-  icon?: string;
+  icon?: string;    // 如 "🚑" "🏥" "🚦" "💨" "📦"
+  meta?: string;    // 附加说明，如 "ICU:5 急诊:12"
+  color?: string;   // 路口/自定义着色覆盖
 }
 
 export interface MapRoute {
-  from: { lat: number; lng: number };
-  to:   { lat: number; lng: number };
+  from?: { lat: number; lng: number };
+  to?:   { lat: number; lng: number };
   polyline: [number, number][];
-  distance_m: number;
-  duration_seconds: number;
+  distance_m?: number;
+  duration_seconds?: number;
+  dept_code?: string;   // 用于路线着色
+  color?: string;       // 十六进制，覆盖 dept_code 映射
+}
+
+export interface MapCircle {
+  center: [number, number];   // [lng, lat]
+  radius: number;             // 米
+  color: string;              // 十六进制，如 "#ef4444"
+  label?: string;             // 如 "ERPG-3 致命区"
 }
 
 export interface MapPayload {
@@ -81,6 +92,10 @@ export interface MapPayload {
   zoom?: number;
   markers?: MapMarker[];
   route?: MapRoute;
+  circles?: MapCircle[];
+  layer?: string;       // 图层 ID（plume/resources/signals/routes/sensors/warehouse/cordon/incident_source）
+  step_id?: string;     // 执行步骤 ID（marker↔执行卡联动）
+  dept_code?: string;   // 来源部门代码
 }
 
 export interface AgentCard {
@@ -93,6 +108,14 @@ export interface McpSource {
   idx: number;
   tool_name: string;
   key_result: string;
+}
+
+export interface DeptMetric {
+  label: string;
+  value?: string;
+  unit?: string;
+  severity?: string;       // critical | warn | ok | info
+  source_idx?: number | null;
 }
 
 // Researcher 子图步骤 → 提示文字
@@ -177,8 +200,8 @@ export interface PlanStep {
 }
 
 export type WeaveSSEEvent =
-  | { type: "research_dispatch"; data: { tasks: Array<{ dept_code: string; task: string }> } }
-  | { type: "dept_report";   data: { dept_code: string; status: string; summary: string; key_facts: string[]; map_events: unknown[]; citations?: Citation[]; mcp_sources?: McpSource[] } }
+  | { type: "research_dispatch"; data: { incident?: string; tasks: Array<{ dept_code: string; task: string }> } }
+  | { type: "dept_report";   data: { dept_code: string; status: string; summary: string; key_facts: string[]; metrics?: DeptMetric[]; map_events: MapPayload[]; citations?: Citation[]; mcp_sources?: McpSource[] } }
   | { type: "dispatch_plan"; data: { steps: PlanStep[] } }
   | { type: "plan_step";     data: { step_id: string; status: string; summary?: string } }
   | { type: "map_update";    data: MapPayload }
@@ -187,6 +210,15 @@ export type WeaveSSEEvent =
   | { type: "interrupt";     data: { type: "plan_review" | "step_review"; plan?: PlanStep[]; step_id?: string; title?: string; dept_code?: string } }
   | { type: "done";          data: Record<string, never> }
   | { type: "error";         data: { message: string } };
+
+// ── Weave 部门 ────────────────────────────────────────────────────────────────
+
+export interface WeaveDept {
+  dept_code: string;   // "EN" | "ME" | "TR" | "LG" | "SF"
+  name: string;
+  org_id_key: string;
+  a2a_port: number;
+}
 
 // ── 带鉴权的 fetch（复用 api.ts 的 tokenStorage）────────────────────────────
 
@@ -345,6 +377,12 @@ export async function createSession(
 
 export async function listDepartments(): Promise<OrgDept[]> {
   const res = await authFetch(`${API_BASE}/orgs/departments`);
+  if (!res.ok) throw new Error("获取部门列表失败");
+  return res.json();
+}
+
+export async function fetchWeaveDepts(): Promise<WeaveDept[]> {
+  const res = await authFetch(`${API_BASE}/agent/weave/depts`);
   if (!res.ok) throw new Error("获取部门列表失败");
   return res.json();
 }

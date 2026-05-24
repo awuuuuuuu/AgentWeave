@@ -277,7 +277,7 @@ export function AgentChatWindow({
         const id = nodeBubbleId[node];
         if (!id) continue;
         upsertBubble(id, (prev) => {
-          const base = prev ?? { id, agent: node, content: "", citations: [], replyTo: REPLY_TO[node] };
+          const base = prev ?? { id, agent: node as AgentName, content: "", status: "thinking" as const, citations: [], replyTo: REPLY_TO[node] };
           const existing = base.mcpSources ?? [];
           const alreadyExists = existing.some((s) => s.idx === event.data.idx);
           return {
@@ -536,7 +536,7 @@ export function AgentChatWindow({
           }}
         >
           <span style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-primary)" }}>
-            Agent 群组
+            Agent 协同
           </span>
           <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }} suppressHydrationWarning>
             · #{shortId}
@@ -600,7 +600,7 @@ export function AgentChatWindow({
                   <IconMessageQuestion size={22} />
                 </div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)", textAlign: "center" }}>
-                  向 Agent 群组提问
+                  向 Agent 协同提问
                 </div>
                 <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", textAlign: "center", lineHeight: 1.6, maxWidth: 320 }}>
                   Supervisor 会自动拆解任务，调度 Researcher、Analyst、Reporter 协同完成。
@@ -817,7 +817,7 @@ export function AgentChatWindow({
                     ? "等待人工审批，输入已暂停…"
                     : isRunning
                     ? "Agent 运行中，请稍候…"
-                    : "提出你的研究问题，Agent 群组将协同回答…"
+                    : "提出你的研究问题，Agent 将协同回答…"
                 }
                 style={{
                   flex: 1,

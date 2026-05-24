@@ -15,8 +15,9 @@ interface CommandCenterPanelProps {
   sopStages?: SopStage[];
   isRunning?: boolean;
   onSubmit?: (query: string) => void;
-  onApprove?: () => void;
-  onReject?: () => void;
+  onOpenHitlModal?: () => void;
+  activeStepId?: string | null;
+  onStepSelect?: (stepId: string) => void;
 }
 
 // ── conv-head ───────────────────────────────────────────────────────────────
@@ -227,8 +228,9 @@ export function CommandCenterPanel({
   sopStages,
   isRunning = false,
   onSubmit,
-  onApprove,
-  onReject,
+  onOpenHitlModal,
+  activeStepId = null,
+  onStepSelect,
 }: CommandCenterPanelProps) {
   const streamRef = useRef<HTMLDivElement>(null);
 
@@ -294,15 +296,16 @@ export function CommandCenterPanel({
             <div style={{ fontSize: 11, opacity: 0.7 }}>在下方输入框发送第一条消息，启动 Weave</div>
           </div>
         ) : (
-          cards.map((card, i) => <CardRenderer key={i} card={card} />)
+          cards.map((card, i) => (
+            <CardRenderer key={i} card={card} activeStepId={activeStepId} onStepSelect={onStepSelect} />
+          ))
         )}
       </div>
 
       {/* Row 4: hitl-bar — above composer so it's always visible when approval needed */}
       <HITLBar
         hitl={hitl}
-        onApprove={onApprove ?? (() => {})}
-        onReject={onReject ?? (() => {})}
+        onOpenModal={onOpenHitlModal ?? (() => {})}
       />
 
       {/* Row 5: composer */}

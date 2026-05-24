@@ -5,6 +5,7 @@ import { CC } from "./tokens";
 import { CommandCenterPanel } from "./CommandCenterPanel";
 import { AMapPanel } from "./AMapPanel";
 import { KanbanDrawer } from "./KanbanDrawer";
+import { PlanEditModal } from "./PlanEditModal";
 import type {
   CommandCard,
   HITLNotification,
@@ -67,6 +68,7 @@ interface CommandCenterLayoutProps {
   onSessionUpdated?: () => void;
   weaveSessions?: Session[];
   hitlQueue?: HITLQueueItem[];
+  selectedDeptCodes?: string[];
 }
 
 export function CommandCenterLayout({
@@ -74,9 +76,11 @@ export function CommandCenterLayout({
   sessionTitle,
   weaveSessions = [],
   hitlQueue = [],
+  selectedDeptCodes = [],
 }: CommandCenterLayoutProps) {
   const [cards, setCards] = useState<CommandCard[]>([]);
   const [mapEvents, setMapEvents] = useState<MapPayload[]>([]);
+  const [incidentCenter, setIncidentCenter] = useState<[number, number] | null>(null);
   const [hitl, setHitl] = useState<HITLNotification | null>(null);
   const [sopStages, setSopStages] = useState<SopStage[]>(INITIAL_SOP);
   const [tasks, setTasks] = useState<TaskEntry[]>([]);
@@ -84,10 +88,15 @@ export function CommandCenterLayout({
   const [pendingInterrupt, setPendingInterrupt] = useState<{
     type: string; plan?: PlanStep[]; step_id?: string; title?: string;
   } | null>(null);
+  const [showPlanEdit, setShowPlanEdit] = useState(false);
   const [title, setTitle] = useState(sessionTitle ?? "新 Weave 会话");
+  const [activeStepId, setActiveStepId] = useState<string | null>(null);  // A5：地图↔执行卡联动
 
   const abortRef               = useRef<AbortController | null>(null);
   const streamSettleRef        = useRef<Promise<void>>(Promise.resolve()); // 当前流结束后 resolve
+  const hitlTimeoutRef         = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // _resumeRef 使每次渲染后的最新 _resume 可在 timeout callback 中安全调用
+  const _resumeRef             = useRef<((decision: unknown) => Promise<void>) | undefined>(undefined);
   const deptCardIdxRef         = useRef<Record<string, number>>({});   // dept_code → card idx
   const plThinkingCardIdxRef   = useRef<number>(-1);                   // 初始思考卡位置
   const deptTotalRef           = useRef<number>(0);                    // 研判部门总数
@@ -114,11 +123,13 @@ export function CommandCenterLayout({
     hitlPendingRef.current        = false;
     setCards([]);
     setMapEvents([]);
+    setIncidentCenter(null);
     setHitl(null);
     setSopStages(INITIAL_SOP);
     setTasks([]);
     setIsRunning(false);
     setPendingInterrupt(null);
+    setActiveStepId(null);
     setTitle(sessionTitle ?? "新 Weave 会话");
   }, [sessionId, sessionTitle]);
 
@@ -132,21 +143,34 @@ export function CommandCenterLayout({
 
         deptCardIdxRef.current = {};
 
-        // 从 "事故：xxx\n请评估大气扩散…" 提取摘要（30字以内）
-        function displayTask(full: string): string {
-          const after = full.split("\n").slice(1).join("").replace(/^请/, "");
-          return after.length > 30 ? after.slice(0, 30) + "…" : after;
+        // 从任务文本提取可读摘要，兼容两种格式：
+        //   LLM 格式：  "【研判阶段】结合知识库规程，使用 xxx 工具…"（无换行）
+        //   模板格式：  "事故：xxx\n请调用 yyy 工具…"（换行分隔）
+        function extractTaskBody(full: string): string {
+          const bracketMatch = full.match(/^【[^\]]+】\s*([\s\S]*)/);
+          if (bracketMatch) return bracketMatch[1].trim();
+          if (full.includes("\n")) {
+            return full.split("\n").slice(1).join("").replace(/^请/, "").trim();
+          }
+          return full.trim();
         }
 
-        // 从第一条任务提取事故名称（"事故：xxx\n…"）
-        const firstLine = tasks[0]?.task.split("\n")[0] ?? "";
-        const incident = firstLine.replace(/^事故[：:]\s*/, "").trim();
+        function displayTask(full: string): string {
+          const body = extractTaskBody(full);
+          return body.length > 30 ? body.slice(0, 30) + "…" : body;
+        }
+
+        // 事故名称：优先使用后端直接传递的 incident 字段，兼容旧格式（模板第一行 "事故：xxx"）
+        const incident = event.data.incident
+          ?? (() => {
+            const firstLine = tasks[0]?.task.split("\n")[0] ?? "";
+            return firstLine.replace(/^事故[：:]\s*/, "").trim();
+          })();
 
         // 结构化部门任务（供 OrchReasoningCard 新设计使用）
         const deptTasksForCard = tasks.map((t) => {
           const m = deptMeta(t.dept_code);
-          const body = t.task.split("\n").slice(1).join("").trim().replace(/^请/, "");
-          return { code: m.code, name: m.name, task: body };
+          return { code: m.code, name: m.name, task: extractTaskBody(t.task) };
         });
 
         deptTotalRef.current = tasks.length;
@@ -205,6 +229,7 @@ export function CommandCenterLayout({
             status: "running" as const,
           };
         }));
+
         break;
       }
 
@@ -224,9 +249,11 @@ export function CommandCenterLayout({
               ...prev,
               status: cardStatus,
               summary: d.summary,
+              facts: (d.key_facts ?? []).slice(0, 6),
+              metrics: d.metrics ?? [],
               citations: d.citations ?? [],
               mcp_sources: d.mcp_sources ?? [],
-              kvs: d.key_facts?.slice(0, 8).map((f: string) => ({ k: "·", v: f })),
+              kvs: [],
               ...(isErr ? { err_detail: d.summary } : {}),
             };
           }
@@ -242,6 +269,21 @@ export function CommandCenterLayout({
           const idx = prev.findIndex((t) => t.id === d.dept_code);
           return idx >= 0 ? prev.map((t, i) => (i === idx ? entry : t)) : [...prev, entry];
         });
+
+        // 将部门研判阶段产生的地图事件追加到地图面板
+        if (d.map_events?.length) {
+          setMapEvents((prev) => [...prev, ...d.map_events]);
+          // 首次收到 ERPG 圆圈时，以圆心作为事故坐标（由 calculate_plume 结果派生，无需硬编码）
+          setIncidentCenter((prev) => {
+            if (prev) return prev;
+            for (const me of d.map_events) {
+              if (me.circles?.length) {
+                return me.circles[0].center as [number, number];
+              }
+            }
+            return prev;
+          });
+        }
 
         // 全部部门完成后插入 PL 聚合思考卡
         deptDoneRef.current += 1;
@@ -296,7 +338,7 @@ export function CommandCenterLayout({
               type: "dispatch_plan" as const,
               agents: steps.map((s) => {
                 const m = deptMeta(s.dept_code);
-                return { code: m.code, name: m.name, task: s.task || s.title };
+                return { code: m.code, name: m.name, task: s.task || s.title, step_id: s.step_id };
               }),
               progress: steps.map(() => "idle" as const),
             },
@@ -332,6 +374,8 @@ export function CommandCenterLayout({
               : s
             )
           );
+          // 执行已启动，清除审批条（approval 已处理完，spinner 不应继续显示）
+          setHitl(null);
           // Insert handoff + exec dept card, update Gantt to running
           const step = planStepsRef.current.find((s) => s.step_id === step_id);
           if (step) {
@@ -378,9 +422,14 @@ export function CommandCenterLayout({
         break;
       }
 
-      case "map_update":
+      case "map_update": {
         setMapEvents((prev) => [...prev, event.data]);
+        // 警戒圈（计划生成时推送）→ 以其圆心确定事故中心，保证计划生成后即渲染事故标志
+        if (event.data.layer === "cordon" && event.data.circles?.length) {
+          setIncidentCenter((prev) => prev ?? (event.data.circles![0].center as [number, number]));
+        }
         break;
+      }
 
       case "hitl_required":
         // Pre-interrupt push; actual pause handled by "interrupt" event
@@ -388,34 +437,21 @@ export function CommandCenterLayout({
 
       case "interrupt": {
         const payload = event.data;
-        hitlPendingRef.current = true; // prevent done from clearing hitl
+        hitlPendingRef.current = true;
         setPendingInterrupt(payload);
         setIsRunning(false);
-        if (payload.type === "plan_review") {
-          setHitl({
-            id: "hitl-plan",
-            message: "请审批执行计划",
-            detail: `共 ${(payload.plan ?? []).length} 步 · 批准后并行执行`,
-          });
-          setSopStages((prev) => prev.map((s) => (s.id === "s3" ? { ...s, status: "active" } : s)));
-          setCards((prev) => [
-            ...prev,
-            { type: "hitl_anchor" as const, message: "等待指挥长批准执行计划" },
-          ]);
-        } else {
-          // step_review — 逐一单步审批
-          const stepTitle = payload.title ?? payload.step_id ?? "未知步骤";
-          setHitl({
-            id: `hitl-${payload.step_id ?? "step"}`,
-            message: `高危步骤：${stepTitle}`,
-            detail: "批准后继续执行 · 驳回则跳过此步骤",
-            dept_code: payload.dept_code,
-          });
-          setCards((prev) => [
-            ...prev,
-            { type: "hitl_anchor" as const, message: `待批准高危步骤：${stepTitle}` },
-          ]);
-        }
+        // 单次综合 HITL：自动弹出审批弹窗
+        setHitl({
+          id: "hitl-plan",
+          message: "请审批执行计划",
+          detail: `共 ${(payload.plan ?? []).length} 步 · 可编辑、部分批准或拒绝`,
+        });
+        setSopStages((prev) => prev.map((s) => (s.id === "s3" ? { ...s, status: "active" } : s)));
+        setCards((prev) => [
+          ...prev,
+          { type: "hitl_anchor" as const, message: "等待指挥长批准执行计划" },
+        ]);
+        setShowPlanEdit(true);
         break;
       }
 
@@ -504,55 +540,73 @@ export function CommandCenterLayout({
         return next;
       });
 
-      streamSettleRef.current = runStream(streamWeave(query, sessionId, [], ac.signal), ac);
+      streamSettleRef.current = runStream(streamWeave(query, sessionId, selectedDeptCodes, ac.signal), ac);
       await streamSettleRef.current;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId, isRunning]
   );
 
-  const handleApprove = useCallback(async () => {
-    if (!pendingInterrupt) return;
-    const decision: string | unknown[] =
-      pendingInterrupt.type === "plan_review"
-        ? (pendingInterrupt.plan ?? "approve")
-        : "approve"; // step_review: approve this individual step
-
+  async function _resume(decision: unknown) {
+    // 清除 HITL 超时定时器（用户已主动审批，不再需要自动拒绝）
+    if (hitlTimeoutRef.current !== null) {
+      clearTimeout(hitlTimeoutRef.current);
+      hitlTimeoutRef.current = null;
+    }
     hitlPendingRef.current = false;
     setHitl((prev) => prev ? { ...prev, isProcessing: true } : null);
     setPendingInterrupt(null);
+    setShowPlanEdit(false);
     setIsRunning(true);
-
     // 等旧流自然结束后再发 resume：interrupt 事件到达时服务端仍在排水（drain）以完成
     // checkpoint 落盘，若此时立即调用 /agent/resume 会读到空 state.next → 409。
-    // 等待 streamSettleRef 确保 [DONE] 已收到、checkpoint 已提交。
     await streamSettleRef.current;
-
     const ac = new AbortController();
     abortRef.current = ac;
-
     streamSettleRef.current = runStream(resumeWeave(sessionId, decision, ac.signal), ac);
     await streamSettleRef.current;
+  }
+  // 每次渲染后同步最新的 _resume，供 timeout callback 调用（不进 deps 避免无限重建）
+  _resumeRef.current = _resume;
+
+  // HITL 超时自动拒绝：pendingInterrupt 出现时启动倒计时
+  useEffect(() => {
+    if (!pendingInterrupt) {
+      if (hitlTimeoutRef.current !== null) {
+        clearTimeout(hitlTimeoutRef.current);
+        hitlTimeoutRef.current = null;
+      }
+      return;
+    }
+    const timeoutSec = (pendingInterrupt as { timeout_sec?: number }).timeout_sec ?? 300;
+    hitlTimeoutRef.current = setTimeout(() => {
+      if (hitlPendingRef.current) {
+        _resumeRef.current?.("reject");
+      }
+    }, timeoutSec * 1000);
+    return () => {
+      if (hitlTimeoutRef.current !== null) {
+        clearTimeout(hitlTimeoutRef.current);
+        hitlTimeoutRef.current = null;
+      }
+    };
+  // pendingInterrupt 变更时重新绑定（sessionId 用于区分不同会话的 interrupt）
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingInterrupt, sessionId]);
+
+  const handlePlanConfirm = useCallback(
+    (steps: PlanStep[]) => _resume(steps),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, pendingInterrupt]);
+    [sessionId],
+  );
 
-  const handleReject = useCallback(async () => {
-    if (!pendingInterrupt) return;
-
-    hitlPendingRef.current = false;
-    setHitl((prev) => prev ? { ...prev, isProcessing: true } : null);
-    setPendingInterrupt(null);
-    setIsRunning(true);
-
-    await streamSettleRef.current;
-
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    streamSettleRef.current = runStream(resumeWeave(sessionId, "reject", ac.signal), ac);
-    await streamSettleRef.current;
+  const handlePlanReject = useCallback(
+    () => _resume("reject"),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, pendingInterrupt]);
+    [sessionId],
+  );
+
+  const handleOpenHitlModal = useCallback(() => setShowPlanEdit(true), []);
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
@@ -589,14 +643,28 @@ export function CommandCenterLayout({
             sopStages={sopStages}
             isRunning={isRunning}
             onSubmit={handleSubmit}
-            onApprove={handleApprove}
-            onReject={handleReject}
+            onOpenHitlModal={handleOpenHitlModal}
+            activeStepId={activeStepId}
+            onStepSelect={(id) => setActiveStepId((prev) => (prev === id ? null : id))}
           />
+          {showPlanEdit && pendingInterrupt?.plan && (
+            <PlanEditModal
+              steps={pendingInterrupt.plan}
+              onConfirm={handlePlanConfirm}
+              onReject={handlePlanReject}
+              onClose={() => setShowPlanEdit(false)}
+            />
+          )}
         </div>
 
         {/* 右列：46% — 地图 */}
         <div style={{ flex: 1, minWidth: 0, position: "relative", overflow: "hidden" }}>
-          <AMapPanel mapEvents={mapEvents} />
+          <AMapPanel
+            mapEvents={mapEvents}
+            incidentCenter={incidentCenter}
+            activeStepId={activeStepId}
+            onStepSelect={(id) => setActiveStepId((prev) => (prev === id ? null : id))}
+          />
         </div>
       </div>
 

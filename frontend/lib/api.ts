@@ -427,6 +427,75 @@ export async function apiDeleteMcpConnection(name: string): Promise<McpConnectio
   }).then((r) => r.json());
 }
 
+export interface McpStatusItem {
+  name: string;
+  url: string;
+  description: string;
+  online: boolean;
+  latency_ms: number | null;
+}
+
+export async function apiGetMcpStatus(): Promise<McpStatusItem[]> {
+  return apiFetch("/orgs/me/mcp-status").then((r) => r.json());
+}
+
+// ── Dept (Agent Registry) API ──────────────────────────────────────────────
+
+export interface DeptFull {
+  id: string;
+  name: string;
+  dept_code: string | null;
+  a2a_url: string | null;
+  dept_prompts: Record<string, string> | null;
+}
+
+export interface DeptA2aStatus {
+  dept_code: string;
+  online: boolean;
+  latency_ms: number | null;
+  error?: string;
+}
+
+export async function apiListDepts(): Promise<DeptFull[]> {
+  return apiFetch("/orgs/departments").then((r) => r.json());
+}
+
+export async function apiCreateDept(body: {
+  name: string;
+  dept_code: string;
+  a2a_url?: string;
+  supervisor_hints?: string;
+  analyst_context?: string;
+  invite_code?: string;
+}): Promise<DeptFull> {
+  return apiFetch("/orgs/departments", {
+    method: "POST",
+    body: JSON.stringify(body),
+  }).then((r) => r.json());
+}
+
+export async function apiUpdateDept(
+  deptCode: string,
+  body: { name?: string; a2a_url?: string; supervisor_hints?: string; analyst_context?: string }
+): Promise<DeptFull> {
+  return apiFetch(`/orgs/departments/${encodeURIComponent(deptCode)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  }).then((r) => r.json());
+}
+
+export async function apiDeleteDept(deptCode: string): Promise<void> {
+  await apiFetch(
+    `/orgs/departments/${encodeURIComponent(deptCode)}`,
+    { method: "DELETE" },
+    { expectJson: false }
+  );
+}
+
+export async function apiPingDept(deptCode: string): Promise<DeptA2aStatus> {
+  return apiFetch(`/orgs/departments/${encodeURIComponent(deptCode)}/a2a-status`).then((r) => r.json());
+}
+
 // ── SSE 流式问答 ───────────────────────────────────────────────────────────
 
 export interface Citation {

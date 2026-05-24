@@ -1,5 +1,5 @@
-import type { Citation } from "@/lib/agent-api";
-export type { Citation };
+import type { Citation, DeptMetric, MapPayload } from "@/lib/agent-api";
+export type { Citation, DeptMetric, MapPayload };
 
 export interface McpSource {
   idx: number;
@@ -26,13 +26,16 @@ export type CommandCard =
       incident?: string;
       dept_tasks?: Array<{ code: string; name: string; task: string }> }
   | { type: "handoff";        from: string[]; to: string[]; label?: string; payload?: string }
-  | { type: "dispatch_plan";  agents: { code: string; name: string; task: string }[];
+  | { type: "dispatch_plan";  agents: { code: string; name: string; task: string; step_id?: string }[];
                                progress: ("done" | "running" | "error" | "idle")[] }
   | { type: "dept_report";    code: string; name: string; task: string;
                                status: "done" | "running" | "error";
                                phase?: "research" | "exec";
                                elapsed_ms?: number;
                                summary?: string;
+                               facts?: string[];
+                               metrics?: DeptMetric[];
+                               map_events?: MapPayload[];
                                kvs?: { k: string; v: string }[];
                                citations?: Citation[];
                                mcp_sources?: McpSource[];

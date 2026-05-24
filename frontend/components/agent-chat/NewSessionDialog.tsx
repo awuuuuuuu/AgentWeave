@@ -19,7 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiListKBs, type KnowledgeBase } from "@/lib/api";
-import { listDepartments, type OrgDept } from "@/lib/agent-api";
+import { fetchWeaveDepts, type WeaveDept } from "@/lib/agent-api";
 
 interface NewSessionDialogProps {
   open: boolean;
@@ -47,8 +47,8 @@ export function NewSessionDialog({
   const [kbLoading, setKbLoading] = useState(false);
 
   // weave mode
-  const [depts, setDepts] = useState<OrgDept[]>([]);
-  const [selectedDeptIds, setSelectedDeptIds] = useState<Set<string>>(new Set());
+  const [depts, setDepts] = useState<WeaveDept[]>([]);
+  const [selectedDeptCodes, setSelectedDeptCodes] = useState<Set<string>>(new Set());
   const [deptsLoading, setDeptsLoading] = useState(false);
 
   const [confirming, setConfirming] = useState(false);
@@ -69,12 +69,12 @@ export function NewSessionDialog({
 
     // Load department list for weave mode
     setDeptsLoading(true);
-    listDepartments()
+    fetchWeaveDepts()
       .then((list) => {
         setDepts(list);
-        setSelectedDeptIds(new Set(list.map((d) => d.id)));
+        setSelectedDeptCodes(new Set(list.map((d: WeaveDept) => d.dept_code)));
       })
-      .catch(() => { setDepts([]); setSelectedDeptIds(new Set()); })
+      .catch(() => { setDepts([]); setSelectedDeptCodes(new Set()); })
       .finally(() => setDeptsLoading(false));
   }, [open]);
 
@@ -87,7 +87,7 @@ export function NewSessionDialog({
   }
 
   function toggleDept(id: string) {
-    setSelectedDeptIds((prev) => {
+    setSelectedDeptCodes((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
@@ -100,7 +100,7 @@ export function NewSessionDialog({
       await onConfirm(
         Array.from(selectedKbIds),
         sessionType,
-        Array.from(selectedDeptIds)
+        Array.from(selectedDeptCodes)
       );
       onOpenChange(false);
     } finally {
@@ -186,11 +186,11 @@ export function NewSessionDialog({
               </div>
             ) : (
               depts.map((d) => {
-                const checked = selectedDeptIds.has(d.id);
+                const checked = selectedDeptCodes.has(d.dept_code);
                 return (
                   <button
-                    key={d.id}
-                    onClick={() => toggleDept(d.id)}
+                    key={d.dept_code}
+                    onClick={() => toggleDept(d.dept_code)}
                     style={{
                       display: "flex", alignItems: "center", gap: 10,
                       padding: "10px 12px", borderRadius: 8, width: "100%",
@@ -212,11 +212,9 @@ export function NewSessionDialog({
                       <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {d.name}
                       </div>
-                      {d.dept_code && (
-                        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 1 }}>
-                          {d.dept_code}
-                        </div>
-                      )}
+                      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 1 }}>
+                        {d.dept_code} · A2A :{d.a2a_port}
+                      </div>
                     </div>
                   </button>
                 );
@@ -275,9 +273,9 @@ export function NewSessionDialog({
         {!loading && (
           <p style={{ fontSize: 12, color: "var(--color-text-tertiary)", margin: "0 0 4px" }}>
             {isWeave
-              ? selectedDeptIds.size === 0
+              ? selectedDeptCodes.size === 0
                 ? "未选择部门时将使用系统默认配置"
-                : `已选 ${selectedDeptIds.size} 个部门参与协作`
+                : `已选 ${selectedDeptCodes.size} 个部门参与协作`
               : selectedKbIds.size === 0
                 ? "未选择知识库时，Agent 仅依赖自身知识回答"
                 : `已选 ${selectedKbIds.size} 个知识库`}

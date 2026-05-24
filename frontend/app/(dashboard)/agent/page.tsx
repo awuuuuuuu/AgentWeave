@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { IconMessageQuestion, IconPlus } from "@tabler/icons-react";
 import { toast } from "sonner";
@@ -94,6 +94,7 @@ export default function AgentPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [isCommandOrg, setIsCommandOrg] = useState(false);
+  const sessionDeptCodesRef = useRef<Record<string, string[]>>({});
 
   const loadSessions = useCallback(async () => {
     try {
@@ -119,11 +120,12 @@ export default function AgentPage() {
   async function handleDialogConfirm(
     kbIds: string[],
     sessionType: "chat" | "weave" = "chat",
-    _deptOrgIds: string[] = []
+    deptCodes: string[] = []
   ) {
     setIsCreating(true);
     try {
       const s = await createSession(kbIds, sessionType);
+      if (deptCodes.length > 0) sessionDeptCodesRef.current[s.id] = deptCodes;
       setSessions((prev) => [s, ...(prev ?? [])]);
       router.push(`/agent?session=${s.id}`);
     } catch {
@@ -175,6 +177,7 @@ export default function AgentPage() {
             sessionTitle={currentSession?.title ?? undefined}
             onSessionUpdated={loadSessions}
             weaveSessions={sessionList.filter((s) => s.session_type === "weave")}
+            selectedDeptCodes={sessionDeptCodesRef.current[sessionId] ?? []}
           />
         ) : (
           <AgentChatWindow

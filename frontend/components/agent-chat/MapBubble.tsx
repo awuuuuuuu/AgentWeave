@@ -110,8 +110,8 @@ export function MapBubble({ bubble }: MapBubbleProps) {
   }, []);
 
   const route = mapData.route;
-  const distKm = route ? (route.distance_m / 1000).toFixed(1) : null;
-  const mins   = route ? Math.round(route.duration_seconds / 60) : null;
+  const distKm = route?.distance_m != null ? (route.distance_m / 1000).toFixed(1) : null;
+  const mins   = route?.duration_seconds != null ? Math.round(route.duration_seconds / 60) : null;
 
   return (
     <div

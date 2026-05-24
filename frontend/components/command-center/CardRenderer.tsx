@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CC, agentColor, DEPT_ICONS } from "./tokens";
-import type { CommandCard, Citation, McpSource } from "./types";
+import type { CommandCard, Citation, McpSource, DeptMetric } from "./types";
 
 // Teal color for MCP citations (distinct from RAG blue)
 const MCP_COLOR = "#0891b2";
@@ -436,9 +436,11 @@ function HandoffCard({ from, to, label, payload }: {
 
 // ── 执行计划（顺序甘特）─────────────────────────────────────────────────────
 
-function DispatchPlanCard({ agents, progress }: {
-  agents: { code: string; name: string; task: string }[];
+function DispatchPlanCard({ agents, progress, activeStepId, onStepSelect }: {
+  agents: { code: string; name: string; task: string; step_id?: string }[];
   progress: ("done" | "running" | "error" | "idle")[];
+  activeStepId?: string | null;
+  onStepSelect?: (stepId: string) => void;
 }) {
   const done = progress.filter((s) => s === "done").length;
   const total = agents.length;
@@ -487,18 +489,27 @@ function DispatchPlanCard({ agents, progress }: {
             const isError = st === "error";
             const isPending = st === "idle";
 
-            const rowBg = isActive
+            const isSelected = activeStepId != null && agent.step_id === activeStepId;
+            const rowBg = isSelected
+              ? `color-mix(in oklab, ${CC.info} 12%, transparent)`
+              : isActive
               ? `color-mix(in oklab, ${CC.warn} 6%, transparent)`
               : isDone
                 ? `color-mix(in oklab, ${CC.ok} 5%, transparent)`
                 : "transparent";
 
             return (
-              <div key={i} style={{
+              <div
+                key={i}
+                onClick={() => { if (agent.step_id && onStepSelect) onStepSelect(agent.step_id); }}
+                style={{
                 display: "flex", alignItems: "flex-start", gap: 8,
                 padding: "5px 7px", borderRadius: 6,
                 background: rowBg,
-                border: `1px solid ${isActive
+                cursor: agent.step_id && onStepSelect ? "pointer" : "default",
+                border: `1px solid ${isSelected
+                  ? `color-mix(in oklab, ${CC.info} 55%, transparent)`
+                  : isActive
                   ? `color-mix(in oklab, ${CC.warn} 22%, transparent)`
                   : isDone
                     ? `color-mix(in oklab, ${CC.ok} 16%, transparent)`
@@ -966,6 +977,33 @@ function DeptMd({ text, activeRef, onCitationClick, activeMcpRef, onMcpClick }: 
   );
 }
 
+// ── 错误详情格式化 ───────────────────────────────────────────────────────────
+
+function formatErrDetail(raw: string): string {
+  const httpMatch = raw.match(/Server error '(\d{3})\s([^']+)'/);
+  if (httpMatch) {
+    const code = httpMatch[1];
+    const text = httpMatch[2].trim();
+    const msgs: Record<string, string> = {
+      "503": "A2A 部门服务离线（503 Service Unavailable）—— 请检查该部门服务是否已启动",
+      "502": "A2A 网关错误（502 Bad Gateway）—— 请检查网络或代理配置",
+      "504": "A2A 服务超时（504 Gateway Timeout）—— 请检查服务响应是否正常",
+      "404": "A2A 接口未找到（404 Not Found）—— 请确认部门服务地址是否正确",
+      "401": "A2A 鉴权失败（401 Unauthorized）—— 请检查 API 密钥配置",
+      "500": "A2A 服务内部错误（500 Internal Server Error）—— 请查看部门服务日志",
+    };
+    return msgs[code] ?? `A2A 通信失败（${code} ${text}）`;
+  }
+  // 连接被拒 / 超时等网络层错误
+  if (/[Cc]onnect(ion)?[Ee]rror|[Cc]onnection [Rr]efused/.test(raw))
+    return "A2A 部门服务无响应 —— 连接被拒绝，请确认服务已启动并监听正确端口";
+  if (/[Tt]imeout/.test(raw))
+    return "A2A 部门服务超时 —— 请检查服务状态或增大超时配置";
+  // 保底：截断过长内容，去掉 MDN 链接噪音
+  const clean = raw.replace(/For more information check:\s*https?:\/\/\S+/g, "").trim();
+  return clean.length > 120 ? clean.slice(0, 120) + "…" : clean;
+}
+
 // ── PL 思考中卡（计划生成 / 聚合阶段）──────────────────────────────────────────
 
 function PlThinkingCard({ message }: { message: string }) {
@@ -990,10 +1028,91 @@ function PlThinkingCard({ message }: { message: string }) {
   );
 }
 
+// ── 部门关键指标表 ───────────────────────────────────────────────────────────
+
+const _SEV_COLOR: Record<string, string> = {
+  critical: CC.emerg,
+  warn: CC.warn,
+  ok: CC.ok,
+  info: CC.muted2,
+};
+
+function MetricTable({ metrics, mcpCount = 0, onSourceClick }: {
+  metrics: DeptMetric[];
+  mcpCount?: number;                       // 有效 MCP 来源数（用于校验 source_idx）
+  onSourceClick?: (idx: number) => void;
+}) {
+  if (!metrics || metrics.length === 0) return null;
+  // 指标多于 3 条时用两列网格，压缩高度并拉近 label↔value
+  const twoCol = metrics.length > 3;
+  return (
+    <div style={{
+      marginBottom: 8, borderRadius: 7, overflow: "hidden",
+      border: `1px solid ${CC.line}`,
+      display: "grid",
+      gridTemplateColumns: twoCol ? "1fr 1fr" : "1fr",
+      gap: 1,
+      background: CC.line,   // gap 当作分隔线
+    }}>
+      {metrics.map((m, i) => {
+        const sev = m.severity ? _SEV_COLOR[m.severity] : undefined;
+        // 仅当 source_idx 落在有效 MCP 来源范围内才渲染角标，避免 LLM 越界编号造成"坏角标"
+        const validSrc = m.source_idx != null && m.source_idx >= 1 && m.source_idx <= mcpCount;
+        return (
+          <div key={m.label ?? i} style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "4px 8px", minWidth: 0,
+            background: CC.panel,
+          }}>
+            {/* 严重度圆点 */}
+            <span style={{
+              width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+              background: sev ?? "transparent",
+              border: sev ? "none" : `1px solid ${CC.muted2}`,
+            }} />
+            {/* 指标名（截断，避免撑宽） */}
+            <span style={{
+              fontSize: 11, color: CC.muted, flex: 1, minWidth: 0,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }} title={m.label}>
+              {m.label}
+            </span>
+            {/* 值 + 单位 */}
+            <span style={{ fontSize: 12, fontWeight: 700, color: sev ?? CC.text, whiteSpace: "nowrap", flexShrink: 0 }}>
+              {m.value}
+              {m.unit && (
+                <span style={{ fontSize: 9.5, fontWeight: 500, color: CC.muted, marginLeft: 2 }}>
+                  {m.unit}
+                </span>
+              )}
+            </span>
+            {/* MCP 来源跳转角标（仅有效编号） */}
+            {validSrc && onSourceClick && (
+              <button
+                onClick={() => onSourceClick(m.source_idx!)}
+                style={{
+                  fontSize: 8.5, fontWeight: 700, fontFamily: "monospace",
+                  color: MCP_COLOR, cursor: "pointer",
+                  padding: "0 3px", height: 15, borderRadius: 3,
+                  border: `1px solid color-mix(in oklab, ${MCP_COLOR} 28%, transparent)`,
+                  background: `color-mix(in oklab, ${MCP_COLOR} 12%, transparent)`,
+                  flexShrink: 0,
+                }}
+              >
+                M{m.source_idx}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── 部门报告卡 ───────────────────────────────────────────────────────────────
 
 function DeptReportCard({
-  code, name: _name, task, status, phase, elapsed_ms, summary, kvs, citations, mcp_sources, err_detail,
+  code, name: _name, task, status, phase, elapsed_ms, summary, facts, metrics, kvs, citations, mcp_sources, err_detail,
 }: Extract<CommandCard, { type: "dept_report" }>) {
   const toolSteps = phase === "exec"
     ? buildExecSteps(code, task)
@@ -1157,6 +1276,30 @@ function DeptReportCard({
           </div>
         )}
 
+        {/* ── 关键指标（done 后常驻显示，帮助指挥员快速了解资源状况）──────── */}
+        {/* 优先结构化 metrics 表格；缺失时降级为 key_facts chip 横排 */}
+        {isDone && status !== "error" && metrics && metrics.length > 0 ? (
+          <MetricTable metrics={metrics} mcpCount={mcp_sources?.length ?? 0} onSourceClick={handleMcpClick} />
+        ) : isDone && status !== "error" && facts && facts.length > 0 ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+            {facts.map((f, i) => {
+              const clean = f.replace(/^[-•*>\s]+/, "").replace(/\*\*/g, "").trim();
+              const short = clean.length > 55 ? clean.slice(0, 55) + "…" : clean;
+              if (!short) return null;
+              return (
+                <span key={i} style={{
+                  fontSize: 10.5, padding: "2px 8px", borderRadius: 99,
+                  background: `color-mix(in oklab, ${stripe} 9%, ${CC.panel2})`,
+                  border: `1px solid color-mix(in oklab, ${stripe} 22%, ${CC.line})`,
+                  color: CC.text2, display: "inline-block",
+                }}>
+                  {short}
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
+
         {/* ── 结果区域（done/error 时才展示）────────────────────────── */}
         {isDone && summary && status !== "error" && (
           <DeptMd
@@ -1198,9 +1341,9 @@ function DeptReportCard({
             marginTop: 8, padding: "6px 9px",
             background: `color-mix(in oklab, ${CC.emerg} 8%, transparent)`,
             border: `1px solid color-mix(in oklab, ${CC.emerg} 22%, transparent)`,
-            borderRadius: 5, fontFamily: "monospace", fontSize: 11, color: CC.emerg, lineHeight: 1.5,
+            borderRadius: 5, fontSize: 11, color: CC.emerg, lineHeight: 1.5,
           }}>
-            {err_detail}
+            {formatErrDetail(err_detail)}
           </div>
         )}
       </Card>
@@ -1246,14 +1389,18 @@ function HitlAnchorCard({ message }: { message: string }) {
 
 // ── 主导出 ───────────────────────────────────────────────────────────────────
 
-export function CardRenderer({ card }: { card: CommandCard }) {
+export function CardRenderer({ card, activeStepId, onStepSelect }: {
+  card: CommandCard;
+  activeStepId?: string | null;
+  onStepSelect?: (stepId: string) => void;
+}) {
   switch (card.type) {
     case "timestamp": return <TimestampCard label={card.label} />;
     case "user_msg": return <UserMsgCard content={card.content} operator={card.operator} />;
     case "pl_thinking": return <PlThinkingCard message={card.message} />;
     case "orch_reasoning": return <OrchReasoningCard think_lines={card.think_lines} summary={card.summary} incident={card.incident} dept_tasks={card.dept_tasks} />;
     case "handoff": return <HandoffCard from={card.from} to={card.to} label={card.label} payload={card.payload} />;
-    case "dispatch_plan": return <DispatchPlanCard agents={card.agents} progress={card.progress} />;
+    case "dispatch_plan": return <DispatchPlanCard agents={card.agents} progress={card.progress} activeStepId={activeStepId} onStepSelect={onStepSelect} />;
     case "dept_report": return <DeptReportCard  {...card} />;
     case "hitl_anchor": return <HitlAnchorCard message={card.message} />;
     default: return null;
