@@ -18,6 +18,8 @@ from .state import AgentState
 
 logger = logging.getLogger(__name__)
 
+_TOOL_RESULT_LIMIT = 8_000   # 单次 MCP 工具返回内容上限（字符），防止超长结果溢出上下文
+
 AGENT_CARD = {
     "name": "analyst",
     "description": "实时工具调用与数据分析：通过部门 MCP 工具直接查询实时数据（传感器报警、救护车状态、库存、信号灯、路线规划），并对结果进行推理和结构化输出",
@@ -158,16 +160,23 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                 "若任务未明确参数，根据当前上下文合理推断后直接调用。"
                 "即使资源部分不足，也必须调用写操作工具尝试执行（系统会返回实际履行结果），"
                 "不得因「资源不足」直接输出无法执行的结论而跳过调用。"
+                "\n**部门专属执行要求（强制，不得跳过）**："
+                "medical_ems 部门：查询 list_ambulances/get_hospital_capacity 后，必须调用 dispatch_ambulance 实际派遣救护车；"
+                "仅查询状态而不调用 dispatch_ambulance 属于执行不完整，不可接受。"
+                "traffic_control 部门：查询 list_intersections 后，必须调用 set_mode 或 apply_evacuation_plan 实际切换信号；"
+                "仅查询路口而不调用 set_mode/apply_evacuation_plan 属于执行不完整，不可接受。"
+                "fire_brigade 部门：查询 get_fire_stations/get_water_supplies 后，必须调用 dispatch_fire_trucks 实际调派消防车；"
+                "仅调用 set_fire_perimeter 设置警戒圈而不调用 dispatch_fire_trucks 属于执行不完整，不可接受。"
             )
         else:
             if _write_op_tool_names:
                 analyst_prompt += (
                     "\n\n**研判/评估模式约束**（写操作工具在执行时将被系统阻止）：\n"
                     "完成只读数据查询后输出评估结果。\n"
-                    "仅当用户任务本身明确要求**立即执行**写操作时（如含「办理调拨出库」「批量设置路口」「派遣救护车」「切换信号」等执行动词），"
+                    "仅当用户任务本身明确要求**立即执行**写操作时（如含「办理调拨出库」「批量设置路口」「派遣救护车」「切换信号」「调派消防车」「撤回消防车」等执行动词），"
                     "才在输出的最后一行（另起一行）写：\n"
                     "【HITL_REQUIRED】待执行：<操作名称和关键参数>（需 HITL 审批授权）\n"
-                    "若任务仅要求查询、评估或建议（如「给出建议」「分析是否满足」「查询状态」），不得添加此标记。"
+                    "若任务仅要求查询、评估或建议（如「给出建议」「评估能力」「推荐调派方案」「给出推荐方案」「分析是否满足」「查询状态」），不得添加此标记——「推荐/建议」后面跟着的操作名词不代表立即执行。"
                 )
 
         # ── 显式注入 Researcher 检索结论（避免 Analyst 忽略已有 KB 知识）────────
@@ -185,6 +194,9 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
             task_prompt += (
                 "\n\n[执行授权] HITL 已批准，写操作工具已解锁。"
                 "查询完资源/状态后必须立即调用写操作工具完成实际执行，不得仅输出建议。"
+                "medical_ems→必须调用 dispatch_ambulance；"
+                "traffic_control→必须调用 set_mode 或 apply_evacuation_plan；"
+                "fire_brigade→必须调用 dispatch_fire_trucks。"
             )
 
         # ── ReAct 多轮循环：支持工具间串行依赖（如先查传感器再算扩散半径）────
@@ -230,6 +242,9 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                             result = await mcp_tool_map[tool_name].ainvoke(tc["args"])
                             content = str(result)
                             logger.info("Analyst: MCP 工具 %r 返回 %d 字符", tool_name, len(content))
+                            if len(content) > _TOOL_RESULT_LIMIT:
+                                content = content[:_TOOL_RESULT_LIMIT] + f"\n…（结果过长已截断，原始 {len(content)} 字符）"
+                                logger.warning("Analyst: MCP 工具 %r 结果超限，截断至 %d 字符", tool_name, _TOOL_RESULT_LIMIT)
                             extract_map_update(tool_name, result, content, _map_updates, dept_code)
                         except Exception as exc:
                             content = f"工具 {tool_name} 调用失败: {exc}"
@@ -264,6 +279,9 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                 trajectory.append(HumanMessage(content=(
                     "你尚未调用任何写操作工具。根据以上查询结果，"
                     "请立即调用相应的写操作工具完成实际执行（已获授权，可直接调用）。"
+                    "medical_ems 必须调用 dispatch_ambulance；"
+                    "traffic_control 必须调用 set_mode 或 apply_evacuation_plan；"
+                    "fire_brigade 必须调用 dispatch_fire_trucks。"
                 )))
                 resp_sn: AIMessage = await llm_with_tools.ainvoke(trajectory)
                 trajectory.append(resp_sn)
@@ -298,6 +316,29 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                         answer = resp_final.content.strip()
                 elif resp_sn.content:
                     answer = resp_sn.content.strip()
+
+        # ── 研判阶段安全网：如果 LLM 调用了写操作工具但未输出 HITL_REQUIRED，自动注入。
+        # 依赖前面已填充的 _write_op_tool_names，避免再次解析 schema。
+        if not is_execution_task and "HITL_REQUIRED" not in answer and _write_op_tool_names:
+            called_write_tools = [
+                s["tool_name"] for s in _mcp_sources
+                if s["tool_name"] in _write_op_tool_names
+            ]
+            if called_write_tools:
+                answer += "\n【HITL_REQUIRED】待执行：" + "、".join(called_write_tools) + "（需 HITL 审批授权）"
+                logger.info(
+                    "Analyst: 安全网注入 HITL_REQUIRED（写操作工具已调用未标注：%s）",
+                    called_write_tools,
+                )
+
+        # ── 研判阶段安全网：剥除 LLM 幻觉的 HITL 标记（无写操作实际被调用/阻止时）。
+        # 场景：任务是"评估/推荐"，LLM 在分析中顺带写了 HITL_REQUIRED，但实际上没有调用写操作。
+        import re as _re
+        if not is_execution_task and "HITL_REQUIRED" in answer:
+            _called_write = {s["tool_name"] for s in _mcp_sources if s["tool_name"] in _write_op_tool_names}
+            if not _called_write:
+                answer = _re.sub(r'\n?【HITL_REQUIRED】[^\n]*', '', answer).strip()
+                logger.info("Analyst: 剥除幻觉 HITL_REQUIRED 标记（无写操作工具实际调用/阻止）")
 
         # mcp_client 在此处出作用域，连接自然关闭（工具调用已全部完成）
         analyst_count = state.get("analyst_count", 0) + 1

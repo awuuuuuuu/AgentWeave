@@ -1,12 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { CC, DEPT_ICONS, agentColor } from "./tokens";
+import { CC, DEPT_ICONS, DEPT_NAMES, agentColor } from "./tokens";
 import type { PlanStep } from "@/lib/agent-api";
-
-const DEPT_NAMES: Record<string, string> = {
-  EN: "环保局", ME: "医疗急救", TR: "交通管控", LG: "应急物资", SF: "企业安全",
-};
 
 interface PlanEditModalProps {
   steps: PlanStep[];

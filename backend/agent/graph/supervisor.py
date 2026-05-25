@@ -18,7 +18,7 @@ import logging
 import typing
 from typing import Any
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,14 +47,7 @@ def build_supervisor(
             description="当前立刻要激活的专家名称。任务已完成则填 '__end__'"
         )
         current_task: str = Field(
-            description=(
-                "发给当前 next 专家的具体指令（中文，100 字以内）。"
-                "只描述该专家需要完成的子任务，不包含其他专家的职责或整体目标。"
-                "【给 Researcher】：写成可直接用于知识库检索的具体问题，"
-                "包含核心实体和关键维度（判断条件、数值阈值、操作步骤、责任机构、时限等）；"
-                "禁止写成'检索X文档的具体内容'等泛化表述，要写清楚要找什么信息。"
-                "【给 Analyst】：说明需要调用哪类工具及查询的具体对象/参数。"
-            )
+            description="发给当前 next 专家的具体指令（中文，100字以内）。写法详见系统 prompt current_task 章节。"
         )
         message_to_user: str = Field(
             default="",
@@ -85,15 +78,23 @@ def build_supervisor(
                 "supervisor_count": supervisor_count,
             }
 
+        # 计算 HITL 相关状态（后续多处使用）
+        _hitl_msg_idx = max(
+            (i for i, m in enumerate(messages) if isinstance(m, AIMessage) and getattr(m, "name", "") == "hitl"),
+            default=-1,
+        )
+        _analyst_ran_after_hitl = _hitl_msg_idx >= 0 and any(
+            isinstance(m, AIMessage) and getattr(m, "name", "") == "analyst"
+            for m in messages[_hitl_msg_idx + 1:]
+        )
+
         _analyst_cnt = state.get("analyst_count", 0)
         if _analyst_cnt >= 1:
             _last_analyst = next(
                 (m for m in reversed(messages) if isinstance(m, AIMessage) and getattr(m, "name", "") == "analyst"),
                 None,
             )
-            _hitl_done = any(
-                isinstance(m, AIMessage) and getattr(m, "name", "") == "hitl" for m in messages
-            )
+            _hitl_done = _hitl_msg_idx >= 0
             if _last_analyst and not _hitl_done and "HITL_REQUIRED" in str(_last_analyst.content):
                 _hitl_line = next(
                     (line.strip() for line in str(_last_analyst.content).splitlines() if "HITL_REQUIRED" in line),
@@ -113,6 +114,19 @@ def build_supervisor(
                         "tool_name": "human_approval_required",
                     },
                 }
+
+        # HITL 完成但执行 analyst 尚未运行：强制路由 analyst 完成实际写操作
+        if _hitl_msg_idx >= 0 and not _analyst_ran_after_hitl:
+            logger.info(
+                "Supervisor [%d]: HITL 已批准但执行 analyst 未运行，强制路由 analyst",
+                supervisor_count,
+            )
+            return {
+                "next_agent": "analyst",
+                "task": state.get("task", ""),
+                "supervisor_count": supervisor_count,
+                "message_to_user": "",
+            }
 
         # 截取最近几条，并截断过长的消息内容，防止 Analyst 长答案撑爆 prompt
         raw_recent = messages[-SUPERVISOR_CONTEXT_WINDOW:]
@@ -168,9 +182,12 @@ def build_supervisor(
             fallback_next = "reporter" if (
                 state.get("researcher_count", 0) >= 1 or state.get("analyst_count", 0) >= 1
             ) else "researcher"
+            # When falling back to researcher, use the original user message as task
+            _user_msgs = [m for m in messages if isinstance(m, HumanMessage)]
+            _user_task = _user_msgs[-1].content if _user_msgs else ""
             decision = _RoutingDecision(
                 next=fallback_next,
-                current_task="整合已有信息输出最终答案",
+                current_task="整合已有信息输出最终答案" if fallback_next == "reporter" else _user_task,
                 message_to_user="",
                 reasoning="异常恢复",
             )
@@ -183,11 +200,14 @@ def build_supervisor(
             )
             decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
         elif decision.next == "analyst" and state.get("analyst_count", 0) >= 1:
-            logger.warning(
-                "Supervisor: 拦截重复路由 analyst (analyst_count=%d)，强制 reporter",
-                state.get("analyst_count", 0),
-            )
-            decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
+            if _hitl_msg_idx >= 0 and not _analyst_ran_after_hitl:
+                pass  # 允许：HITL 批准后第一次执行 analyst，不拦截
+            else:
+                logger.warning(
+                    "Supervisor: 拦截重复路由 analyst (analyst_count=%d)，强制 reporter",
+                    state.get("analyst_count", 0),
+                )
+                decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
         elif decision.next == "__end__" and (
             state.get("researcher_count", 0) >= 1 or state.get("analyst_count", 0) >= 1
         ):
@@ -202,6 +222,18 @@ def build_supervisor(
         ):
             logger.warning("Supervisor: HITL 已完成但 reporter 未运行，拦截 __end__ 强制 reporter")
             decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
+
+        # 清洗 current_task：当路由到 researcher 时，剥除"相关内容/详细内容"等泛化后缀
+        if decision.next == "researcher":
+            import re as _re
+            _task = decision.current_task or ""
+            _task = _re.sub(
+                r'[，,、\s]*(?:以及|和|及|与)?[一-鿿\w]{0,10}(?:相关|详细|全部|文档)内容[。．，\s]*$',
+                '', _task,
+            ).strip()
+            if _task and _task != decision.current_task:
+                logger.debug("Supervisor: 清洗 current_task 泛化后缀 %r → %r", decision.current_task[:60], _task[:60])
+                decision = decision.model_copy(update={"current_task": _task})
 
         logger.info(
             "Supervisor [%d/%d]: next=%s | reason=%r",

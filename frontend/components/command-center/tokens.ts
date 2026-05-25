@@ -30,19 +30,24 @@ export const CC = {
   agMe: "oklch(0.41 0.12 165)",   // ME 医疗急救 — 绿  ~8.8:1
   agTr: "oklch(0.52 0.14 65)",    // TR 交通管控 — 琥珀 ~5.5:1
   agLg: "oklch(0.40 0.14 255)",   // LG 应急物资 — 蓝  ~9.2:1
-  agSf: "oklch(0.37 0.15 22)",    // SF 企业安全 — 红  ~10.4:1
+  agFf: "oklch(0.46 0.20 32)",    // FF 消防救援 — 橙红 ~7.5:1
 } as const;
 
 /** 部门 emoji 图标（全局共用） */
 export const DEPT_ICONS: Record<string, string> = {
-  PL: "🎯", EN: "🌿", ME: "🏥", TR: "🚦", LG: "📦", SF: "🏭",
+  PL: "🎯", EN: "🌿", ME: "🏥", TR: "🚦", LG: "📦", FF: "🚒",
+};
+
+/** 部门显示名称（全局共用） */
+export const DEPT_NAMES: Record<string, string> = {
+  PL: "指挥中心", EN: "环保局", ME: "医疗急救", TR: "交通管控", LG: "应急物资", FF: "消防救援",
 };
 
 /** Agent 代码 → 颜色 */
 export function agentColor(code: string): string {
   const map: Record<string, string> = {
     PL: CC.agPl, EN: CC.agEn, ME: CC.agMe,
-    TR: CC.agTr, LG: CC.agLg, SF: CC.agSf,
+    TR: CC.agTr, LG: CC.agLg, FF: CC.agFf,
   };
   return map[code.toUpperCase()] ?? CC.muted;
 }

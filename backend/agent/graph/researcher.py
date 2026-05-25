@@ -246,8 +246,8 @@ def build_researcher(
         ]
 
         logger.info(
-            "Researcher: 生成答案 %d 字 | 引用 %d/%d 条 (cited_refs=%s, fallback=%s)",
-            len(answer), len(citations), len(docs), sorted(used_ids), not used_ids,
+            "Researcher: 生成答案 %d 字 | 引用 %d/%d 条 (inline_refs=%s, fallback=%s)",
+            len(answer), len(citations), len(docs), sorted(used_ids), len(citations) == 0,
         )
         return {
             "citations": citations,

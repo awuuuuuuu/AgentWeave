@@ -10,8 +10,8 @@ export interface McpSource {
 // ── Agent Fleet ────────────────────────────────────────────────────────────
 
 export interface AgentFleetEntry {
-  id: string;           // 'env' | 'med' | 'traf' | 'supply' | 'safety' | 'orch'
-  code: string;         // 'EN' | 'ME' | 'TR' | 'LG' | 'SF' | 'PL'
+  id: string;           // 'env' | 'med' | 'traf' | 'supply' | 'fire' | 'orch'
+  code: string;         // 'EN' | 'ME' | 'TR' | 'LG' | 'FF' | 'PL'
   name: string;         // 显示名称，如 '环保局'
   status: "idle" | "running" | "done" | "error";
   elapsed_ms?: number;

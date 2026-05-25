@@ -31,6 +31,12 @@ class WeaveState(TypedDict):
 
     # ── 事故输入 ────────────────────────────────────────────────────────────
     incident: str                       # 用户输入的事故描述
+
+    # ── 事故地点结构化坐标（由 location_disambig 节点或前端直接传入）──────────
+    incident_lat: Optional[float]           # 事故纬度（None = 未确认，仅靠文本描述）
+    incident_lng: Optional[float]           # 事故经度
+    incident_location_name: Optional[str]   # 确认后的完整地址（如"上海国际汽车城，嘉定区博园路7565号"）
+
     selected_dept_codes: list[str]      # 指挥官选定的参与部门
 
     # ── 部门 A2A 地址表（会话启动时从 DB 注入，避免在节点内访问 DB）──────────

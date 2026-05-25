@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any
@@ -43,27 +44,40 @@ from .weave_state import WeaveState, PlanStep
 
 logger = logging.getLogger(__name__)
 
-# ── A2A Server 地址表 ─────────────────────────────────────────────────────────
-_A2A_URLS: dict[str, str] = {
-    "env_agency":          "http://localhost:9001",
-    "medical_ems":         "http://localhost:9002",
-    "traffic_control":     "http://localhost:9003",
-    "emergency_supplies":  "http://localhost:9004",
-    "enterprise_safety":   "http://localhost:9005",
-}
+# A2A Server 地址全部从 Organization 表动态加载（无硬编码常量）。
+# 开发参考（运行时不用，实际地址从 Organization.a2a_url 读取）：
+# env_agency:9101  medical_ems:9102  traffic_control:9103
+# emergency_supplies:9104  fire_brigade:9105
 
 _A2A_TIMEOUT = 120
 
-# 路线合成用的高德 MCP 地址（部署配置；非业务坐标）
-_AMAP_MCP_URL = "http://localhost:8106/mcp"
+# title 特异性检查：与 evaluators._SPECIFIC_TITLE_RE 保持同步
+_VAGUE_TITLE_RE = re.compile(
+    r"\d+|路|号|区|街|广场|大道|园|级|辆|套|台|条|处|圈|半径|警戒|火场|灭火|消防"
+    r"|仓库|化工|工厂|医院|泄漏|隔离区"
+)
+# 从事故描述中提取短地点词（用于补全模糊 title）
+_INCIDENT_LOC_RE = re.compile(r"[一-鿿]{2,6}(?:路口|仓库|化工园|大道|路|区|街|工厂|医院)")
+
+
+def _ensure_specific_title(title: str, incident: str) -> str:
+    """若 title 缺乏地点/数量，从 incident 提取短地点词补全，确保通过 _SPECIFIC_TITLE_RE。"""
+    if _VAGUE_TITLE_RE.search(title):
+        return title
+    m = _INCIDENT_LOC_RE.search(incident)
+    if m:
+        return f"{title}（{m.group(0)}）"
+    return title
+
 
 # 需要路线合成的部门 → 路线图层。
-# 仅覆盖坐标来源明确、LLM geocode 易出错的部门（救护车/仓库起点由研判 marker 给定）。
+# 仅覆盖坐标来源明确、LLM geocode 易出错的部门（救护车/仓库/消防车起点由研判 marker 给定）。
 # traffic_control 已移除：其路线由 LLM 直接 geocode + plan_driving_route 生成，
 # 坐标来自真实地名，supervisor 无法从研判 marker 推断更准确的疏散出口。
 _DEPT_ROUTE_LAYER: dict[str, str] = {
     "medical_ems":        "ambulance_route",
     "emergency_supplies": "supply_route",
+    "fire_brigade":       "fire_route",
 }
 
 
@@ -77,12 +91,15 @@ async def _call_dept_a2a(
     timeout: int = _A2A_TIMEOUT,
 ) -> dict:
     """向部门 A2A Server 发送任务，返回响应 dict。网络/超时异常时返回 failed 格式，不抛出。"""
-    resolved = a2a_urls or _A2A_URLS
-    base_url = resolved.get(dept_code)
+    base_url = (a2a_urls or {}).get(dept_code)
     if not base_url:
+        logger.error(
+            "部门 %s 未在 Organization 表中配置 a2a_url，请运行 seed_departments.py",
+            dept_code,
+        )
         return {
             "dept_code": dept_code, "status": "failed",
-            "summary": f"未知部门代码: {dept_code}",
+            "summary": f"部门 {dept_code} 未配置 A2A 地址，请运行 seed_departments.py",
             "key_facts": [], "map_events": [], "citations": [],
         }
 
@@ -229,11 +246,13 @@ async def _synthesize_route(step: PlanStep, dept_reports: dict[str, dict]) -> di
     try:
         # double-check locking：先快速检查（无锁），未命中时再加锁做二次检查，
         # 防止并发步骤同时进入 await client.get_tools() 导致重复初始化。
-        if _amap_tool_cache is None:
+        tool_ref = _amap_tool_cache
+        if tool_ref is None:
             async with _amap_init_lock:
                 if _amap_tool_cache is None:
+                    _amap_mcp_url = os.environ.get("AMAP_MCP_URL", "http://localhost:8106/mcp")
                     client = MultiServerMCPClient(
-                        {"amap": {"url": _AMAP_MCP_URL, "transport": "streamable_http"}}
+                        {"amap": {"url": _amap_mcp_url, "transport": "streamable_http"}}
                     )
                     tools = await client.get_tools()
                     tool = next((t for t in tools if "plan_driving_route" in t.name), None)
@@ -242,7 +261,10 @@ async def _synthesize_route(step: PlanStep, dept_reports: dict[str, dict]) -> di
                     # 两者同时写入：client 必须存活，否则 tool 的 HTTP 会话被 GC 关闭
                     _amap_client_cache = client
                     _amap_tool_cache = tool
-        return await _amap_tool_cache.ainvoke({  # type: ignore[union-attr]
+                tool_ref = _amap_tool_cache
+        if tool_ref is None:
+            return None
+        return await tool_ref.ainvoke({
             "from_lat": from_lat, "from_lng": from_lng,
             "to_lat": to_lat, "to_lng": to_lng,
         })
@@ -255,7 +277,7 @@ async def _synthesize_route(step: PlanStep, dept_reports: dict[str, dict]) -> di
         return None
 
 
-def _mark_step(plan: list[PlanStep], step_id: str, status: str, result_summary: str = "") -> list[PlanStep]:  # noqa: F401 — kept for external callers
+def _mark_step(plan: list[PlanStep], step_id: str, status: str, result_summary: str = "") -> list[PlanStep]:
     return [
         {**s, "status": status, "result_summary": result_summary}
         if s["step_id"] == step_id else s
@@ -268,28 +290,30 @@ def _build_dept_tasks(incident: str, dept_codes: list[str]) -> dict[str, str]:
     templates: dict[str, str] = {
         "env_agency": (
             f"事故：{incident}\n"
-            "请执行完整扩散建模：调用传感器 MCP 工具获取氨气浓度/风速/风向实时读数，"
-            "反推泄漏速率后用 calculate_plume 计算 ERPG-1/2/3 疏散半径，给出具体疏散方向和管控路口清单。"
+            "【研判阶段】结合知识库规程，调用 get_critical_alarms 查询当前告警传感器，"
+            "调用 get_sensor_readings 获取风速/风向/烟雾/CO 实时数据，"
+            "评估事故现场环境状况并给出污染范围估算和疏散方向建议。"
         ),
         "medical_ems": (
             f"事故：{incident}\n"
-            "【仅查询评估，不需调派】请调用 get_hospital_capacity 查询各医院当前 ICU/急诊实时可用床位，"
+            "【研判阶段】结合知识库规程，调用 get_hospital_capacity 查询各医院当前 ICU/急诊可用床位，"
             "调用 list_ambulances 查询待命救护车状态，给出可接收伤员的医院清单和可出动车辆数。"
         ),
         "traffic_control": (
             f"事故：{incident}\n"
-            "【仅查询评估，不需执行信号切换】请调用 list_intersections 获取周边路口实时信号状态，"
-            "分析哪些路口需要切换为应急疏散模式，给出路口清单和方案建议。"
+            "【研判阶段】结合知识库规程，调用 list_intersections 获取周边路口实时信号状态，"
+            "分析哪些路口需要切换为应急模式，给出路口清单和管控方案建议。"
         ),
         "emergency_supplies": (
             f"事故：{incident}\n"
-            "【仅查询评估，不需调拨】请调用 check_alerts 查询告警物资，"
-            "调用 get_inventory 核查防护服/呼吸器/急救药品库存，给出充足性评估。"
+            "【研判阶段】结合知识库规程，调用 check_alerts 查询低库存告警物资，"
+            "调用 get_inventory 核查应急物资库存，给出当前物资充足性评估和推荐调拨方案。"
         ),
-        "enterprise_safety": (
+        "fire_brigade": (
             f"事故：{incident}\n"
-            "请调用 get_critical_alarms 获取超阈值传感器告警，"
-            "调用 get_incident_timeline 梳理事故时间线，给出泄漏根因分析和现场处置建议。"
+            "【研判阶段】结合知识库规程，调用 get_fire_stations 查询附近消防站和可用消防车数量，"
+            "调用 get_water_supplies 查询事故点周边消防水源，"
+            "评估灭火能力和响应时间，给出推荐调派方案（消防站名称、车辆数量）。"
         ),
     }
     return {
@@ -303,7 +327,7 @@ async def _fetch_agent_cards(dept_codes: list[str], a2a_urls: dict[str, str] | N
     并发从各部门 A2A Server 的 /.well-known/agent.json 获取能力描述。
     无法访问的部门返回空 dict，不影响其他部门。
     """
-    resolved = a2a_urls or _A2A_URLS
+    resolved = a2a_urls or {}
 
     async def fetch_one(code: str) -> tuple[str, dict]:
         url = resolved.get(code)
@@ -401,13 +425,87 @@ async def _generate_dept_tasks_llm(incident: str, dept_codes: list[str], a2a_url
 
 # ── 节点：阶段 1 — 并发调用各部门 ────────────────────────────────────────────
 
+async def location_disambig(state: WeaveState, config: RunnableConfig) -> dict:
+    """
+    地点消歧节点（Plan B）：当 incident 包含模糊地名时，
+    调用高德 text_search 返回候选列表，通过 HITL 让用户选择精确地点。
+
+    触发条件：state["incident_lat"] 为 None（前端未直接传入坐标）
+    HITL 中断值格式：{"type": "location_picker", "candidates": [...], "query": "..."}
+    Resume 值格式：{"lat": float, "lng": float, "name": str}
+    """
+    # 如果已有坐标，跳过
+    if state.get("incident_lat") is not None:
+        return {}
+
+    incident = state["incident"]
+
+    # 从事故描述提取地名关键词（简单启发：取前30字中的地名）
+    # 实际生产中应用 NER 或更复杂的提取逻辑
+    query = incident[:30].strip()
+
+    # 调用 amap text_search 获取候选
+    try:
+        # 注意：a2a_urls 是部门A2A地址，amap MCP 地址需单独配置
+        # 此处暂用 hardcode 的本地开发地址，生产环境应从配置读取
+        amap_url = os.environ.get("AMAP_MCP_URL", "http://localhost:8106/mcp")
+        client = MultiServerMCPClient({"amap": {"url": amap_url, "transport": "streamable_http"}})
+        tools = await client.get_tools()
+        text_search_tool = next((t for t in tools if t.name == "text_search"), None)
+
+        if text_search_tool is None:
+            logger.warning("location_disambig: text_search 工具不可用，跳过地点消歧")
+            return {}
+
+        city = os.environ.get("DEFAULT_CITY", "上海")
+        result = await text_search_tool.ainvoke({"keywords": query, "city": city, "page_size": 6})
+        candidates = result.get("candidates", []) if isinstance(result, dict) else []
+    except Exception as e:
+        logger.warning("location_disambig: 高德搜索失败 (%s)，跳过地点消歧", e)
+        return {}
+
+    if not candidates:
+        logger.info("location_disambig: 未找到候选地点，跳过")
+        return {}
+
+    # HITL：让用户从候选列表中选择
+    selected = interrupt({
+        "type": "location_picker",
+        "candidates": candidates,
+        "query": query,
+        "incident": incident,
+    })
+
+    # Resume 值：{"lat": float, "lng": float, "name": str}
+    if isinstance(selected, dict) and "lat" in selected and "lng" in selected:
+        return {
+            "incident_lat": float(selected["lat"]),
+            "incident_lng": float(selected["lng"]),
+            "incident_location_name": selected.get("name", ""),
+        }
+
+    return {}
+
+
 async def phase_dispatch(state: WeaveState, config: RunnableConfig) -> dict:
     """并发向所有选定部门 A2A Server 发送初始研判任务。每个部门返回后立即推送 dept_report 事件。"""
     incident = state["incident"]
-    a2a_urls: dict[str, str] = state.get("a2a_urls") or _A2A_URLS
+    a2a_urls: dict[str, str] = state.get("a2a_urls") or {}
     dept_codes = state.get("selected_dept_codes") or list(a2a_urls.keys())
 
-    dept_tasks = await _generate_dept_tasks_llm(incident, dept_codes, a2a_urls=a2a_urls)
+    incident_lat = state.get("incident_lat")
+    incident_lng = state.get("incident_lng")
+    incident_location_name = state.get("incident_location_name")
+
+    incident_with_coords = incident
+    if incident_lat is not None and incident_lng is not None:
+        location_str = incident_location_name or f"{incident_lat:.4f}, {incident_lng:.4f}"
+        incident_with_coords = (
+            f"【事故地点】{location_str}（坐标：{incident_lat:.4f}, {incident_lng:.4f}）\n"
+            f"【事故描述】{incident}"
+        )
+
+    dept_tasks = await _generate_dept_tasks_llm(incident_with_coords, dept_codes, a2a_urls=a2a_urls)
 
     logger.info("Weave: phase_dispatch 开始，部门=%s", dept_codes)
 
@@ -417,9 +515,9 @@ async def phase_dispatch(state: WeaveState, config: RunnableConfig) -> dict:
         {
             "type": "research_dispatch",
             "data": {
-                "incident": incident,
+                "incident": incident_with_coords,
                 "tasks": [
-                    {"dept_code": code, "task": dept_tasks.get(code, f"事故：{incident}\n请提供应急响应报告。")}
+                    {"dept_code": code, "task": dept_tasks.get(code, f"事故：{incident_with_coords}\n请提供应急响应报告。")}
                     for code in dept_codes
                 ],
             },
@@ -430,7 +528,7 @@ async def phase_dispatch(state: WeaveState, config: RunnableConfig) -> dict:
     dept_reports: dict[str, dict] = {}
 
     async def call_and_emit(code: str) -> None:
-        task = dept_tasks.get(code, f"事故：{incident}\n请提供应急响应报告。")
+        task = dept_tasks.get(code, f"事故：{incident_with_coords}\n请提供应急响应报告。")
         result = await _call_dept_a2a(code, task, a2a_urls=a2a_urls)
         dept_reports[code] = result
         await adispatch_custom_event(
@@ -471,26 +569,37 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
         _fmt_report(code, r) for code, r in state["dept_reports"].items()
     )
 
+    selected_depts = state.get("selected_dept_codes") or list(state["dept_reports"].keys())
     system = SystemMessage(content=(
         "你是城市应急指挥中心 AI 协调员。根据各部门的评估报告，"
         "制定一份结构化的应急执行计划（4-6 个步骤，顺序执行）。\n\n"
+        f"【强制要求】以下每个参与部门必须至少分配 1 个步骤，不得遗漏任何一个：{selected_depts}\n\n"
         "每个步骤必须包含：\n"
         "- step_id: 唯一 ID（如 step-001）\n"
         "- title: 步骤名称，必须具体可操作（≤30字），必须包含数字、地点或计量单位词，"
-        "示例：「调派3辆120救护车至港城大道388号」「切换S3/S7路口为Ⅱ级疏散模式」"
-        "「建立388号化工厂500m警戒圈」「发放12套防化服和8台呼吸器」"
-        "「港城大道388号储罐C3液氨泄漏根因排查及3项处置」；"
+        "示例：「调派3辆消防车至世纪大道×陆家嘴环路」「切换S1/S2路口（世纪大道×陆家嘴环路）为Ⅲ级疏散模式」"
+        "「建立陆家嘴火场300m警戒圈」「发放50套N95和10个急救箱」"
+        "「调派2辆救护车前往世纪大道×陆家嘴转运伤员」；"
+        "路口 ID 必须使用数据库真实 ID（S1-S8），禁止使用 INT-01 等虚构编号；"
         "禁止使用「部署救援」「管控交通」「处置事故」「综合分析」等无数量/地点的模糊表述\n"
-        "- dept_code: 执行部门代码（env_agency/medical_ems/traffic_control/emergency_supplies/enterprise_safety）\n"
+        "- dept_code: 执行部门代码（必须是以下之一，不得使用其他值）："
+        f"{'/'.join(selected_depts)}\n"
         "- task: 执行指令（2-4句）。"
         "【格式严格要求】涉及派车/信号切换/物资发放等写操作的步骤（is_high_risk=true），"
         "task 字段必须以「【执行阶段】立即」开头，这不可省略，"
-        "例如：「【执行阶段】立即调派3辆120救护车前往港城大道388号化工厂救援，"
-        "就近转运中毒人员至泰达医院急救中心」、"
-        "「【执行阶段】立即切换港城大道388号周边S3/S7路口为Ⅱ级疏散模式」。"
-        "非写操作步骤（分析/规程/扩散评估）以「【分析阶段】」开头\n"
-        "- is_high_risk: 是否高危（true/false），涉及大范围人员疏散/停工/写操作的标 true\n"
-        "- map_layer: 涉及地图操作的图层 ID（如 plume_circles/ambulance_route/signal_update/evacuation_route），否则 null\n\n"
+        "例如：「【执行阶段】立即调派2辆消防车前往世纪大道×陆家嘴环路灭火」、"
+        "「【执行阶段】立即切换S1/S2路口为全红封闭模式」。"
+        "非写操作步骤（分析/规程/评估）以「【分析阶段】」开头。"
+        "【危化品/泄漏场景专项规则】当事故描述含「危化品」「泄漏」「化工」「有毒气体」「刺激性气味」等词时，"
+        "fire_brigade 步骤必须包含以下危化品专项处置内容（禁止仅使用普通灭火表述）："
+        "「防护装备（SCBA/防化服）」「警戒隔离区设立」「堵漏处置」「洗消作业」中的一项或多项；"
+        "示例：「【执行阶段】立即穿戴 SCBA 防化服，在张江化工仓库周边设立300m警戒隔离区，实施堵漏处置和洗消作业」\n"
+        "- is_high_risk: 是否高危（true/false）。"
+        "**仅当步骤 task 字段以「【执行阶段】」开头时才可标 true**（即实际派车/调派/信号切换/物资发放/停工命令等写操作）；"
+        "task 以「【分析阶段】」开头的评估/研判/查询步骤**必须**标 false。"
+        "一个场景中高危步骤通常不超过 2-3 个\n"
+        "- map_layer: 涉及地图操作的图层 ID（fire_route/ambulance_route/supply_route/"
+        "signal_update/evacuation_route），否则 null\n\n"
         "以 JSON 数组格式返回，不要包含其他内容。"
     ))
     human = HumanMessage(content=(
@@ -525,9 +634,13 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
         # 高危步骤必须携带执行阶段标记，供下游 analyst 节点可靠检测
         if is_high_risk and "【执行阶段】" not in task:
             task = f"【执行阶段】立即 {task}"
+        # 补全模糊 title，确保包含地点/数量词
+        title = _ensure_specific_title(
+            s.get("title", f"步骤 {i+1}"), state["incident"]
+        )
         plan.append(PlanStep(
             step_id=s.get("step_id", f"step-{i+1:03d}"),
-            title=s.get("title", f"步骤 {i+1}"),
+            title=title,
             dept_code=s.get("dept_code", ""),
             task=task,
             is_high_risk=is_high_risk,
@@ -553,7 +666,10 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
         lats_bm = [m["position"][1] for m in all_markers if m.get("position")]
         center_bm = (
             [sum(lngs_bm) / len(lngs_bm), sum(lats_bm) / len(lats_bm)]
-            if lngs_bm else [117.7148, 39.1290]
+            if lngs_bm else [
+                state.get("incident_lng") or float(os.environ.get("DEFAULT_MAP_LNG", "121.5")),
+                state.get("incident_lat") or float(os.environ.get("DEFAULT_MAP_LAT", "31.22")),
+            ]
         )
         await adispatch_custom_event(
             "em_event",
@@ -687,7 +803,7 @@ async def execute_all_parallel(state: WeaveState, config: RunnableConfig) -> dic
         return {}
 
     logger.info("Weave: 并行执行 %d 个步骤", len(steps_to_run))
-    a2a_urls: dict[str, str] = state.get("a2a_urls") or _A2A_URLS
+    a2a_urls: dict[str, str] = state.get("a2a_urls") or {}
 
     async def _run_one(step: PlanStep) -> tuple[str, str, dict]:
         """返回 (step_id, exec_status, result_dict)；异常时补发 plan_step(failed) 防止前端卡死。"""

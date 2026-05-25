@@ -16,14 +16,6 @@ from __future__ import annotations
 
 import json as _json
 
-# 路口坐标表（与 demo/city_state.py 种子数据保持一致；两处须同步更新）
-_ISECT_COORDS: dict[str, tuple[float, float]] = {
-    "S1": (39.1235, 117.7120), "S2": (39.1210, 117.7100),
-    "S3": (39.1195, 117.7082), "S4": (39.1267, 117.7200),
-    "S5": (39.1340, 117.7082), "S6": (39.1380, 117.7178),
-    "S7": (39.1130, 117.7380), "S8": (39.1310, 117.7212),
-}
-
 
 def _parse_list_result(result: object, content: str) -> list[dict]:
     """将 MCP 工具调用结果健壮地解析为 list[dict]。
@@ -184,7 +176,7 @@ def extract_map_update(
         if circles:
             axis = parsed_p.get("plume_axis_deg", 0)
             out.append({
-                "title": f"氨气扩散范围（轴向{axis:.0f}°）",
+                "title": f"污染物扩散范围（轴向{axis:.0f}°）",
                 "center": [float(lng_p), float(lat_p)],
                 "zoom": 13,
                 "circles": circles,
@@ -310,7 +302,7 @@ def extract_map_update(
                 continue
             sid = item.get("id", "")
             mode_ep = str(item.get("mode", "正常"))
-            coords_ep = _ISECT_COORDS.get(sid)
+            coords_ep = (item.get("lat"), item.get("lng")) if item.get("lat") and item.get("lng") else None
             if not coords_ep:
                 continue
             lat_ep, lng_ep = coords_ep
@@ -415,6 +407,140 @@ def extract_map_update(
             })
         return
 
+    # ── get_fire_stations → 🚒 消防站位置标记 ─────────────────────────────────
+    if "get_fire_stations" in tool_name:
+        items_fs: list[dict] = _parse_list_result(result, content)
+        markers_fs = [
+            {
+                "position": [float(r["lng"]), float(r["lat"])],
+                "label": str(r.get("name", r.get("id", "?"))),
+                "icon": "🚒",
+                "meta": f"可用:{r.get('available_trucks',0)}辆 响应:{r.get('response_time_min',0)}min",
+            }
+            for r in items_fs
+            if isinstance(r, dict) and r.get("lat") and r.get("lng")
+        ]
+        if markers_fs:
+            lngs_fs = [m["position"][0] for m in markers_fs]
+            lats_fs = [m["position"][1] for m in markers_fs]
+            out.append({
+                "title": "附近消防站",
+                "center": [sum(lngs_fs) / len(lngs_fs), sum(lats_fs) / len(lats_fs)],
+                "zoom": 12,
+                "markers": markers_fs,
+                "layer": "resources",
+            })
+        return
+
+    # ── get_water_supplies → 💧 消防水源标记 ─────────────────────────────────
+    if "get_water_supplies" in tool_name:
+        items_ws: list[dict] = _parse_list_result(result, content)
+        markers_ws = [
+            {
+                "position": [float(r["lng"]), float(r["lat"])],
+                "label": str(r.get("name", r.get("id", "?"))),
+                "icon": "💧",
+                "meta": f"{r.get('capacity_tons',0)}吨 距{r.get('distance_km',0):.1f}km",
+            }
+            for r in items_ws
+            if isinstance(r, dict) and r.get("lat") and r.get("lng")
+        ]
+        if markers_ws:
+            lngs_ws = [m["position"][0] for m in markers_ws]
+            lats_ws = [m["position"][1] for m in markers_ws]
+            out.append({
+                "title": "周边消防水源",
+                "center": [sum(lngs_ws) / len(lngs_ws), sum(lats_ws) / len(lats_ws)],
+                "zoom": 13,
+                "markers": markers_ws,
+                "layer": "resources",
+            })
+        return
+
+    # ── dispatch_fire_trucks → 🚒 消防车出发路线（from_lat/from_lng → dest）──
+    if "dispatch_fire_trucks" in tool_name:
+        parsed_ft: dict | None = None
+        if isinstance(result, dict):
+            parsed_ft = result
+        elif isinstance(result, list) and result:
+            first_ft = result[0]
+            text_ft = (
+                getattr(first_ft, "text", None)
+                or (first_ft.get("text") if isinstance(first_ft, dict) else None)
+                or str(first_ft)
+            )
+            try:
+                parsed_ft = _json.loads(text_ft)
+            except Exception:
+                pass
+        if not isinstance(parsed_ft, dict):
+            try:
+                parsed_ft = _json.loads(content)
+            except Exception:
+                return
+        if isinstance(parsed_ft, dict):
+            from_lat = parsed_ft.get("from_lat")
+            from_lng = parsed_ft.get("from_lng")
+            dest_lat = parsed_ft.get("dest_lat")
+            dest_lng = parsed_ft.get("dest_lng")
+            if from_lat and from_lng and dest_lat and dest_lng:
+                truck_count = parsed_ft.get("truck_count", "?")
+                station_id  = parsed_ft.get("station_id", "?")
+                out.append({
+                    "title": f"消防车调派：{station_id} → 事故现场（{truck_count}辆）",
+                    "center": [
+                        (float(from_lng) + float(dest_lng)) / 2,
+                        (float(from_lat) + float(dest_lat)) / 2,
+                    ],
+                    "zoom": 13,
+                    "markers": [
+                        {"position": [float(from_lng), float(from_lat)], "label": station_id, "icon": "🚒"},
+                        {"position": [float(dest_lng), float(dest_lat)], "label": "事故现场", "icon": "🔥"},
+                    ],
+                    "layer": "fire_route",
+                })
+        return
+
+    # ── set_fire_perimeter → 🔴 火场警戒圈 ───────────────────────────────────
+    if "set_fire_perimeter" in tool_name:
+        parsed_fp: dict | None = None
+        if isinstance(result, dict):
+            parsed_fp = result
+        elif isinstance(result, list) and result:
+            first_fp = result[0]
+            text_fp = (
+                getattr(first_fp, "text", None)
+                or (first_fp.get("text") if isinstance(first_fp, dict) else None)
+                or str(first_fp)
+            )
+            try:
+                parsed_fp = _json.loads(text_fp)
+            except Exception:
+                pass
+        if not isinstance(parsed_fp, dict):
+            try:
+                parsed_fp = _json.loads(content)
+            except Exception:
+                return
+        if isinstance(parsed_fp, dict):
+            clat = parsed_fp.get("center_lat")
+            clng = parsed_fp.get("center_lng")
+            radius = parsed_fp.get("radius_m", 200)
+            if clat and clng:
+                out.append({
+                    "title": f"火场警戒圈（半径{radius}m）",
+                    "center": [float(clng), float(clat)],
+                    "zoom": 15,
+                    "circles": [{
+                        "center": [float(clng), float(clat)],
+                        "radius": float(radius),
+                        "color": "#ef4444",
+                        "label": "警戒区",
+                    }],
+                    "layer": "cordon",
+                })
+        return
+
     # ── get_incident_timeline → 🏭 事故源点（物理泄漏位置，区别于 ERPG 圆心）──────
     if "get_incident_timeline" in tool_name:
         parsed_it: dict | None = None
@@ -493,6 +619,7 @@ def extract_map_update(
             "medical_ems":        ("ME 派遣路线", "🚑"),
             "traffic_control":    ("TR 疏散通道", "🚓"),
             "emergency_supplies": ("LG 物资运输", "📦"),
+            "fire_brigade":       ("FF 消防路线", "🚒"),
         }
         route_title, dest_icon = _DEPT_ROUTE_LABEL.get(dept_code, ("路线规划", "📍"))
         dist_m = parsed.get("distance_m", 0)

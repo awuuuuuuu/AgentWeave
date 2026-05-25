@@ -28,16 +28,16 @@ const DEPT_META: Record<string, { code: string; name: string }> = {
   medical_ems:        { code: "ME", name: "医疗急救" },
   traffic_control:    { code: "TR", name: "交通管控" },
   emergency_supplies: { code: "LG", name: "应急物资" },
-  enterprise_safety:  { code: "SF", name: "企业安全" },
+  fire_brigade:       { code: "FF", name: "消防救援" },
 };
 
-// 研判阶段固定顺序（与 weave_supervisor.py _A2A_URLS 顺序一致）
+// 研判阶段固定顺序（与 weave_supervisor.py 路由顺序一致）
 const RESEARCH_DEPTS = [
   { dept_code: "env_agency",         code: "EN", name: "环保局" },
   { dept_code: "medical_ems",        code: "ME", name: "医疗急救" },
   { dept_code: "traffic_control",    code: "TR", name: "交通管控" },
   { dept_code: "emergency_supplies", code: "LG", name: "应急物资" },
-  { dept_code: "enterprise_safety",  code: "SF", name: "企业安全" },
+  { dept_code: "fire_brigade",       code: "FF", name: "消防救援" },
 ];
 
 function deptMeta(dept_code: string) {
