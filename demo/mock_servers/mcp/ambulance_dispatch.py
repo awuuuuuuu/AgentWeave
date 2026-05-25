@@ -53,7 +53,7 @@ async def dispatch_ambulance(
         ambulance_id: 救护车编号（如 "A3"）
         dest_lat: 目的地纬度
         dest_lng: 目的地经度
-        patient_type: 伤员类型（如 "重度氨中毒" "轻伤" 等）
+        patient_type: 伤员类型（如 "车祸外伤" "烧伤" "心梗" 等）
 
     Returns:
         更新后的调度记录
@@ -67,8 +67,13 @@ async def dispatch_ambulance(
         row = await cur.fetchone()
         if not row:
             raise ValueError(f"救护车 {ambulance_id} 不存在")
-        if dict(row)["status"] == "出车":
+        ambulance = dict(row)
+        if ambulance["status"] == "出车":
             raise ValueError(f"救护车 {ambulance_id} 当前已在执行任务，无法派遣")
+
+        # 保存出发坐标（派遣前的当前位置，供路线规划使用）
+        from_lat = ambulance["lat"]
+        from_lng = ambulance["lng"]
 
         await db.execute(
             """UPDATE ambulances
@@ -85,7 +90,14 @@ async def dispatch_ambulance(
 
     return {
         **updated,
+        "from_lat": from_lat,
+        "from_lng": from_lng,
         "message": f"已派遣 {ambulance_id} 前往 ({dest_lat}, {dest_lng})，接送 {patient_type} 伤员",
+        "map_marker": {
+            "icon": "🚑",
+            "position": [from_lng, from_lat],
+            "label": ambulance_id,
+        },
     }
 
 

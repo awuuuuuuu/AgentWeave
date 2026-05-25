@@ -5,7 +5,7 @@
 - plan_driving_route: 驾车路线规划（调用高德 REST API v3）
 - geocode: 地理编码（地址 → 坐标）
 
-需要环境变量 AMAP_API_KEY。
+需要环境变量 AMAP_API_KEY 或 AMAP_SERVICE_KEY（两者均可）。
 """
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ _AMAP_BASE = "https://restapi.amap.com/v3"
 
 
 def _get_key() -> str:
-    key = os.environ.get("AMAP_API_KEY", "")
+    key = os.environ.get("AMAP_API_KEY", "") or os.environ.get("AMAP_SERVICE_KEY", "")
     if not key:
-        raise RuntimeError("环境变量 AMAP_API_KEY 未设置")
+        raise RuntimeError("环境变量 AMAP_API_KEY 或 AMAP_SERVICE_KEY 未设置")
     return key
 
 
@@ -134,6 +134,117 @@ async def geocode(address: str) -> dict:
         "lat": float(lat_str),
         "lng": float(lng_str),
         "formatted_address": geo.get("formatted_address", address),
+    }
+
+
+@mcp.tool()
+async def text_search(keywords: str, city: str = "上海", page_size: int = 8) -> dict:
+    """POI 文本搜索，用于事故地点消歧。
+
+    Args:
+        keywords: 搜索关键词（如"陆家嘴"、"世纪公园"）
+        city: 城市名称（默认"上海"）
+        page_size: 最多返回条数（默认8，最大25）
+
+    Returns:
+        dict: {"candidates": [{"name", "address", "lat", "lng", "type"}], "query", "city"}
+    """
+    key = _get_key()
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(
+            f"{_AMAP_BASE}/place/text",
+            params={
+                "keywords": keywords,
+                "city": city,
+                "output": "json",
+                "offset": min(page_size, 25),
+                "key": key,
+                "extensions": "base",
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    candidates: list[dict] = []
+    for p in data.get("pois", []) or []:
+        loc = p.get("location", "")
+        if "," not in loc:
+            continue
+        try:
+            lng_str, lat_str = loc.split(",", 1)
+            candidates.append({
+                "name":    p.get("name", ""),
+                "address": p.get("address", "") or p.get("name", ""),
+                "lat":     float(lat_str),
+                "lng":     float(lng_str),
+                "type":    p.get("type", ""),
+            })
+        except ValueError:
+            continue
+
+    return {"candidates": candidates, "query": keywords, "city": city}
+
+
+@mcp.tool()
+async def nearby_search(
+    keywords: str,
+    lat: float,
+    lng: float,
+    radius: int = 3000,
+    page_size: int = 10,
+) -> dict:
+    """周边 POI 搜索（高德 /v3/place/around）。供 Agent 发现事故点附近的地点。
+
+    Args:
+        keywords: 搜索类型，如 "医院"/"消防局"/"学校"/"加油站"
+        lat: 中心点纬度
+        lng: 中心点经度
+        radius: 搜索半径（米），最大 50000，默认 3000
+        page_size: 最多返回条数，默认 10，最大 25
+
+    Returns:
+        {"pois": [{"name", "address", "lat", "lng", "type", "distance_m"}], "query", "center"}
+    """
+    key = _get_key()
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(
+            f"{_AMAP_BASE}/place/around",
+            params={
+                "key": key,
+                "location": f"{lng},{lat}",
+                "keywords": keywords,
+                "radius": min(radius, 50000),
+                "output": "json",
+                "offset": min(page_size, 25),
+                "extensions": "base",
+                "sortrule": "distance",
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    pois: list[dict] = []
+    for p in data.get("pois", []) or []:
+        loc = p.get("location", "")
+        if "," not in loc:
+            continue
+        try:
+            lng_str, lat_str = loc.split(",", 1)
+            pois.append({
+                "name":       p.get("name", ""),
+                "address":    p.get("address", "") or p.get("name", ""),
+                "lat":        float(lat_str),
+                "lng":        float(lng_str),
+                "type":       p.get("type", ""),
+                "distance_m": int(p.get("distance", 0) or 0),
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return {
+        "pois": pois,
+        "query": keywords,
+        "center": {"lat": lat, "lng": lng},
     }
 
 

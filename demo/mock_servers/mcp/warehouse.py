@@ -7,9 +7,9 @@
 - allocate_custom: 自定义扣减物资
 - check_alerts: 查询低于预警线的物资
 
-标准调拨包（天津滨海新区应急物资储备清单）：
-  Ⅲ级：防毒面具10 + 防化服5 + 空气呼吸器5 + 急救箱10
-  Ⅱ级：防毒面具20 + 防化服10 + 空气呼吸器10 + 急救箱20 + 医用氧气瓶10
+标准调拨包（上海市浦东新区应急物资储备中心）：
+  Ⅲ级：防护口罩50 + 急救箱10 + 隔离警戒带20 + 通信对讲机10
+  Ⅱ级：防护口罩100 + 防化服10 + 空气呼吸器8 + 急救箱20 + 医用氧气瓶10 + 消防水带10
 """
 from __future__ import annotations
 
@@ -23,53 +23,67 @@ DB = Path(__file__).parent.parent.parent / "city_state.db"
 
 _STANDARD_PACKS: dict[str, list[dict]] = {
     "Ⅲ": [
-        {"name": "防毒面具A级", "qty": 10},
-        {"name": "轻型防化服",  "qty": 5},
-        {"name": "空气呼吸器",  "qty": 5},
+        {"name": "防护口罩N95", "qty": 50},
         {"name": "急救箱",      "qty": 10},
+        {"name": "隔离警戒带",  "qty": 20},
+        {"name": "通信对讲机",  "qty": 10},
     ],
     "Ⅱ": [
-        {"name": "防毒面具A级", "qty": 20},
-        {"name": "重型防化服",  "qty": 10},
-        {"name": "空气呼吸器",  "qty": 10},
+        {"name": "防护口罩N95", "qty": 100},
+        {"name": "防化服",      "qty": 10},
+        {"name": "空气呼吸器",  "qty": 8},
         {"name": "急救箱",      "qty": 20},
         {"name": "医用氧气瓶",  "qty": 10},
+        {"name": "消防水带",    "qty": 10},
     ],
-}
-
-
-_WAREHOUSE_LOCATION = {
-    "name": "滨海新区应急物资中转站",
-    "lat": 39.1200,
-    "lng": 117.7050,
-    "address": "天津市滨海新区港城路（距事故点约2km）",
 }
 
 
 @mcp.tool()
-async def get_inventory(category: str | None = None) -> dict:
+async def get_inventory(category: str | None = None, warehouse_id: str | None = None) -> dict:
     """查询应急物资库存。
 
     Args:
         category: 可选类别过滤（如"个人防护"/"医疗物资"等），None 返回全部
+        warehouse_id: 可选仓库 ID 过滤（如"WH-01"），None 返回第一个仓库
 
     Returns:
         {warehouse: {name, lat, lng, address}, items: [...库存列表，每项含 id/name/category/quantity/unit/alert_threshold...]}
     """
     async with aiosqlite.connect(DB) as db:
         db.row_factory = aiosqlite.Row
-        if category:
-            cur = await db.execute(
-                "SELECT * FROM warehouse_inventory WHERE category = ? ORDER BY name",
-                (category,),
-            )
+        # 查询仓库信息
+        if warehouse_id:
+            wh_row = await (await db.execute(
+                "SELECT * FROM warehouses WHERE id = ?", (warehouse_id,)
+            )).fetchone()
         else:
-            cur = await db.execute(
-                "SELECT * FROM warehouse_inventory ORDER BY category, name"
-            )
+            wh_row = await (await db.execute("SELECT * FROM warehouses LIMIT 1")).fetchone()
+        warehouse = dict(wh_row) if wh_row else {}
+
+        # 查询库存
+        conditions = []
+        params = []
+        if category:
+            conditions.append("category = ?")
+            params.append(category)
+        if warehouse_id:
+            conditions.append("warehouse_id = ?")
+            params.append(warehouse_id)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        cur = await db.execute(
+            f"SELECT * FROM warehouse_inventory {where} ORDER BY category, name",
+            params,
+        )
         rows = await cur.fetchall()
+    if warehouse:
+        warehouse["map_marker"] = {
+            "icon": "🏭",
+            "position": [warehouse["lng"], warehouse["lat"]],
+            "label": warehouse["name"],
+        }
     return {
-        "warehouse": _WAREHOUSE_LOCATION,
+        "warehouse": warehouse,
         "items": [dict(r) for r in rows],
     }
 
@@ -112,8 +126,8 @@ async def _deduct_items(db: aiosqlite.Connection, items: list[dict]) -> list[dic
 @mcp.tool()
 async def allocate_standard_pack(level: str) -> dict:
     """⚠️ 写操作：按标准调拨包扣减库存，需经 HITL 审批后执行。
-    Ⅲ级包：防毒面具×10、防化服×5、空气呼吸器×5、急救箱×10。
-    Ⅱ级包：防毒面具×20、防化服×10、空气呼吸器×10、急救箱×20、氧气瓶×10。
+    Ⅲ级包：防护口罩×50、急救箱×10、隔离警戒带×20、通信对讲机×10。
+    Ⅱ级包：防护口罩×100、防化服×10、空气呼吸器×8、急救箱×20、氧气瓶×10、消防水带×10。
 
     Args:
         level: 预案等级，"Ⅲ" 或 "Ⅱ"
@@ -193,6 +207,59 @@ async def check_alerts() -> list[dict]:
         d = dict(r)
         d["shortage"] = d["alert_threshold"] - d["quantity"]
         result.append(d)
+    return result
+
+
+@mcp.tool()
+async def list_warehouses(
+    lat: float | None = None,
+    lng: float | None = None,
+    radius_km: float = 100.0,
+) -> list[dict]:
+    """查询应急物资仓库列表，按距离升序排列。
+
+    Args:
+        lat: 参考点纬度（事故坐标），None 则返回全部仓库
+        lng: 参考点经度，None 则返回全部仓库
+        radius_km: 搜索半径（公里），默认 100km（覆盖全上海）
+
+    Returns:
+        仓库列表，每项包含 id/name/address/lat/lng/distance_km/map_marker
+    """
+    import math
+
+    def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        R = 6371.0
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lng2 - lng1)
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        return R * 2 * math.asin(math.sqrt(a))
+
+    async with aiosqlite.connect(DB) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM warehouses ORDER BY id")
+        rows = await cur.fetchall()
+
+    result = []
+    for row in rows:
+        wh = dict(row)
+        if lat is not None and lng is not None:
+            dist = _haversine(lat, lng, wh["lat"], wh["lng"])
+            if dist > radius_km:
+                continue
+            wh["distance_km"] = round(dist, 1)
+        else:
+            wh["distance_km"] = None
+        wh["map_marker"] = {
+            "icon": "🏭",
+            "position": [wh["lng"], wh["lat"]],
+            "label": wh["name"],
+        }
+        result.append(wh)
+
+    if lat is not None and lng is not None:
+        result.sort(key=lambda x: x["distance_km"])
     return result
 
 

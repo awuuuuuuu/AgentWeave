@@ -2,14 +2,14 @@
 交通信号控制 MCP Server
 
 工具：
-- list_intersections: 查询 8 个路口当前状态
+- list_intersections: 查询 8 个路口当前状态（含坐标）
 - set_mode: 设置单个路口信号模式
 - apply_evacuation_plan: 按应急预案等级批量设置路口模式
 
-预案对应关系（天津滨海新区应急疏散路线方案）：
-  Ⅳ级：S1/S2 全红封闭，其余正常
-  Ⅲ级：S1-S4 全红封闭，S5-S8 应急绿波
-  Ⅱ级：S1-S4 全红封闭，S5-S8 单向清空
+预案对应关系（上海浦东新区应急疏散路线方案）：
+  Ⅳ级：INT-01/INT-02 全红封闭，其余正常
+  Ⅲ级：INT-01~INT-04 全红封闭，INT-05~INT-08 应急绿波
+  Ⅱ级：INT-01~INT-04 全红封闭，INT-05~INT-08 单向清空
 """
 from __future__ import annotations
 
@@ -23,25 +23,25 @@ DB = Path(__file__).parent.parent.parent / "city_state.db"
 
 VALID_MODES = {"正常", "全红封闭", "应急绿波", "单向清空", "消防应急"}
 
-# 预案批量配置
+# 预案批量配置（路口编号与 RAG 文档及 city_state.db 保持一致，使用 INT-XX）
 _EVACUATION_PLANS: dict[str, dict[str, str]] = {
     "Ⅳ": {
-        "S1": "全红封闭", "S2": "全红封闭",
-        "S3": "正常", "S4": "正常",
-        "S5": "正常", "S6": "正常",
-        "S7": "正常", "S8": "正常",
+        "INT-01": "全红封闭", "INT-02": "全红封闭",
+        "INT-03": "正常",    "INT-04": "正常",
+        "INT-05": "正常",    "INT-06": "正常",
+        "INT-07": "正常",    "INT-08": "正常",
     },
     "Ⅲ": {
-        "S1": "全红封闭", "S2": "全红封闭",
-        "S3": "全红封闭", "S4": "全红封闭",
-        "S5": "应急绿波", "S6": "应急绿波",
-        "S7": "应急绿波", "S8": "应急绿波",
+        "INT-01": "全红封闭", "INT-02": "全红封闭",
+        "INT-03": "全红封闭", "INT-04": "全红封闭",
+        "INT-05": "应急绿波", "INT-06": "应急绿波",
+        "INT-07": "应急绿波", "INT-08": "应急绿波",
     },
     "Ⅱ": {
-        "S1": "全红封闭", "S2": "全红封闭",
-        "S3": "全红封闭", "S4": "全红封闭",
-        "S5": "单向清空", "S6": "单向清空",
-        "S7": "单向清空", "S8": "单向清空",
+        "INT-01": "全红封闭", "INT-02": "全红封闭",
+        "INT-03": "全红封闭", "INT-04": "全红封闭",
+        "INT-05": "单向清空", "INT-06": "单向清空",
+        "INT-07": "单向清空", "INT-08": "单向清空",
     },
 }
 
@@ -69,7 +69,7 @@ async def set_mode(
     """⚠️ 写操作：设置单个路口信号模式，会修改系统状态，需经 HITL 审批后执行。
 
     Args:
-        intersection_id: 路口编号（S1-S8）
+        intersection_id: 路口编号（INT-01 ~ INT-08）
         mode: 信号模式（"正常"/"全红封闭"/"应急绿波"/"单向清空"/"消防应急"）
         duration_min: 持续时间（分钟，0 表示永久）
 
@@ -117,7 +117,7 @@ async def set_mode(
 @mcp.tool()
 async def apply_evacuation_plan(level: str) -> dict:
     """⚠️ 写操作：按应急预案等级批量设置路口信号模式，需经 HITL 审批后执行。
-    Ⅳ级：S1/S2 封闭；Ⅲ级：S1-S4 封闭+S5-S8 绿波；Ⅱ级：S1-S4 封闭+S5-S8 单向清空。
+    Ⅳ级：INT-01/INT-02 封闭；Ⅲ级：INT-01~INT-04 封闭+INT-05~INT-08 绿波；Ⅱ级：INT-01~INT-04 封闭+INT-05~INT-08 单向清空。
 
     Args:
         level: 预案等级，"Ⅳ"/"Ⅲ"/"Ⅱ"（响应程度递增）
@@ -132,13 +132,20 @@ async def apply_evacuation_plan(level: str) -> dict:
     updated = []
 
     async with aiosqlite.connect(DB) as db:
+        db.row_factory = aiosqlite.Row
         for sid, mode in plan.items():
             await db.execute(
                 "UPDATE intersections SET mode=?, mode_expires_at=NULL WHERE id=?",
                 (mode, sid),
             )
-            updated.append({"id": sid, "mode": mode})
         await db.commit()
+
+        # 回查，带上 lat/lng 供 map_extract 直接渲染，无需外部坐标表
+        rows = await (await db.execute(
+            f"SELECT id, name, lat, lng, mode FROM intersections WHERE id IN ({','.join('?'*len(plan))})",
+            list(plan.keys()),
+        )).fetchall()
+        updated = [dict(r) for r in rows]
 
     return {
         "level": level,
@@ -146,6 +153,51 @@ async def apply_evacuation_plan(level: str) -> dict:
         "intersections": updated,
         "message": f"已启动 {level} 级应急疏散预案，共更新 {len(updated)} 个路口信号",
     }
+
+
+@mcp.tool()
+async def get_nearby_intersections(
+    lat: float,
+    lng: float,
+    radius_km: float = 3.0,
+    limit: int = 10,
+) -> list[dict]:
+    """按事故坐标查询周边路口（按距离升序）。
+
+    Args:
+        lat: 事故地点纬度
+        lng: 事故地点经度
+        radius_km: 搜索半径（公里），默认 3.0
+        limit: 最多返回条数，默认 10
+
+    Returns:
+        路口列表，每项包含 id/name/lat/lng/mode/district/road_grade/distance_km
+    """
+    import math
+
+    def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        R = 6371.0
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lng2 - lng1)
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        return R * 2 * math.asin(math.sqrt(a))
+
+    async with aiosqlite.connect(DB) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM intersections")
+        rows = await cur.fetchall()
+
+    results = []
+    for row in rows:
+        r = dict(row)
+        dist = _haversine(lat, lng, r["lat"], r["lng"])
+        if dist <= radius_km:
+            r["distance_km"] = round(dist, 3)
+            results.append(r)
+
+    results.sort(key=lambda x: x["distance_km"])
+    return results[:limit]
 
 
 if __name__ == "__main__":

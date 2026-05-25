@@ -3,7 +3,7 @@
 
 用法（确保对应 server 已启动）：
     cd demo/mock_servers/a2a && uv run python test_a2a.py [port]
-    默认 port=9001（环保局）
+    默认 port=9101（环保局）
 """
 import asyncio
 import json
@@ -13,7 +13,7 @@ import uuid
 import httpx
 
 
-async def test(port: int = 9001) -> None:
+async def test(port: int = 9101) -> None:
     base = f"http://localhost:{port}"
 
     async with httpx.AsyncClient(timeout=120) as c:
@@ -41,5 +41,5 @@ async def test(port: int = 9001) -> None:
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9001
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9101
     asyncio.run(test(port))

@@ -65,26 +65,26 @@ from retrieval.reranker import Reranker, RerankerConfig
 SCENARIOS: dict[str, dict] = {
     "env_agency": {
         "dept_label": "环保局",
-        "mcp_names": ["atmospheric_dispersion", "enterprise_sensor"],
+        "mcp_names": ["environment_sensor"],
         "kb_name": "环保局应急知识库",
         "cases": [
             {
-                "name": "情景A-扩散疏散",
+                "name": "情景A-烟雾传感器告警",
                 "query": (
-                    "港城大道388号液氨泄漏，传感器显示什么异常？"
-                    "根据当前风速风向计算 ERPG-1/2/3 半径，"
-                    "结合氨气安全技术说明书中的毒性参数，给出疏散分区方案。"
+                    "世纪大道×陆家嘴环路建筑起火，当前环境传感器有哪些告警？"
+                    "烟雾和 PM2.5 浓度是否超标？结合上海市环境应急预案，"
+                    "给出空气质量预警级别和周边区域防护建议。"
                 ),
                 "expected_chain": ["researcher", "analyst", "reporter"],
-                "expected_tools_ordered": ["get_sensor_readings", "get_sensor_readings", "calculate_plume"],
+                "expected_tools_ordered": ["get_critical_alarms", "get_sensor_readings"],
                 "expect_hitl": False,
                 "expect_rag_fallback": False,
             },
             {
                 "name": "情景B-事故定级",
                 "query": (
-                    "根据当前传感器数据和天津市突发环境事件应急预案，"
-                    "此次泄漏应定为哪个级别？需要在多少分钟内向哪个机构报告？"
+                    "根据当前传感器数据和上海市突发环境事件应急预案，"
+                    "此次建筑火灾应定为哪个级别？需要在多少分钟内向哪个机构报告？"
                 ),
                 "expected_chain": ["researcher", "analyst", "reporter"],
                 "expect_hitl": False,
@@ -100,9 +100,9 @@ SCENARIOS: dict[str, dict] = {
             {
                 "name": "情景A-派车HITL",
                 "query": (
-                    "现场8名重度氨中毒伤员需紧急后送。"
-                    "根据急性氨中毒卫生应急预案的分级标准，确认接诊医院级别要求。"
-                    "查询当前可用救护车和医院 ICU 容量，制定接送方案并派遣。"
+                    "世纪大道×陆家嘴环路火灾现场有6名烟雾吸入伤员需紧急后送。"
+                    "根据烟雾吸入急救规程，确认接诊医院级别要求。"
+                    "查询当前可用救护车和医院急诊容量，制定接送方案并派遣。"
                 ),
                 "expected_chain": ["researcher", "analyst", "hitl", "reporter"],
                 "expected_tools_ordered": ["get_hospital_capacity", "list_ambulances"],
@@ -112,8 +112,8 @@ SCENARIOS: dict[str, dict] = {
             {
                 "name": "情景B-现场急救规程",
                 "query": (
-                    "急性氨中毒现场急救的标准流程是什么？"
-                    "洗消、给氧、转运各阶段需要哪些设备和药品？"
+                    "烟雾吸入伤员现场急救的标准流程是什么？"
+                    "气道处理、给氧、转运各阶段需要哪些设备和药品？"
                 ),
                 "expected_chain": ["researcher", "reporter"],
                 "expect_hitl": False,
@@ -121,7 +121,7 @@ SCENARIOS: dict[str, dict] = {
             },
             {
                 "name": "情景C-路线规划",
-                "query": "A3救护车从泰达医院出发前往港城大道388号，规划最优路线。",
+                "query": "A3救护车从上海市浦东新区人民医院出发前往世纪大道×陆家嘴环路，规划最优路线。",
                 "expected_chain": ["analyst"],   # 路线规划后直接 __end__，无 reporter
                 "expected_tools_ordered": ["plan_driving_route"],
                 "expect_hitl": False,
@@ -130,7 +130,7 @@ SCENARIOS: dict[str, dict] = {
             },
             {
                 "name": "情景D-坐标定位",
-                "query": "泰达医院的经纬度坐标是多少？",
+                "query": "复旦大学附属东方医院的经纬度坐标是多少？",
                 "expected_chain": ["analyst"],   # 坐标查询后直接 __end__
                 "expected_tools_ordered": ["geocode"],
                 "expect_hitl": False,
@@ -147,7 +147,7 @@ SCENARIOS: dict[str, dict] = {
             {
                 "name": "情景A-批量路口管控HITL",
                 "query": (
-                    "港城大道388号氨气泄漏，根据应急疏散路线方案，"
+                    "世纪大道×陆家嘴环路建筑火灾，根据应急疏散路线方案，"
                     "当前需要实施哪个级别的交通管控？"
                     "请查询各路口状态并按 Ⅲ 级预案批量设置。"
                 ),
@@ -159,7 +159,7 @@ SCENARIOS: dict[str, dict] = {
             {
                 "name": "情景B-救援走廊",
                 "query": (
-                    "救护车需要从泰达医院快速到达港城大道388号，"
+                    "消防车需要从浦东消防救援支队陆家嘴站快速到达世纪大道×陆家嘴环路，"
                     "规划救援走廊并设置沿途路口为应急绿波。"
                 ),
                 "expected_chain": ["analyst", "hitl", "reporter"],  # 含信号写操作，保留 reporter
@@ -170,12 +170,21 @@ SCENARIOS: dict[str, dict] = {
             },
             {
                 "name": "情景C-地点定位",
-                "query": "港城大道388号的精确经纬度坐标是多少？",
+                "query": "世纪大道×陆家嘴环路路口的精确经纬度坐标是多少？",
                 "expected_chain": ["analyst"],  # 坐标查询后直接 __end__
                 "expected_tools_ordered": ["geocode"],
                 "expect_hitl": False,
                 "expect_rag_fallback": False,
                 "expect_map_updates": False,  # geocode 不产生地图气泡
+            },
+            {
+                "name": "情景D-POI搜索定位",
+                "query": "世纪大道附近有哪些可以作为临时指挥部的地点？搜索世纪大道周边的大型场馆或广场。",
+                "expected_chain": ["analyst"],
+                "expected_tools_ordered": [],  # KB 已有坐标时 LLM 用 geocode，无 KB 时用 nearby_search，均可接受
+                "expect_hitl": False,
+                "expect_rag_fallback": False,
+                "expect_map_updates": False,
             },
         ],
     },
@@ -187,7 +196,7 @@ SCENARIOS: dict[str, dict] = {
             {
                 "name": "情景A-标准包调拨HITL",
                 "query": (
-                    "事故等级 Ⅲ 级，现场救援人员30人。"
+                    "火灾事故等级 Ⅲ 级，现场救援人员30人。"
                     "根据调拨规程确认 Ⅲ 级标准包清单，"
                     "查询当前库存是否满足，并办理调拨出库。"
                 ),
@@ -209,43 +218,68 @@ SCENARIOS: dict[str, dict] = {
             },
         ],
     },
-    "enterprise_safety": {
-        "dept_label": "企业安全",
-        "mcp_names": ["enterprise_sensor"],
-        "kb_name": "企业安全知识库",
+    "fire_brigade": {
+        "dept_label": "消防救援",
+        "mcp_names": ["fire_station", "amap"],
+        "kb_name": "消防救援知识库",
         "cases": [
             {
-                "name": "情景A-根因分析",
+                "name": "情景A-消防资源研判",
                 "query": (
-                    "结合传感器告警数据和事故快报，分析本次液氨管道泄漏的根本原因。"
-                    "T-202 缓冲罐压力偏高是否是诱因之一？"
+                    "世纪大道×陆家嘴环路附近建筑起火，结合消防救援规程，"
+                    "查询附近消防站可用消防车数量和周边消防水源，"
+                    "评估响应能力并给出推荐调派方案。"
                 ),
                 "expected_chain": ["researcher", "analyst", "reporter"],
-                "expected_tools_ordered": ["get_critical_alarms"],  # 两工具顺序非确定性，只验证 get_critical_alarms 必定被调
+                "expected_tools_ordered": ["get_fire_stations", "get_water_supplies"],
                 "expect_hitl": False,
-                "expect_rag_fallback": True,  # KB 有事故快报但无根因分析方法论，researcher 可能部分 fallback
+                "expect_rag_fallback": False,
             },
             {
-                "name": "情景B-现场处置方法",
+                "name": "情景B-灭火规程",
                 "query": (
-                    "根据 HG/T4686-2014 液氨泄漏处理处置方法，"
-                    "当前泄漏量级对应哪种处置方案？"
-                    "需要哪些专业防护装备才能进入泄漏区域？"
+                    "根据高层建筑火灾扑救规程，此类建筑火灾应采取哪种战术？"
+                    "需要配备哪些特种装备？消防员进入内攻时的安全规程是什么？"
                 ),
                 "expected_chain": ["researcher", "reporter"],
                 "expect_hitl": False,
-                "expect_rag_fallback": True,  # 查询含"当前泄漏量级"（实时量），researcher 无法直接回答
+                "expect_rag_fallback": False,
             },
             {
-                "name": "情景C-事故时间线+超限区域",
+                "name": "情景C-调派消防车HITL",
                 "query": (
-                    "梳理本次事故完整时间线，"
-                    "并查询当前哪些传感器读数已超过 ERPG-3 阈值（750ppm）？"
+                    "火势已蔓延至3层，请从浦东消防救援支队陆家嘴站调派2辆消防车前往，"
+                    "并规划出发路线。"
+                ),
+                "expected_chain": ["analyst", "hitl", "reporter"],
+                "expected_tools_ordered": ["dispatch_fire_trucks", "plan_driving_route"],
+                "expect_hitl": True,
+                "expect_rag_fallback": False,
+                "expect_map_updates": True,   # plan_driving_route → 消防路线地图气泡
+            },
+            {
+                "name": "情景D-警戒圈设置",
+                "query": (
+                    "世纪大道×陆家嘴环路火场已初步控制，"
+                    "请以事故中心点为圆心设置半径300米的警戒圈，"
+                    "并评估警戒区内需要疏散的区域范围。"
                 ),
                 "expected_chain": ["analyst", "reporter"],
-                "expected_tools_ordered": ["get_incident_timeline", "get_critical_alarms"],  # get_critical_alarms 是阈值超限的语义对应工具
+                "expected_tools_ordered": ["set_fire_perimeter"],
                 "expect_hitl": False,
-                "expect_rag_fallback": True,  # 若 supervisor 误路由 researcher（应直接 analyst），KB 无阈值超限内容会 fallback
+                "expect_rag_fallback": False,
+                "expect_map_updates": True,   # set_fire_perimeter → 警戒圈 circle 气泡
+            },
+            {
+                "name": "情景E-撤回消防车HITL",
+                "query": (
+                    "火灾已完全扑灭，请从浦东消防救援支队陆家嘴站撤回之前调派的2辆消防车。"
+                ),
+                "expected_chain": ["analyst", "hitl", "reporter"],
+                "expected_tools_ordered": ["recall_fire_trucks"],
+                "expect_hitl": True,
+                "expect_rag_fallback": False,
+                "expect_map_updates": False,
             },
         ],
     },
