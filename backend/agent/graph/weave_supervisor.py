@@ -40,6 +40,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import RunnableConfig, interrupt
 
 from .map_extract import extract_map_update
+from .prompts import build_phase_aggregate_system, DEPT_TASKS_LLM_SYSTEM
 from .weave_state import WeaveState, PlanStep
 
 logger = logging.getLogger(__name__)
@@ -381,19 +382,7 @@ async def _generate_dept_tasks_llm(incident: str, dept_codes: list[str], a2a_url
         )
     dept_lines = "\n".join(dept_lines_parts)
 
-    system = SystemMessage(content=(
-        "你是城市应急指挥中心任务分配 AI。根据事故描述，为每个参与部门生成专属研判任务。\n\n"
-        "生成要求：\n"
-        "1. 每个任务必须以「【研判阶段】」开头\n"
-        "2. 任务中必须包含「结合知识库规程」四个字，以触发知识库检索\n"
-        "3. 明确列出应调用的只读 MCP 工具名称（参考下方工具列表，严禁提及写操作工具）；"
-        "【状态查询优先】优先使用 list_xxx/get_xxx 类工具评估现场状态；"
-        "geocode/plan_driving_route 是路线规划工具，仅在执行阶段使用，研判阶段不得列入任务\n"
-        "4. 从事故描述中提取关键参数（地点/物质/风向/中毒人数等），写入任务文本\n"
-        "5. 任务 2-3 句话，具体可操作\n"
-        "6. 以 JSON 对象格式输出：{\"dept_code\": \"task_text\", ...}\n"
-        "7. 只输出 JSON，不含任何其他文字"
-    ))
+    system = SystemMessage(content=DEPT_TASKS_LLM_SYSTEM)
     human = HumanMessage(content=(
         f"事故描述：{incident}\n\n"
         f"参与部门及其只读 MCP 工具：\n{dept_lines}\n\n"
@@ -570,42 +559,21 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
     )
 
     selected_depts = state.get("selected_dept_codes") or list(state["dept_reports"].keys())
-    system = SystemMessage(content=(
-        "你是城市应急指挥中心 AI 协调员。根据各部门的评估报告，"
-        "制定一份结构化的应急执行计划（4-6 个步骤，顺序执行）。\n\n"
-        f"【强制要求】以下每个参与部门必须至少分配 1 个步骤，不得遗漏任何一个：{selected_depts}\n\n"
-        "每个步骤必须包含：\n"
-        "- step_id: 唯一 ID（如 step-001）\n"
-        "- title: 步骤名称，必须具体可操作（≤30字），必须包含数字、地点或计量单位词，"
-        "示例：「调派3辆消防车至世纪大道×陆家嘴环路」「切换S1/S2路口（世纪大道×陆家嘴环路）为Ⅲ级疏散模式」"
-        "「建立陆家嘴火场300m警戒圈」「发放50套N95和10个急救箱」"
-        "「调派2辆救护车前往世纪大道×陆家嘴转运伤员」；"
-        "路口 ID 必须使用数据库真实 ID（S1-S8），禁止使用 INT-01 等虚构编号；"
-        "禁止使用「部署救援」「管控交通」「处置事故」「综合分析」等无数量/地点的模糊表述\n"
-        "- dept_code: 执行部门代码（必须是以下之一，不得使用其他值）："
-        f"{'/'.join(selected_depts)}\n"
-        "- task: 执行指令（2-4句）。"
-        "【格式严格要求】涉及派车/信号切换/物资发放等写操作的步骤（is_high_risk=true），"
-        "task 字段必须以「【执行阶段】立即」开头，这不可省略，"
-        "例如：「【执行阶段】立即调派2辆消防车前往世纪大道×陆家嘴环路灭火」、"
-        "「【执行阶段】立即切换S1/S2路口为全红封闭模式」。"
-        "非写操作步骤（分析/规程/评估）以「【分析阶段】」开头。"
-        "【危化品/泄漏场景专项规则】当事故描述含「危化品」「泄漏」「化工」「有毒气体」「刺激性气味」等词时，"
-        "fire_brigade 步骤必须包含以下危化品专项处置内容（禁止仅使用普通灭火表述）："
-        "「防护装备（SCBA/防化服）」「警戒隔离区设立」「堵漏处置」「洗消作业」中的一项或多项；"
-        "示例：「【执行阶段】立即穿戴 SCBA 防化服，在张江化工仓库周边设立300m警戒隔离区，实施堵漏处置和洗消作业」\n"
-        "- is_high_risk: 是否高危（true/false）。"
-        "**仅当步骤 task 字段以「【执行阶段】」开头时才可标 true**（即实际派车/调派/信号切换/物资发放/停工命令等写操作）；"
-        "task 以「【分析阶段】」开头的评估/研判/查询步骤**必须**标 false。"
-        "一个场景中高危步骤通常不超过 2-3 个\n"
-        "- map_layer: 涉及地图操作的图层 ID（fire_route/ambulance_route/supply_route/"
-        "signal_update/evacuation_route），否则 null\n\n"
-        "以 JSON 数组格式返回，不要包含其他内容。"
-    ))
+    system = SystemMessage(content=build_phase_aggregate_system(selected_depts))
+
+    incident_info = state["incident"]
+    incident_lat = state.get("incident_lat")
+    incident_lng = state.get("incident_lng")
+    if incident_lat is not None and incident_lng is not None:
+        incident_info = (
+            f"{incident_info}\n"
+            f"【事故坐标】lat={incident_lat:.4f}, lng={incident_lng:.4f}"
+            f"（dest_lat/dest_lng 参数直接使用这两个浮点数）"
+        )
+
     human = HumanMessage(content=(
-        f"事故描述：{state['incident']}\n\n"
-        f"各部门评估报告：\n{reports_text}\n\n"
-        "请生成执行计划 JSON："
+        f"事故描述：{incident_info}\n\n"
+        f"各部门评估报告：\n{reports_text}"
     ))
 
     try:
@@ -629,11 +597,10 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
 
     plan: list[PlanStep] = []
     for i, s in enumerate(raw_steps):
-        is_high_risk = bool(s.get("is_high_risk", False))
         task = s.get("task", "")
-        # 高危步骤必须携带执行阶段标记，供下游 analyst 节点可靠检测
-        if is_high_risk and "【执行阶段】" not in task:
-            task = f"【执行阶段】立即 {task}"
+        execution_tool = s.get("execution_tool") or None
+        # is_high_risk 由 execution_tool 决定：有写操作工具 = 高危步骤
+        is_high_risk = execution_tool is not None or bool(s.get("is_high_risk", False))
         # 补全模糊 title，确保包含地点/数量词
         title = _ensure_specific_title(
             s.get("title", f"步骤 {i+1}"), state["incident"]
@@ -647,6 +614,8 @@ async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
             status="pending",
             map_layer=s.get("map_layer") or None,
             result_summary="",
+            execution_tool=s.get("execution_tool") or None,
+            execution_params=s.get("execution_params") or None,
         ))
 
     await adispatch_custom_event(
@@ -773,6 +742,8 @@ async def hitl_plan_review(state: WeaveState) -> dict:
                 status=s.get("status", "pending"),
                 map_layer=s.get("map_layer"),
                 result_summary="",
+                execution_tool=s.get("execution_tool") or None,
+                execution_params=s.get("execution_params") or None,
             )
             for i, s in enumerate(resume_val)
         ]
@@ -813,7 +784,19 @@ async def execute_all_parallel(state: WeaveState, config: RunnableConfig) -> dic
             config=config,
         )
         try:
-            result = await _call_dept_a2a(step["dept_code"], step["task"], a2a_urls=a2a_urls)
+            execution_context: dict = {}
+            if step.get("execution_tool"):
+                execution_context["execution_intent"] = {
+                    "tool_name": step["execution_tool"],
+                    "params": step.get("execution_params") or {},
+                }
+
+            result = await _call_dept_a2a(
+                step["dept_code"],
+                step["task"],
+                a2a_urls=a2a_urls,
+                context=execution_context,
+            )
             exec_status = "done" if result.get("status") == "completed" else "failed"
 
             # route-need 由 dept_code 判定（不依赖 LLM map_layer，后者常漏标 supply_route）

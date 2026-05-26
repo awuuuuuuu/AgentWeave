@@ -22,6 +22,9 @@ class PlanStep(TypedDict):
     status: str         # pending | approved | running | done | failed | skipped
     map_layer: Optional[str]       # 对应地图图层 ID（有地理操作时非 None）
     result_summary: str            # 执行完成后填入
+    # 结构化执行意图（None 表示纯研判/分析步骤）
+    execution_tool: Optional[str]    # MCP 写操作工具名，如 "dispatch_fire_trucks"
+    execution_params: Optional[dict] # 工具参数
 
 
 class WeaveState(TypedDict):

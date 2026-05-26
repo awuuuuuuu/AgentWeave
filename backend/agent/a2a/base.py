@@ -328,6 +328,9 @@ def build_dept_a2a_app(dept_code: str, port: int) -> FastAPI:
             "analyst_count": 0,
             "pending_approval": None,
             "citations": [],
+            # 从 context 注入结构化执行意图（Weave 执行路径专用）
+            "execution_intent": (body.context or {}).get("execution_intent"),
+            "executor_count": 0,
         }
 
         try:

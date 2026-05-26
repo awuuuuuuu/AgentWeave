@@ -77,6 +77,13 @@ class AgentState(TypedDict):
     # 是否要求 Reporter 在末尾附结构化 metrics JSON（仅 A2A 部门图开启，避免污染普通对话）
     emit_metrics: bool
 
+    # 结构化执行意图（analyst 输出 HITL_REQUIRED 时写入；Weave A2A 执行时从 context 注入）
+    # 格式：{"tool_name": str, "params": dict}；None 表示当前无待执行意图
+    execution_intent: dict | None
+
+    # Executor 已执行次数
+    executor_count: int
+
 
 # ── Researcher 子图状态 ───────────────────────────────────────────────────────
 

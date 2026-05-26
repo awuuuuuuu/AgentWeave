@@ -78,16 +78,43 @@ def build_supervisor(
                 "supervisor_count": supervisor_count,
             }
 
+        # Weave 执行路径：execution_intent 已由 A2A context 注入，直接路由 executor（跳过 analyst + HITL）
+        if state.get("execution_intent") and not state.get("executor_count", 0):
+            logger.info(
+                "Supervisor [%d]: 检测到 A2A 注入的 execution_intent（工具=%r），直接路由 executor",
+                supervisor_count,
+                state["execution_intent"].get("tool_name"),
+            )
+            return {
+                "next_agent": "executor",
+                "task": state.get("task", ""),
+                "supervisor_count": supervisor_count,
+                "message_to_user": "",
+            }
+
+        # Weave 执行路径完成：executor 已运行 → 直接路由 reporter（跳过 researcher/analyst）
+        if state.get("executor_count", 0) >= 1:
+            _reporter_ran = any(
+                isinstance(m, AIMessage) and getattr(m, "name", "") == "reporter"
+                for m in messages
+            )
+            if not _reporter_ran:
+                logger.info(
+                    "Supervisor [%d]: executor 已运行（executor_count=%d），直接路由 reporter",
+                    supervisor_count, state["executor_count"],
+                )
+                return {
+                    "next_agent": "reporter",
+                    "task": state.get("task", ""),
+                    "supervisor_count": supervisor_count,
+                    "message_to_user": "",
+                }
+
         # 计算 HITL 相关状态（后续多处使用）
         _hitl_msg_idx = max(
             (i for i, m in enumerate(messages) if isinstance(m, AIMessage) and getattr(m, "name", "") == "hitl"),
             default=-1,
         )
-        _analyst_ran_after_hitl = _hitl_msg_idx >= 0 and any(
-            isinstance(m, AIMessage) and getattr(m, "name", "") == "analyst"
-            for m in messages[_hitl_msg_idx + 1:]
-        )
-
         _analyst_cnt = state.get("analyst_count", 0)
         if _analyst_cnt >= 1:
             _last_analyst = next(
@@ -100,11 +127,25 @@ def build_supervisor(
                     (line.strip() for line in str(_last_analyst.content).splitlines() if "HITL_REQUIRED" in line),
                     "待执行写操作需 HITL 审批",
                 )
-                logger.info(
-                    "Supervisor [%d]: 检测到 analyst HITL_REQUIRED，强制路由 hitl: %r",
-                    supervisor_count, _hitl_line[:80],
+                # 提取结构化执行意图
+                _intent_line = next(
+                    (line.strip() for line in str(_last_analyst.content).splitlines() if "EXECUTION_INTENT" in line),
+                    None,
                 )
-                return {
+                _execution_intent = None
+                if _intent_line:
+                    try:
+                        import json as _json
+                        _intent_json = _intent_line.split("【EXECUTION_INTENT】", 1)[-1].strip()
+                        _execution_intent = _json.loads(_intent_json)
+                    except Exception:
+                        logger.warning("Supervisor: EXECUTION_INTENT 解析失败: %r", _intent_line[:100])
+
+                logger.info(
+                    "Supervisor [%d]: 检测到 analyst HITL_REQUIRED，强制路由 hitl，意图=%r",
+                    supervisor_count, (_execution_intent or {}).get("tool_name"),
+                )
+                result = {
                     "next_agent": "hitl",
                     "task": _hitl_line,
                     "supervisor_count": supervisor_count,
@@ -114,15 +155,22 @@ def build_supervisor(
                         "tool_name": "human_approval_required",
                     },
                 }
+                if _execution_intent:
+                    result["execution_intent"] = _execution_intent
+                return result
 
-        # HITL 完成但执行 analyst 尚未运行：强制路由 analyst 完成实际写操作
-        if _hitl_msg_idx >= 0 and not _analyst_ran_after_hitl:
+        # HITL 完成但 executor 尚未运行：强制路由 executor
+        _executor_ran_after_hitl = _hitl_msg_idx >= 0 and any(
+            isinstance(m, AIMessage) and getattr(m, "name", "") == "executor"
+            for m in messages[_hitl_msg_idx + 1:]
+        )
+        if _hitl_msg_idx >= 0 and not _executor_ran_after_hitl:
             logger.info(
-                "Supervisor [%d]: HITL 已批准但执行 analyst 未运行，强制路由 analyst",
+                "Supervisor [%d]: HITL 已批准但 executor 未运行，强制路由 executor",
                 supervisor_count,
             )
             return {
-                "next_agent": "analyst",
+                "next_agent": "executor",
                 "task": state.get("task", ""),
                 "supervisor_count": supervisor_count,
                 "message_to_user": "",
@@ -200,14 +248,11 @@ def build_supervisor(
             )
             decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
         elif decision.next == "analyst" and state.get("analyst_count", 0) >= 1:
-            if _hitl_msg_idx >= 0 and not _analyst_ran_after_hitl:
-                pass  # 允许：HITL 批准后第一次执行 analyst，不拦截
-            else:
-                logger.warning(
-                    "Supervisor: 拦截重复路由 analyst (analyst_count=%d)，强制 reporter",
-                    state.get("analyst_count", 0),
-                )
-                decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
+            logger.warning(
+                "Supervisor: 拦截重复路由 analyst (analyst_count=%d)，强制 reporter",
+                state.get("analyst_count", 0),
+            )
+            decision = decision.model_copy(update={"next": "reporter", "message_to_user": ""})
         elif decision.next == "__end__" and (
             state.get("researcher_count", 0) >= 1 or state.get("analyst_count", 0) >= 1
         ):

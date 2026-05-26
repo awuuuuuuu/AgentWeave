@@ -23,6 +23,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .analyst import AGENT_CARD as ANALYST_CARD
 from .analyst import build_analyst
+from .executor import build_executor
 from .hitl import AGENT_CARD as HITL_CARD
 from .hitl import build_hitl
 from .memory_nodes import build_memory_nodes
@@ -35,6 +36,7 @@ from .supervisor import build_supervisor
 
 # 默认群成员 card（供前端侧边栏展示）
 # Critic 已移出默认集合；如需质量门控，通过 enabled_agents 按会话启用
+# executor 不在此列表中：由系统自动路由（HITL 批准后或 A2A 注入执行意图时），LLM 不可见
 _AGENT_CARDS: list[dict] = [RESEARCHER_CARD, ANALYST_CARD, HITL_CARD, REPORTER_CARD]
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ def build_agent_graph(
         llm_model=llm_model,
     )
     analyst_fn = build_analyst(llm_model=llm_model)
+    executor_fn = build_executor()
     hitl_fn = build_hitl()
     reporter_fn = build_reporter(llm_model=llm_model)
 
@@ -108,6 +111,7 @@ def build_agent_graph(
     graph.add_node("supervisor", supervisor_fn)
     graph.add_node("researcher", researcher_sg)
     graph.add_node("analyst", analyst_fn)
+    graph.add_node("executor", executor_fn)
     graph.add_node("hitl", hitl_fn)
     graph.add_node("reporter", reporter_fn)
 
@@ -126,6 +130,7 @@ def build_agent_graph(
     supervisor_targets: dict[str, Any] = {
         "researcher": "researcher",
         "analyst":    "analyst",
+        "executor":   "executor",
         "hitl":       "hitl",
         "reporter":   "reporter",
         "__end__":    END,
@@ -134,6 +139,7 @@ def build_agent_graph(
 
     graph.add_edge("researcher", "supervisor")
     graph.add_edge("analyst", "supervisor")
+    graph.add_edge("executor", "supervisor")
 
     graph.add_conditional_edges(
         "hitl",
