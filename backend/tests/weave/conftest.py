@@ -13,6 +13,16 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parents[2] / ".env")
 
+# 所有场景常量统一从 evaluators 导入，conftest 不再重复定义
+from tests.weave.evaluators import (
+    INCIDENT,
+    SELECTED_DEPTS,
+    TRAFFIC_ACCIDENT_INCIDENT,
+    TRAFFIC_DEPTS,
+    HAZMAT_INCIDENT,
+    HAZMAT_DEPTS,
+)
+
 
 def pytest_configure(config):
     config.addinivalue_line(
@@ -20,18 +30,13 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "weave_integration: 需要 A2A Server 在线（localhost:9001-9005），手动触发",
+        "weave_integration: 需要 A2A Server 在线（localhost:9101-9105），手动触发",
     )
 
 
-INCIDENT = "港城大道388号化工厂液氨储罐泄漏，风速4.2m/s，风向东南，已有3人中毒"
-SELECTED_DEPTS = [
-    "env_agency", "medical_ems", "traffic_control",
-    "emergency_supplies", "enterprise_safety",
-]
 A2A_PORTS: dict[str, int] = {
-    "env_agency": 9001, "medical_ems": 9002, "traffic_control": 9003,
-    "emergency_supplies": 9004, "enterprise_safety": 9005,
+    "env_agency": 9101, "medical_ems": 9102, "traffic_control": 9103,
+    "emergency_supplies": 9104, "fire_brigade": 9105,
 }
 
 
@@ -59,12 +64,15 @@ def a2a_available() -> dict[str, int]:
     return A2A_PORTS
 
 
-# ── 研判阶段响应（module-scoped，每个测试模块只调用一次） ──────────────────────
+# ── 通用：研判 + 计划生成工厂函数 ────────────────────────────────────────────
 
-async def _fetch_dept_responses() -> dict[str, dict]:
-    """直接向各部门 A2A Server 发送研判任务，返回响应字典。"""
+async def _fetch_dept_responses_for(
+    incident: str,
+    selected_depts: list[str],
+) -> dict[str, dict]:
+    """向指定部门的 A2A Server 发送研判任务，返回响应字典。"""
     from agent.graph.weave_supervisor import _generate_dept_tasks_llm
-    dept_tasks = await _generate_dept_tasks_llm(INCIDENT, SELECTED_DEPTS)
+    dept_tasks = await _generate_dept_tasks_llm(incident, selected_depts)
 
     async def call_one(dept_code: str, port: int) -> tuple[str, dict]:
         payload = {
@@ -78,7 +86,7 @@ async def _fetch_dept_responses() -> dict[str, dict]:
             return dept_code, r.json()
 
     pairs = await asyncio.gather(
-        *[call_one(dept, port) for dept, port in A2A_PORTS.items()],
+        *[call_one(dept, A2A_PORTS[dept]) for dept in selected_depts if dept in A2A_PORTS],
         return_exceptions=True,
     )
     results: dict[str, dict] = {}
@@ -90,23 +98,23 @@ async def _fetch_dept_responses() -> dict[str, dict]:
     return results
 
 
-@pytest.fixture(scope="module")
-def dept_responses(a2a_available) -> dict[str, dict]:
-    """研判阶段：各部门 A2ATaskResponse dict，每个测试模块共享一次调用结果。"""
-    return asyncio.run(_fetch_dept_responses())
-
-
-# ── 执行计划（module-scoped） ─────────────────────────────────────────────────
-
-async def _build_weave_plan(dept_reports: dict[str, dict]) -> list[dict]:
+async def _build_weave_plan_for(
+    dept_reports: dict[str, dict],
+    incident: str,
+    selected_depts: list[str],
+) -> list[dict]:
     """调用 phase_aggregate 生成执行计划（adispatch_custom_event mock 掉）。"""
     from agent.graph.weave_supervisor import phase_aggregate
 
     state = {
         "session_id": "test-session",
         "user_id": "test-user",
-        "incident": INCIDENT,
-        "selected_dept_codes": SELECTED_DEPTS,
+        "incident": incident,
+        # 测试用固定坐标（世纪大道×陆家嘴环路），与 evaluators.py 中 INCIDENT 保持一致
+        "incident_lat": 31.2380,
+        "incident_lng": 121.4970,
+        "incident_location_name": "世纪大道×陆家嘴环路",
+        "selected_dept_codes": selected_depts,
         "dept_reports": dept_reports,
         "dispatch_plan": [],
         "current_step": 0,
@@ -122,33 +130,20 @@ async def _build_weave_plan(dept_reports: dict[str, dict]) -> list[dict]:
     return result.get("dispatch_plan", [])
 
 
-@pytest.fixture(scope="module")
-def weave_plan(dept_responses) -> list[dict]:
-    """执行计划：phase_aggregate 的输出，每个测试模块共享一次 LLM 调用。"""
-    return asyncio.run(_build_weave_plan(dept_responses))
-
-
-# ── 执行阶段结果（module-scoped） ─────────────────────────────────────────────
-
-async def _run_execution(plan: list[dict]) -> dict[str, tuple[dict, dict]]:
+async def _run_execution_for(
+    plan: list[dict],
+    a2a_urls: dict[str, str],
+) -> dict[str, tuple[dict, dict]]:
     """
-    对计划中有写操作 MCP 要求的步骤，直接调用 A2A Server 执行任务。
+    对计划中有写操作 MCP 要求的步骤直接调用 A2A Server 执行。
     返回 {step_id: (step, a2a_response)}。
     """
     from agent.graph.weave_supervisor import _call_dept_a2a
-
-    EXECUTION_MCP_WHITELIST: dict[str, list[str]] = {
-        "medical_ems":        ["dispatch_ambulance", "recall_ambulance"],
-        "traffic_control":    ["set_mode", "apply_evacuation_plan"],
-        "emergency_supplies": ["allocate_custom", "allocate_standard_pack"],
-        "env_agency":         [],
-        "enterprise_safety":  [],
-    }
+    from tests.weave.evaluators import EXECUTION_MCP_WHITELIST
 
     steps_to_run = [
         s for s in plan
-        if EXECUTION_MCP_WHITELIST.get(s.get("dept_code", "")) is not None
-        and EXECUTION_MCP_WHITELIST[s["dept_code"]]
+        if s.get("execution_tool")
         and s.get("status", "pending") in ("pending", "approved")
     ]
 
@@ -156,7 +151,16 @@ async def _run_execution(plan: list[dict]) -> dict[str, tuple[dict, dict]]:
         return {}
 
     async def run_one(step: dict) -> tuple[str, dict, dict]:
-        result = await _call_dept_a2a(step["dept_code"], step["task"])
+        execution_context: dict = {}
+        if step.get("execution_tool"):
+            execution_context["execution_intent"] = {
+                "tool_name": step["execution_tool"],
+                "params": step.get("execution_params") or {},
+            }
+        result = await _call_dept_a2a(
+            step["dept_code"], step["task"], a2a_urls=a2a_urls,
+            context=execution_context,
+        )
         return step["step_id"], step, result
 
     raw = await asyncio.gather(*[run_one(s) for s in steps_to_run], return_exceptions=True)
@@ -169,7 +173,68 @@ async def _run_execution(plan: list[dict]) -> dict[str, tuple[dict, dict]]:
     return out
 
 
+# ── 场景 1：建筑火灾（5 部门全量）────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def dept_responses(a2a_available) -> dict[str, dict]:
+    """研判阶段：火灾场景各部门响应，每个测试模块共享一次调用。"""
+    return asyncio.run(_fetch_dept_responses_for(INCIDENT, SELECTED_DEPTS))
+
+
+@pytest.fixture(scope="module")
+def weave_plan(dept_responses) -> list[dict]:
+    """执行计划：火灾场景 phase_aggregate 输出，每个测试模块共享一次 LLM 调用。"""
+    return asyncio.run(_build_weave_plan_for(dept_responses, INCIDENT, SELECTED_DEPTS))
+
+
 @pytest.fixture(scope="module")
 def execution_results(weave_plan, a2a_available) -> dict[str, tuple[dict, dict]]:
     """执行阶段结果，每个测试模块共享一次。"""
-    return asyncio.run(_run_execution(weave_plan))
+    a2a_urls = {dept: f"http://localhost:{port}" for dept, port in A2A_PORTS.items()}
+    return asyncio.run(_run_execution_for(weave_plan, a2a_urls))
+
+
+# ── 场景 2：交通事故（traffic_control + medical_ems）────────────────────────
+
+@pytest.fixture(scope="module")
+def traffic_dept_responses(a2a_available) -> dict[str, dict]:
+    """研判阶段：交通事故场景（TR + ME）各部门响应。"""
+    return asyncio.run(_fetch_dept_responses_for(TRAFFIC_ACCIDENT_INCIDENT, TRAFFIC_DEPTS))
+
+
+@pytest.fixture(scope="module")
+def traffic_weave_plan(traffic_dept_responses) -> list[dict]:
+    """执行计划：交通事故场景 phase_aggregate 输出。"""
+    return asyncio.run(
+        _build_weave_plan_for(traffic_dept_responses, TRAFFIC_ACCIDENT_INCIDENT, TRAFFIC_DEPTS)
+    )
+
+
+# ── 场景 5：危化品泄漏（EN + FF + ME + TR）──────────────────────────────────
+
+@pytest.fixture(scope="module")
+def hazmat_dept_responses(a2a_available) -> dict[str, dict]:
+    """研判阶段：危化品泄漏场景（4 部门）各部门响应。"""
+    return asyncio.run(_fetch_dept_responses_for(HAZMAT_INCIDENT, HAZMAT_DEPTS))
+
+
+@pytest.fixture(scope="module")
+def hazmat_weave_plan(hazmat_dept_responses) -> list[dict]:
+    """执行计划：危化品泄漏场景 phase_aggregate 输出。"""
+    return asyncio.run(
+        _build_weave_plan_for(hazmat_dept_responses, HAZMAT_INCIDENT, HAZMAT_DEPTS)
+    )
+
+
+@pytest.fixture(scope="module")
+def traffic_execution_results(traffic_weave_plan, a2a_available) -> dict[str, tuple[dict, dict]]:
+    """执行阶段结果：交通事故场景（traffic_control + medical_ems）。"""
+    a2a_urls = {dept: f"http://localhost:{port}" for dept, port in A2A_PORTS.items()}
+    return asyncio.run(_run_execution_for(traffic_weave_plan, a2a_urls))
+
+
+@pytest.fixture(scope="module")
+def hazmat_execution_results(hazmat_weave_plan, a2a_available) -> dict[str, tuple[dict, dict]]:
+    """执行阶段结果：危化品泄漏场景（env_agency + fire_brigade + medical_ems + traffic_control）。"""
+    a2a_urls = {dept: f"http://localhost:{port}" for dept, port in A2A_PORTS.items()}
+    return asyncio.run(_run_execution_for(hazmat_weave_plan, a2a_urls))

@@ -9,7 +9,7 @@ pytestmark = pytest.mark.weave_unit
 class TestCheckDeptKeywords:
     def test_matching_keyword_passes(self):
         from tests.weave.evaluators import check_dept_keywords
-        ok, msg = check_dept_keywords("env_agency", "事故：液氨泄漏，请评估大气扩散范围。")
+        ok, msg = check_dept_keywords("env_agency", "事故：建筑火灾，传感器显示烟雾浓度超标。")
         assert ok, msg
 
     def test_no_keyword_fails_with_hint(self):
@@ -27,7 +27,7 @@ class TestCheckDeptKeywords:
 class TestCheckMcpWhitelist:
     def test_required_tool_present_passes(self):
         from tests.weave.evaluators import RESEARCH_MCP_WHITELIST, check_mcp_whitelist
-        sources = [{"tool_name": "calculate_plume", "idx": 1, "key_result": "x"}]
+        sources = [{"tool_name": "get_sensor_readings", "idx": 1, "key_result": "x"}]
         ok, msg = check_mcp_whitelist("env_agency", sources, RESEARCH_MCP_WHITELIST)
         assert ok, msg
 
@@ -100,16 +100,16 @@ class TestCheckPlanSteps:
 
     def _all_depts(self):
         return ["env_agency", "medical_ems", "traffic_control",
-                "emergency_supplies", "enterprise_safety"]
+                "emergency_supplies", "fire_brigade"]
 
     def test_valid_plan_returns_no_errors(self):
         from tests.weave.evaluators import check_plan_steps
         steps = [
-            self._make_step("step-001", "env_agency",         "封闭港城大道388号半径500米", True),
-            self._make_step("step-002", "medical_ems",        "调派3辆救护车前往388号"),
+            self._make_step("step-001", "env_agency",         "世纪大道×陆家嘴环路警戒500米", True),
+            self._make_step("step-002", "medical_ems",        "调派3辆救护车前往事故现场"),
             self._make_step("step-003", "traffic_control",    "切换路口信号至疏散模式"),
             self._make_step("step-004", "emergency_supplies", "调拨防护服50套"),
-            self._make_step("step-005", "enterprise_safety",  "关闭2号储罐进料阀"),
+            self._make_step("step-005", "fire_brigade",       "陆家嘴站调派2辆消防车灭火"),
         ]
         errors = check_plan_steps(steps, self._all_depts())
         assert errors == [], f"预期无错误，实际: {errors}"
@@ -123,11 +123,11 @@ class TestCheckPlanSteps:
     def test_duplicate_step_id_is_error(self):
         from tests.weave.evaluators import check_plan_steps
         steps = [
-            self._make_step("step-001", "env_agency",         "封闭港城大道388号半径500米", True),
+            self._make_step("step-001", "env_agency",         "世纪大道×陆家嘴环路警戒500米", True),
             self._make_step("step-001", "medical_ems",        "调派3辆救护车"),
             self._make_step("step-003", "traffic_control",    "切换路口信号"),
             self._make_step("step-004", "emergency_supplies", "调拨防护服50套"),
-            self._make_step("step-005", "enterprise_safety",  "关闭2号储罐进料阀"),
+            self._make_step("step-005", "fire_brigade",       "陆家嘴站调派2辆消防车灭火"),
         ]
         errors = check_plan_steps(steps, self._all_depts())
         assert any("重复" in e for e in errors)
@@ -135,11 +135,11 @@ class TestCheckPlanSteps:
     def test_no_high_risk_step_is_error(self):
         from tests.weave.evaluators import check_plan_steps
         steps = [
-            self._make_step("step-001", "env_agency",         "封闭港城大道388号半径500米"),
-            self._make_step("step-002", "medical_ems",        "调派3辆救护车前往388号"),
+            self._make_step("step-001", "env_agency",         "世纪大道×陆家嘴环路警戒500米"),
+            self._make_step("step-002", "medical_ems",        "调派3辆救护车前往事故现场"),
             self._make_step("step-003", "traffic_control",    "切换路口信号至疏散模式"),
             self._make_step("step-004", "emergency_supplies", "调拨防护服50套"),
-            self._make_step("step-005", "enterprise_safety",  "关闭2号储罐进料阀"),
+            self._make_step("step-005", "fire_brigade",       "陆家嘴站调派2辆消防车灭火"),
         ]
         errors = check_plan_steps(steps, self._all_depts())
         assert any("高危" in e for e in errors)
@@ -148,10 +148,43 @@ class TestCheckPlanSteps:
         from tests.weave.evaluators import check_plan_steps
         steps = [
             self._make_step("step-001", "env_agency",         "部署救援", True),
-            self._make_step("step-002", "medical_ems",        "调派3辆救护车前往388号"),
+            self._make_step("step-002", "medical_ems",        "调派3辆救护车前往事故现场"),
             self._make_step("step-003", "traffic_control",    "切换路口信号至疏散模式"),
             self._make_step("step-004", "emergency_supplies", "调拨防护服50套"),
-            self._make_step("step-005", "enterprise_safety",  "关闭2号储罐进料阀"),
+            self._make_step("step-005", "fire_brigade",       "陆家嘴站调派2辆消防车灭火"),
         ]
         errors = check_plan_steps(steps, self._all_depts())
         assert any("title" in e for e in errors)
+
+
+class TestFireBrigadeKeywords:
+    """验证 fire_brigade 部门的关键词匹配。"""
+
+    def test_fire_keywords_match(self):
+        from tests.weave.evaluators import check_dept_keywords
+        ok, msg = check_dept_keywords("fire_brigade", "请查询附近消防站可用消防车数量。")
+        assert ok, msg
+
+    def test_fire_mcp_whitelist_research(self):
+        from tests.weave.evaluators import RESEARCH_MCP_WHITELIST, check_mcp_whitelist
+        sources = [{"tool_name": "get_fire_stations", "idx": 1, "key_result": "FS1 浦东陆家嘴站"}]
+        ok, msg = check_mcp_whitelist("fire_brigade", sources, RESEARCH_MCP_WHITELIST)
+        assert ok, msg
+
+    def test_fire_mcp_whitelist_execution(self):
+        from tests.weave.evaluators import EXECUTION_MCP_WHITELIST, check_mcp_whitelist
+        sources = [{"tool_name": "dispatch_fire_trucks", "idx": 1, "key_result": "已调派2辆"}]
+        ok, msg = check_mcp_whitelist("fire_brigade", sources, EXECUTION_MCP_WHITELIST)
+        assert ok, msg
+
+    def test_water_supply_passes_research(self):
+        from tests.weave.evaluators import RESEARCH_MCP_WHITELIST, check_mcp_whitelist
+        sources = [{"tool_name": "get_water_supplies", "idx": 1, "key_result": "200吨"}]
+        ok, msg = check_mcp_whitelist("fire_brigade", sources, RESEARCH_MCP_WHITELIST)
+        assert ok, msg
+
+    def test_recall_passes_execution(self):
+        from tests.weave.evaluators import EXECUTION_MCP_WHITELIST, check_mcp_whitelist
+        sources = [{"tool_name": "recall_fire_trucks", "idx": 1, "key_result": "已撤回"}]
+        ok, msg = check_mcp_whitelist("fire_brigade", sources, EXECUTION_MCP_WHITELIST)
+        assert ok, msg
