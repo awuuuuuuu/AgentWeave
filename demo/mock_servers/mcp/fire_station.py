@@ -197,15 +197,15 @@ async def set_fire_perimeter(
 
 @mcp.tool()
 async def get_water_supplies(
-    lat: float,
-    lng: float,
+    lat: float | None = None,
+    lng: float | None = None,
     radius_km: float = 3.0,
 ) -> dict:
     """查询附近消防水源（消防水池/消火栓）。
 
     Args:
-        lat: 中心纬度
-        lng: 中心经度
+        lat: 中心纬度（可选；不提供则返回所有水源）
+        lng: 中心经度（可选；不提供则返回所有水源）
         radius_km: 搜索半径（公里，默认3）
 
     Returns:
@@ -218,10 +218,14 @@ async def get_water_supplies(
     results = []
     for row in rows:
         w = dict(row)
-        dist = _haversine_km(lat, lng, w["lat"], w["lng"])
-        if dist <= radius_km:
-            results.append({**w, "distance_km": round(dist, 2)})
-    results.sort(key=lambda x: x["distance_km"])
+        if lat is not None and lng is not None:
+            dist = _haversine_km(lat, lng, w["lat"], w["lng"])
+            if dist <= radius_km:
+                results.append({**w, "distance_km": round(dist, 2)})
+        else:
+            results.append(w)
+    if lat is not None:
+        results.sort(key=lambda x: x.get("distance_km", 9999))
     return {"supplies": results, "total": len(results)}
 
 

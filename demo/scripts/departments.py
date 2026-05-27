@@ -40,7 +40,7 @@ DEPARTMENTS = [
                 "  · TR 交通管控  ──── 路口信号管制 + 疏散通道（含 HITL）\n"
                 "  · LG 应急物资  ──── 防护物资调拨（含 HITL）\n"
                 "  · FF 消防救援  ──── 消防资源调度 + 火场警戒\n"
-                "【HITL 原则】涉及写操作（派车/路口信号/物资调拨）的部门子任务，各部门 analyst 完成评估后必须经过 HITL 审批，不得自行执行。\n"
+                "【执行原则】涉及写操作（派车/路口信号/物资调拨）的步骤，由 executor 节点在 HITL 审批后自动执行，无需部门 analyst 主动调用写操作。\n"
                 "【汇总简报】所有部门响应完成（或首批结果就绪）后，路由 reporter 生成总指挥简报，"
                 "格式：事故概况 → 各部门响应状态 → 待审批项 → 下一步行动建议。"
             ),
@@ -75,7 +75,6 @@ DEPARTMENTS = [
                 "  先路由 researcher 检索环保应急规程（current_task 须明确写出检索目标，如「上海市环境应急预案空气质量预警级别与响应措施」，禁止使用'相关内容'等泛化表述），\n"
                 "  再路由 analyst 调用 get_critical_alarms 和 get_sensor_readings 获取实时环境数据，\n"
                 "  路由 reporter 输出环境评估报告。\n"
-                "含'【执行阶段】'或'【分析阶段】'：所有工具只读，路由 analyst 分析后 reporter 输出，无需 HITL。"
             ),
             "analyst_context": (
                 "【环境监测任务】依次调用：\n"
@@ -110,17 +109,17 @@ DEPARTMENTS = [
                 "含急救规程/接诊/救护/医院/救护车/床位等实务性任务（含或不含'【研判阶段】'）：\n"
                 "  先路由 researcher，无论知识库是否有结果，此步完成后必须继续到 analyst 调用 get_hospital_capacity 和 list_ambulances；禁止 researcher 完成后直接路由 reporter。\n"
                 "  若任务含派遣/调度/派车/dispatch 请求，analyst 完成后路由 hitl 审批，再路由 reporter；否则直接 reporter 输出建议。\n"
-                "含'【执行阶段】'：直接路由 analyst，current_task 开头必须保留「【执行阶段】已授权」标记，analyst 完成后路由 reporter。\n"
                 "纯路线规划/坐标查询任务：直接路由 analyst，完成后 __end__，无需 reporter 也无需 HITL。"
             ),
             "analyst_context": (
-                "【研判阶段（默认）】依次调用：\n"
+                "【研判阶段】依次调用：\n"
                 "1. get_hospital_capacity() — 查询各医院 ICU 和急诊可用容量\n"
                 "2. list_ambulances(status='待命') — 获取当前待命救护车数量和位置\n"
-                "整理评估方案后停止，勿调用 dispatch_ambulance（写操作，需 HITL）。\n"
-                "【执行阶段】当任务含「【执行阶段】」时：先调 get_hospital_capacity() + list_ambulances() 确认资源，"
-                "再用 geocode() 获取事故地点坐标，调用 dispatch_ambulance 完成派车（已授权，无需 HITL）。\n"
-                "【执行阶段必须出图】派车成功后调用 plan_driving_route 生成救护车实际行驶路线，from 用该车 lat/lng，to 用事故点坐标。\n"
+                "整理评估方案后停止，勿调用 dispatch_ambulance/recall_ambulance（写操作，由 executor 执行）。\n"
+                "若任务明确要求立即派遣救护车，系统会阻止写操作调用并由你输出：\n"
+                "【HITL_REQUIRED】待执行：dispatch_ambulance\n"
+                "【EXECUTION_INTENT】{\"tool_name\": \"dispatch_ambulance\", \"params\": {\"ambulance_id\": \"auto\", \"dest_lat\": <事故点纬度 float>, \"dest_lng\": <事故点经度 float>, \"patient_type\": \"<伤员类型>\"}}\n"
+                "无法确定的参数填 \"auto\"，executor 会在运行时查询补全。\n"
                 "【geocode 地址规范】调用 geocode 时必须补全城市前缀，例如：'东方医院' → '上海市浦东新区东方医院'。\n"
                 "【MCP引用标注】引用实时数据加[M数字]，如「东方医院ICU可用12张[M1]，A3救护车待命[M2]」"
             ),
@@ -147,15 +146,16 @@ DEPARTMENTS = [
                 "无论知识库是否有结果，此步完成后必须继续到 analyst 调用 list_intersections；禁止 researcher 完成后直接路由 reporter。"
                 "若任务含信号切换/批量设置等写操作请求，analyst 完成后路由 hitl 审批；否则路由 reporter 输出方案。\n"
                 "含路线规划+路口信号设置联合任务：路由 analyst 时 current_task 一次性包含「规划路线、查询路口状态、尝试切换信号」；再路由 hitl，审批后路由 reporter。\n"
-                "含'【执行阶段】'：直接路由 analyst（已获上层 HITL 授权），analyst 完成后路由 reporter。\n"
                 "纯路线规划/坐标查询：analyst 完成后直接 __end__，无需 reporter 也无需 HITL。"
             ),
             "analyst_context": (
                 "【路口管控任务】先调 list_intersections() 获取所有路口当前信号模式。\n"
-                "【批量预案设置命令（无「【执行阶段】」标记）】：① list_intersections → ② apply_evacuation_plan（预案级别取自任务，如Ⅲ级）→ ③ 末尾必须写【HITL_REQUIRED】。\n"
-                "【执行阶段任务】先调 list_intersections() 查看路口状态，然后调用信号管控工具执行切换（已获上层授权）。\n"
-                "【执行阶段必须出图】信号切换成功后调用 geocode + plan_driving_route 绘制疏散主通道，确保地图上绘制出疏散路线。\n"
-                "【路线+信号联合任务】在一次调用中完成：geocode → plan_driving_route → list_intersections → set_mode（输出 HITL_REQUIRED）。\n"
+                "【写操作请求（含「批量设置」「切换信号」「apply_evacuation_plan」「set_mode」等）】：\n"
+                "① list_intersections 查询路口状态 → ② 尝试调用写操作工具（系统会阻止）→\n"
+                "③ 输出：【HITL_REQUIRED】待执行：<工具名>\n"
+                "         【EXECUTION_INTENT】{\"tool_name\": \"<工具名>\", \"params\": {\"intersection_id\": \"auto\", \"mode\": \"<模式>\"}}\n"
+                "无法确定的参数填 \"auto\"，executor 会在运行时查询补全。\n"
+                "【路线+信号联合任务】在一次调用中完成：geocode → plan_driving_route → list_intersections → （触发 HITL_REQUIRED）。\n"
                 "【geocode 地址规范】调用时必须补全城市前缀，例如：'世纪大道' → '上海市浦东新区世纪大道'。\n"
                 "【MCP引用标注】引用数据加[M数字]，如「S3路口当前正常模式[M1]，疏散路线全长2.3km[M2]」"
             ),
@@ -181,16 +181,17 @@ DEPARTMENTS = [
                 "含物资/调拨/库存/规程/标准包等实务性任务（含或不含'【研判阶段】'）：先路由 researcher，"
                 "无论知识库是否有结果，此步完成后必须继续到 analyst 调用 get_inventory 和 check_alerts；禁止 researcher 完成后直接路由 reporter。"
                 "若任务含调拨出库请求，analyst 完成后路由 hitl 审批；否则 reporter 输出评估。\n"
-                "含'【执行阶段】'：直接路由 analyst（current_task 开头保留「【执行阶段】已授权」标记），analyst 完成后路由 reporter。\n"
                 "其他查询：先路由 researcher，此步完成后必须继续到 analyst 调用 check_alerts；reporter 整合输出；无需 HITL。"
             ),
             "analyst_context": (
-                "【研判阶段（默认）】依次调用：\n"
+                "【研判阶段】依次调用：\n"
                 "1. get_inventory() — 查询全库存清单（含仓库坐标，供运输路线使用）\n"
                 "2. check_alerts() — 查询当前低于预警线的物资\n"
-                "整理评估方案后停止，勿调用 allocate_*（写操作，需 HITL）。\n"
-                "【执行阶段】调用 check_alerts() 和 get_inventory() 核实库存后，立即调用 allocate_standard_pack 或 allocate_custom 执行调拨（上层已授权）。\n"
-                "【执行阶段必须出图】调拨成功后调用 plan_driving_route 绘制物资运输路线，from 用 get_inventory 返回的 warehouse.lat/lng，to 用 geocode 得到的事故点坐标。\n"
+                "整理评估方案后停止，勿调用 allocate_*（写操作，由 executor 执行）。\n"
+                "若任务明确要求调拨出库，系统会阻止写操作调用并由你输出：\n"
+                "【HITL_REQUIRED】待执行：allocate_standard_pack\n"
+                "【EXECUTION_INTENT】{\"tool_name\": \"allocate_standard_pack\", \"params\": {\"level\": \"Ⅲ\"}}\n"
+                "无法确定的参数填 \"auto\"，executor 会在运行时查询补全。\n"
                 "【MCP引用标注】引用数据加[M数字]，如「防护口罩N95库存200个[M1]，告警物资2项[M2]」"
             ),
         },
@@ -214,14 +215,27 @@ DEPARTMENTS = [
             "supervisor_hints": (
                 "【纯评估/查询任务】无明确调派/撤回动作：先路由 researcher，再路由 analyst 调用 get_fire_stations 和 get_water_supplies；analyst 完成后直接路由 reporter，无需 HITL。\n"
                 "【含写操作请求任务】含「调派消防车」「撤回消防车」等动词：必须先路由 analyst，analyst 尝试调用写操作后输出 HITL_REQUIRED，再路由 hitl 审批，审批通过后路由 reporter。\n"
-                "警戒圈设置（set_fire_perimeter）：路由 analyst 执行后直接路由 reporter，无需 HITL。\n"
-                "含'【执行阶段】'：直接路由 analyst（已获上层 HITL 授权），analyst 完成后路由 reporter。"
+                "警戒圈设置（set_fire_perimeter）：路由 analyst 执行后直接路由 reporter，无需 HITL。"
             ),
             "analyst_context": (
-                "【评估/查询阶段】：① get_fire_stations(lat, lng) ② get_water_supplies(lat, lng) ③ 整理推荐方案；禁止调用 dispatch/recall。\n"
-                "【直接调派命令（无「【执行阶段】」标记）】：① get_fire_stations → ② dispatch_fire_trucks → ③ plan_driving_route（不可省略） → ④ 末尾必须写【HITL_REQUIRED】。\n"
-                "【直接撤回命令（无「【执行阶段】」标记）】：① get_fire_stations → ② recall_fire_trucks → ③ 末尾必须写【HITL_REQUIRED】。\n"
-                "【执行阶段】：① get_fire_stations → ② dispatch_fire_trucks（已授权） → ③ plan_driving_route（不可省略）。\n"
+                "【情况一：任务含「调派消防车」关键词】\n"
+                "步骤1: 直接调用 dispatch_fire_trucks（station_id 填 auto，系统会阻止此写操作，这是预期行为）\n"
+                "步骤2: 收到阻止后立即输出（不得省略）：\n"
+                "【HITL_REQUIRED】待执行：dispatch_fire_trucks\n"
+                "【EXECUTION_INTENT】{\"tool_name\": \"dispatch_fire_trucks\", \"params\": {\"station_id\": \"auto\", \"truck_count\": <数量 int>, \"dest_lat\": <事故纬度 float>, \"dest_lng\": <事故经度 float>}}\n"
+                "\n"
+                "【情况二：任务含「撤回消防车」关键词】\n"
+                "步骤1: 直接调用 recall_fire_trucks（无需先查询消防站，station_id 填 auto；系统会阻止此写操作，这是预期行为）\n"
+                "步骤2: 收到阻止后立即输出（不得省略）：\n"
+                "【HITL_REQUIRED】待执行：recall_fire_trucks\n"
+                "【EXECUTION_INTENT】{\"tool_name\": \"recall_fire_trucks\", \"params\": {\"station_id\": \"auto\", \"truck_count\": 2}}\n"
+                "\n"
+                "【情况三：纯研判/查询（不含调派/撤回）】\n"
+                "步骤1: get_fire_stations() — 查询消防站及可用车辆数量\n"
+                "步骤2: get_water_supplies() — 查询消防水源\n"
+                "整理推荐调派方案后停止，禁止调用 dispatch/recall。\n"
+                "\n"
+                "【set_fire_perimeter】：直接调用，无需 HITL（只读标注）。\n"
                 "【MCP引用标注】引用数据加[M数字]，如「陆家嘴站可用4辆[M1]，水池距事故点1.2km[M2]」"
             ),
         },
@@ -254,8 +268,11 @@ async def _check_deps() -> None:
         )
 
     # ── Milvus ──────────────────────────────────────────────────────────
-    milvus_host = str(getattr(settings, "milvus_host", "localhost"))
-    milvus_port = int(getattr(settings, "milvus_port", 19530))
+    from urllib.parse import urlparse
+    _milvus_uri = str(getattr(settings, "milvus_uri", "http://localhost:19530"))
+    _parsed = urlparse(_milvus_uri)
+    milvus_host = _parsed.hostname or "localhost"
+    milvus_port = _parsed.port or 19530
     try:
         _, _w = await asyncio.wait_for(
             asyncio.open_connection(milvus_host, milvus_port), timeout=5.0
@@ -265,7 +282,8 @@ async def _check_deps() -> None:
     except Exception as exc:
         errors.append(
             f"❌ Milvus 不可达（{milvus_host}:{milvus_port}）：{exc}\n"
-            "   请确认 Milvus 已启动，或检查 MILVUS_HOST / MILVUS_PORT 配置"
+            f"   当前 MILVUS_URI={_milvus_uri}\n"
+            "   请确认 Milvus 已启动，或检查 MILVUS_URI 配置"
         )
 
     if errors:
