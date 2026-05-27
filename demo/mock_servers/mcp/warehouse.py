@@ -44,13 +44,13 @@ async def get_inventory(category: str | None = None, warehouse_id: str | None = 
     """查询应急物资库存。
 
     Args:
-        category: 可选类别过滤（如"个人防护"/"医疗物资"等），None 返回全部
-        warehouse_id: 可选仓库 ID 过滤（如"WH-01"），None 返回第一个仓库
+        category: 可选类别过滤，必须使用精确类别名（如"消防器材"/"个人防护"/"医疗物资"/"现场处置"/"通信设备"/"动力设备"/"后勤物资"/"洗消物资"/"防汛物资"/"电力抢修"），None 返回全部类别
+        warehouse_id: 可选仓库 ID 过滤（如"WH1"/"WH2"），None 返回最近仓库
 
     Returns:
         {warehouse: {name, lat, lng, address}, items: [...库存列表，每项含 id/name/category/quantity/unit/alert_threshold...]}
     """
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         # 查询仓库信息
         if warehouse_id:
@@ -61,15 +61,18 @@ async def get_inventory(category: str | None = None, warehouse_id: str | None = 
             wh_row = await (await db.execute("SELECT * FROM warehouses LIMIT 1")).fetchone()
         warehouse = dict(wh_row) if wh_row else {}
 
+        # 未指定 warehouse_id 时，默认锁定到上面查到的第一个仓库，避免返回全部 8 仓数据
+        effective_wh_id = warehouse_id or (warehouse.get("id") if warehouse else None)
+
         # 查询库存
         conditions = []
         params = []
         if category:
             conditions.append("category = ?")
             params.append(category)
-        if warehouse_id:
+        if effective_wh_id:
             conditions.append("warehouse_id = ?")
-            params.append(warehouse_id)
+            params.append(effective_wh_id)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         cur = await db.execute(
             f"SELECT * FROM warehouse_inventory {where} ORDER BY category, name",
@@ -139,7 +142,7 @@ async def allocate_standard_pack(level: str) -> dict:
         raise ValueError(f"预案等级 {level!r} 无效，可选：Ⅲ、Ⅱ")
 
     pack = _STANDARD_PACKS[level]
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         results = await _deduct_items(db, pack)
         await db.commit()
 
@@ -169,7 +172,7 @@ async def allocate_custom(items: list[dict]) -> dict:
     if not items:
         raise ValueError("调拨物资列表不能为空")
 
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         results = await _deduct_items(db, items)
         await db.commit()
 
@@ -192,7 +195,7 @@ async def check_alerts() -> list[dict]:
     Returns:
         告警物资列表，每项包含 name/category/quantity/alert_threshold/shortage
     """
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """SELECT name, category, quantity, unit, alert_threshold
@@ -214,14 +217,14 @@ async def check_alerts() -> list[dict]:
 async def list_warehouses(
     lat: float | None = None,
     lng: float | None = None,
-    radius_km: float = 100.0,
+    radius_km: float = 10.0,
 ) -> list[dict]:
-    """查询应急物资仓库列表，按距离升序排列。
+    """查询应急物资仓库列表，按距离升序排列。优先返回 10km 内仓库；无结果时返回全部。
 
     Args:
         lat: 参考点纬度（事故坐标），None 则返回全部仓库
         lng: 参考点经度，None 则返回全部仓库
-        radius_km: 搜索半径（公里），默认 100km（覆盖全上海）
+        radius_km: 搜索半径（公里），默认 10km；10km 内无仓库时自动扩大到全部
 
     Returns:
         仓库列表，每项包含 id/name/address/lat/lng/distance_km/map_marker
@@ -236,27 +239,36 @@ async def list_warehouses(
         a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
         return R * 2 * math.asin(math.sqrt(a))
 
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM warehouses ORDER BY id")
         rows = await cur.fetchall()
 
-    result = []
-    for row in rows:
-        wh = dict(row)
-        if lat is not None and lng is not None:
-            dist = _haversine(lat, lng, wh["lat"], wh["lng"])
-            if dist > radius_km:
-                continue
-            wh["distance_km"] = round(dist, 1)
-        else:
-            wh["distance_km"] = None
-        wh["map_marker"] = {
-            "icon": "🏭",
-            "position": [wh["lng"], wh["lat"]],
-            "label": wh["name"],
-        }
-        result.append(wh)
+    all_wh = [dict(row) for row in rows]
+
+    def _build(radius: float | None) -> list[dict]:
+        out = []
+        for wh in all_wh:
+            if lat is not None and lng is not None:
+                dist = _haversine(lat, lng, wh["lat"], wh["lng"])
+                if radius is not None and dist > radius:
+                    continue
+                wh = {**wh, "distance_km": round(dist, 1)}
+            else:
+                wh = {**wh, "distance_km": None}
+            wh["map_marker"] = {
+                "icon": "🏭",
+                "position": [wh["lng"], wh["lat"]],
+                "label": wh["name"],
+            }
+            out.append(wh)
+        return out
+
+    result = _build(radius_km)
+
+    # 10km 内无仓库时自动扩大到全部
+    if lat is not None and lng is not None and not result:
+        result = _build(None)
 
     if lat is not None and lng is not None:
         result.sort(key=lambda x: x["distance_km"])

@@ -6,12 +6,23 @@
 - geocode: 地理编码（地址 → 坐标）
 
 需要环境变量 AMAP_API_KEY 或 AMAP_SERVICE_KEY（两者均可）。
+优先读取进程环境，其次自动加载 backend/.env（dotenv）。
 """
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
+
+# 自动加载 backend/.env（仅当环境变量未设置时补充）
+_env_file = Path(__file__).parent.parent.parent.parent / "backend" / ".env"
+if _env_file.exists() and not (os.environ.get("AMAP_API_KEY") or os.environ.get("AMAP_SERVICE_KEY")):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_env_file, override=False)
+    except ImportError:
+        pass  # dotenv 未安装时跳过
 
 mcp = FastMCP("amap", host="0.0.0.0", port=8106)
 

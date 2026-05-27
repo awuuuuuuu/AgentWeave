@@ -23,6 +23,35 @@ DB = Path(__file__).parent.parent.parent / "city_state.db"
 
 VALID_MODES = {"正常", "全红封闭", "应急绿波", "单向清空", "消防应急"}
 
+# LLM 常见英文/简写别名 → 规范中文模式名
+_MODE_ALIASES: dict[str, str] = {
+    "emergency":       "消防应急",
+    "fire_emergency":  "消防应急",
+    "fire emergency":  "消防应急",
+    "消防":            "消防应急",
+    "all_red":         "全红封闭",
+    "all red":         "全红封闭",
+    "red":             "全红封闭",
+    "全红":            "全红封闭",
+    "green_wave":      "应急绿波",
+    "green wave":      "应急绿波",
+    "greenwave":       "应急绿波",
+    "绿波":            "应急绿波",
+    "one_way":         "单向清空",
+    "one way":         "单向清空",
+    "single":          "单向清空",
+    "单向":            "单向清空",
+    "normal":          "正常",
+    "restore":         "正常",
+}
+
+
+def _normalize_mode(mode: str) -> str:
+    """将 LLM 输出的模式字符串规范化为 VALID_MODES 中的值。"""
+    if mode in VALID_MODES:
+        return mode
+    return _MODE_ALIASES.get(mode.lower().strip(), mode)
+
 # 预案批量配置（路口编号与 RAG 文档及 city_state.db 保持一致，使用 INT-XX）
 _EVACUATION_PLANS: dict[str, dict[str, str]] = {
     "Ⅳ": {
@@ -53,7 +82,7 @@ async def list_intersections() -> list[dict]:
     Returns:
         路口列表，每项包含 id/name/lat/lng/mode/mode_expires_at
     """
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM intersections ORDER BY id")
         rows = await cur.fetchall()
@@ -64,7 +93,7 @@ async def list_intersections() -> list[dict]:
 async def set_mode(
     intersection_id: str,
     mode: str,
-    duration_min: int,
+    duration_min: int = 120,
 ) -> dict:
     """⚠️ 写操作：设置单个路口信号模式，会修改系统状态，需经 HITL 审批后执行。
 
@@ -76,10 +105,11 @@ async def set_mode(
     Returns:
         更新后的路口信息
     """
+    mode = _normalize_mode(mode)
     if mode not in VALID_MODES:
         raise ValueError(f"无效模式 {mode!r}，可选：{', '.join(sorted(VALID_MODES))}")
 
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM intersections WHERE id = ?", (intersection_id,)
@@ -131,7 +161,7 @@ async def apply_evacuation_plan(level: str) -> dict:
     plan = _EVACUATION_PLANS[level]
     updated = []
 
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         for sid, mode in plan.items():
             await db.execute(
@@ -183,7 +213,7 @@ async def get_nearby_intersections(
         a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
         return R * 2 * math.asin(math.sqrt(a))
 
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM intersections")
         rows = await cur.fetchall()

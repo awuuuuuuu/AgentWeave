@@ -20,6 +20,46 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 
+async def _migrate_warehouse_inventory(db) -> None:
+    """Migration: deduplicate warehouse_inventory and add UNIQUE constraint if missing."""
+    # Check table exists (fresh DB has no tables yet)
+    exists_cur = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='warehouse_inventory'"
+    )
+    if not await exists_cur.fetchone():
+        return  # Table not yet created; CREATE TABLE below will include UNIQUE constraint
+
+    cur = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE name='warehouse_inventory'"
+    )
+    row = await cur.fetchone()
+    if row and "UNIQUE" in (row[0] or ""):
+        return  # constraint already exists, nothing to do
+
+    logger.info("Migration: adding UNIQUE constraint to warehouse_inventory …")
+    # Keep only the min-id row per (name, warehouse_id), then recreate table with constraint
+    await db.executescript("""
+        CREATE TABLE IF NOT EXISTS warehouse_inventory_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            unit TEXT NOT NULL,
+            alert_threshold INTEGER NOT NULL,
+            warehouse_id TEXT NOT NULL DEFAULT 'WH1',
+            UNIQUE(name, warehouse_id)
+        );
+        INSERT OR IGNORE INTO warehouse_inventory_new
+            (id, name, category, quantity, unit, alert_threshold, warehouse_id)
+        SELECT MIN(id), name, category, quantity, unit, alert_threshold, warehouse_id
+        FROM warehouse_inventory
+        GROUP BY name, warehouse_id;
+        DROP TABLE warehouse_inventory;
+        ALTER TABLE warehouse_inventory_new RENAME TO warehouse_inventory;
+    """)
+    logger.info("Migration complete: warehouse_inventory deduplicated and UNIQUE constraint added.")
+
+
 async def run(force: bool = False) -> None:
     import aiosqlite
 
@@ -28,6 +68,8 @@ async def run(force: bool = False) -> None:
         logger.info("--force: 已删除旧数据库，全量重建")
 
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
+        await _migrate_warehouse_inventory(db)
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS hospitals (
                 id TEXT PRIMARY KEY,
@@ -126,7 +168,7 @@ async def run(force: bool = False) -> None:
 
         # ── ambulances ────────────────────────────────────────────────────────
         await db.executemany(
-            "INSERT OR IGNORE INTO ambulances (id, status, lat, lng, hospital_id) VALUES (?,?,?,?,?)",
+            "INSERT OR REPLACE INTO ambulances (id, status, lat, lng, hospital_id) VALUES (?,?,?,?,?)",
             [
                 ("A1", "待命", 31.1882, 121.5122, "H1"),
                 ("A2", "待命", 31.1878, 121.5118, "H1"),
@@ -141,7 +183,7 @@ async def run(force: bool = False) -> None:
 
         # ── intersections（INT-01~INT-08 为疏散预案硬编码路口，必须保留）───────
         await db.executemany(
-            "INSERT OR IGNORE INTO intersections (id, name, lat, lng, mode, mode_expires_at, district, road_grade) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO intersections (id, name, lat, lng, mode, mode_expires_at, district, road_grade) VALUES (?,?,?,?,?,?,?,?)",
             [
                 ("INT-01", "世纪大道×陆家嘴环路",        31.2380, 121.4970, "正常", None, "浦东新区", "主干路"),
                 ("INT-02", "世纪大道×浦东南路",           31.2240, 121.5010, "正常", None, "浦东新区", "主干路"),
@@ -188,8 +230,8 @@ async def run(force: bool = False) -> None:
         _base = [
             ("防护口罩N95",   "个人防护",  200, "个",  40),
             ("防化服",        "个人防护",   30, "套",   6),
-            ("空气呼吸器",    "个人防护",   20, "套",   4),
-            ("消防手套",      "个人防护",   50, "双",  10),
+            ("空气呼吸器",    "消防器材",   20, "套",   4),
+            ("消防手套",      "消防器材",   50, "双",  10),
             ("急救箱",        "医疗物资",   80, "个",  16),
             ("医用氧气瓶",    "医疗物资",   60, "瓶",  12),
             ("急救担架",      "医疗物资",   20, "副",   4),
@@ -225,7 +267,7 @@ async def run(force: bool = False) -> None:
             for name, cat, qty, unit, thr in _base
         ]
         await db.executemany(
-            "INSERT OR IGNORE INTO warehouse_inventory (name, category, quantity, unit, alert_threshold, warehouse_id) VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO warehouse_inventory (name, category, quantity, unit, alert_threshold, warehouse_id) VALUES (?,?,?,?,?,?)",
             inventory_rows,
         )
 
@@ -302,7 +344,7 @@ async def run(force: bool = False) -> None:
 
         # ── fire_stations（浦东种子数据）────────────────────────────────────
         await db.executemany(
-            "INSERT OR IGNORE INTO fire_stations VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO fire_stations VALUES (?,?,?,?,?,?,?,?)",
             [
                 ("FS1", "浦东消防救援支队陆家嘴站", "上海市浦东新区陆家嘴环路1388号", 31.2370, 121.4960, 5, 4, 30),
                 ("FS2", "浦东消防救援支队世纪公园站", "上海市浦东新区龙阳路2300号",    31.2190, 121.5380, 4, 3, 25),

@@ -33,32 +33,42 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 async def get_fire_stations(
     lat: float | None = None,
     lng: float | None = None,
-    radius_km: float = 15.0,
+    radius_km: float = 5.0,
 ) -> dict:
-    """查询消防救援站列表。
+    """查询消防救援站列表。优先返回 5km 内的站点；若 5km 内无可用消防车则自动扩大到 15km。
 
     Args:
         lat: 事故点纬度（可选，用于按距离排序和过滤）
         lng: 事故点经度
-        radius_km: 搜索半径（公里，默认15）
+        radius_km: 搜索半径（公里，默认5；无可用车辆时自动扩至15）
 
     Returns:
         dict: {"stations": [...], "total": int}
               每条包含 id/name/address/lat/lng/total_trucks/available_trucks/personnel/distance_km
     """
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall("SELECT * FROM fire_stations")
 
-    stations = []
-    for row in rows:
-        d = dict(row)
-        if lat is not None and lng is not None:
-            dist = _haversine_km(lat, lng, d["lat"], d["lng"])
-            d["distance_km"] = round(dist, 2)
-            if dist > radius_km:
-                continue
-        stations.append(d)
+    all_rows = [dict(row) for row in rows]
+
+    def _filter(radius: float) -> list[dict]:
+        result = []
+        for d in all_rows:
+            if lat is not None and lng is not None:
+                dist = _haversine_km(lat, lng, d["lat"], d["lng"])
+                if dist > radius:
+                    continue
+                d = {**d, "distance_km": round(dist, 2)}
+            result.append(d)
+        return result
+
+    stations = _filter(radius_km)
+
+    # 5km 内无可用消防车时自动扩大到 15km
+    if lat is not None and lng is not None and radius_km <= 5.0:
+        if not any(s.get("available_trucks", 0) > 0 for s in stations):
+            stations = _filter(15.0)
 
     if lat is not None:
         stations.sort(key=lambda s: s.get("distance_km", 9999))
@@ -70,8 +80,8 @@ async def get_fire_stations(
 async def dispatch_fire_trucks(
     station_id: str,
     truck_count: int,
-    dest_lat: float,
-    dest_lng: float,
+    dest_lat: float | None = None,
+    dest_lng: float | None = None,
     incident_type: str = "火灾",
 ) -> dict:
     """⚠️ 写操作：调派消防车前往事故地点，会修改系统状态，需经 HITL 审批后执行。
@@ -79,14 +89,14 @@ async def dispatch_fire_trucks(
     Args:
         station_id: 消防站 ID（如 FS1）
         truck_count: 调派车辆数（不超过 available_trucks）
-        dest_lat: 目的地纬度
+        dest_lat: 目的地纬度（可选，有坐标时计算 ETA 和路线；缺省时仅更新出车状态）
         dest_lng: 目的地经度
         incident_type: 事故类型，影响预计处置时间
 
     Returns:
         dict: 调派结果，含 from_lat/from_lng 可供路线规划
     """
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT * FROM fire_stations WHERE id = ?", (station_id,)
@@ -103,9 +113,11 @@ async def dispatch_fire_trucks(
         )
         await db.commit()
 
-    dist_km = _haversine_km(s["lat"], s["lng"], dest_lat, dest_lng)
-    eta_min = round(dist_km / 40 * 60 + 5, 1)  # 40km/h + 5min 出动准备
+    has_coords = dest_lat is not None and dest_lng is not None
+    dist_km = _haversine_km(s["lat"], s["lng"], dest_lat, dest_lng) if has_coords else None
+    eta_min = round(dist_km / 40 * 60 + 5, 1) if dist_km is not None else None
 
+    eta_text = f"预计{eta_min}分钟到达。" if eta_min is not None else ""
     return {
         "status": "dispatched",
         "station_name": s["name"],
@@ -117,7 +129,7 @@ async def dispatch_fire_trucks(
         "incident_type": incident_type,
         "eta_minutes": eta_min,
         "message": (
-            f"已从{s['name']}调派{actual}辆消防车，预计{eta_min}分钟到达。"
+            f"已从{s['name']}调派{actual}辆消防车，{eta_text}"
             f"剩余可用车辆：{s['available_trucks'] - actual}辆"
         ),
         "map_marker": {
@@ -139,7 +151,7 @@ async def recall_fire_trucks(station_id: str, truck_count: int) -> dict:
     Returns:
         dict: 回撤结果
     """
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute(
             "SELECT * FROM fire_stations WHERE id = ?", (station_id,)
@@ -211,7 +223,7 @@ async def get_water_supplies(
     Returns:
         dict: {"supplies": [...], "total": int}
     """
-    async with aiosqlite.connect(DB) as db:
+    async with aiosqlite.connect(DB, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall("SELECT * FROM water_supplies")
 
