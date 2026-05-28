@@ -15,6 +15,38 @@ dept_code → extractor 注册表。
 from __future__ import annotations
 
 import json as _json
+import math
+
+MAX_RESOURCE_MARKERS = 3   # 地图上每类资源最多显示数量，避免图标拥挤
+MAX_PROXIMITY_KM = 20.0    # 只渲染距事故点 20km 内的资源
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2)
+    return R * 2 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _nearby(
+    markers: list[dict],
+    incident_lat: float | None,
+    incident_lng: float | None,
+    max_count: int = MAX_RESOURCE_MARKERS,
+) -> list[dict]:
+    """按距事故点距离排序并截取 max_count 个；无坐标时按原顺序截取。"""
+    if not incident_lat or not incident_lng:
+        return markers[:max_count]
+
+    def _dist(m: dict) -> float:
+        pos = m.get("position", [0.0, 0.0])
+        return _haversine_km(incident_lat, incident_lng, float(pos[1]), float(pos[0]))
+
+    sorted_m = sorted(markers, key=_dist)
+    nearby = [m for m in sorted_m if _dist(m) <= MAX_PROXIMITY_KM]
+    return (nearby if nearby else sorted_m)[:max_count]
 
 
 def _parse_list_result(result: object, content: str) -> list[dict]:
@@ -71,6 +103,8 @@ def extract_map_update(
     content: str,
     out: list[dict],
     dept_code: str = "",
+    incident_lat: float | None = None,
+    incident_lng: float | None = None,
 ) -> None:
     """从部门 MCP 工具调用结果中提取地图数据，追加到 out 列表。
 
@@ -81,26 +115,28 @@ def extract_map_update(
     （供前端按部门着色）。
     """
     # ── 资源位置工具：list_ambulances ─────────────────────────────────────────
+    # 渲染最近 1 辆待命救护车（为 ambulance_route 路线合成提供 FROM 坐标）。
+    # max_count=1 避免遮挡医院 marker；救护车总数已嵌入 get_hospital_capacity.standby_ambulance_count。
     if "list_ambulances" in tool_name:
-        items: list[dict] = _parse_list_result(result, content)
-        markers = [
+        items_a: list[dict] = _parse_list_result(result, content)
+        candidates_a = [
             {
                 "position": [float(r["lng"]), float(r["lat"])],
                 "label": str(r.get("id", "?")),
                 "icon": "🚑",
-                "meta": f"状态:{r.get('status','')}",
+                "meta": "待命救护车",
             }
-            for r in items
+            for r in items_a
             if isinstance(r, dict) and r.get("lat") and r.get("lng")
+            and r.get("status") == "待命"
         ]
-        if markers:
-            lngs = [m["position"][0] for m in markers]
-            lats = [m["position"][1] for m in markers]
+        markers_a = _nearby(candidates_a, incident_lat, incident_lng, max_count=1)
+        if markers_a:
             out.append({
-                "title": "救护车待命位置",
-                "center": [sum(lngs) / len(lngs), sum(lats) / len(lats)],
-                "zoom": 12,
-                "markers": markers,
+                "title": "最近待命救护车",
+                "center": markers_a[0]["position"],
+                "zoom": 13,
+                "markers": markers_a,
                 "layer": "resources",
             })
         return
@@ -108,16 +144,24 @@ def extract_map_update(
     # ── 资源位置工具：get_hospital_capacity ───────────────────────────────────
     if "get_hospital_capacity" in tool_name:
         items_h: list[dict] = _parse_list_result(result, content)
-        markers_h = [
-            {
-                "position": [float(r["lng"]), float(r["lat"])],
-                "label": str(r.get("name", r.get("id", "?"))),
-                "icon": "🏥",
-                "meta": f"ICU:{r.get('icu_available',0)} 急诊:{r.get('emergency_available',0)}",
-            }
-            for r in items_h
-            if isinstance(r, dict) and r.get("lat") and r.get("lng")
-        ]
+        markers_h = _nearby(
+            [
+                {
+                    "position": [float(r["lng"]), float(r["lat"])],
+                    "label": str(r.get("name", r.get("id", "?"))),
+                    "icon": "🏥",
+                    "meta": (
+                        f"ICU:{r.get('icu_available',0)} "
+                        f"急诊:{r.get('emergency_available',0)} "
+                        f"救护车:{r.get('standby_ambulance_count',0)}辆"
+                    ),
+                }
+                for r in items_h
+                if isinstance(r, dict) and r.get("lat") and r.get("lng")
+            ],
+            incident_lat, incident_lng,
+            max_count=5,  # 显示全部 5 家医院，不因距离截断
+        )
         if markers_h:
             lngs_h = [m["position"][0] for m in markers_h]
             lats_h = [m["position"][1] for m in markers_h]
@@ -184,8 +228,8 @@ def extract_map_update(
             })
         return
 
-    # ── list_intersections → 路口信号状态（图标按模式区分）──────────────────────
-    if "list_intersections" in tool_name:
+    # ── list_intersections / get_nearby_intersections → 路口信号状态（图标按模式区分）──
+    if "list_intersections" in tool_name or "get_nearby_intersections" in tool_name:
         items_i: list[dict] = _parse_list_result(result, content)
         _MODE_COLOR = {
             "全红封闭": "#ef4444",
@@ -201,17 +245,21 @@ def extract_map_update(
             "消防应急": "🔴",
             "正常":     "🚦",
         }
-        markers_i = [
-            {
-                "position": [float(r["lng"]), float(r["lat"])],
-                "label": str(r.get("name", r.get("id", "?"))),
-                "icon": _MODE_ICON.get(str(r.get("mode", "正常")), "🚦"),
-                "meta": str(r.get("mode", "正常")),
-                "color": _MODE_COLOR.get(str(r.get("mode", "正常")), "#6b7280"),
-            }
-            for r in items_i
-            if isinstance(r, dict) and r.get("lat") and r.get("lng")
-        ]
+        markers_i = _nearby(
+            [
+                {
+                    "position": [float(r["lng"]), float(r["lat"])],
+                    "label": str(r.get("name", r.get("id", "?"))),
+                    "icon": _MODE_ICON.get(str(r.get("mode", "正常")), "🚦"),
+                    "meta": str(r.get("mode", "正常")),
+                    "color": _MODE_COLOR.get(str(r.get("mode", "正常")), "#6b7280"),
+                }
+                for r in items_i
+                if isinstance(r, dict) and r.get("lat") and r.get("lng")
+            ],
+            incident_lat, incident_lng,
+            max_count=6,  # 路口多显示几个
+        )
         if markers_i:
             lngs_i = [m["position"][0] for m in markers_i]
             lats_i = [m["position"][1] for m in markers_i]
@@ -301,6 +349,7 @@ def extract_map_update(
             if not isinstance(item, dict):
                 continue
             sid = item.get("id", "")
+            name_ep = item.get("name", sid)  # 优先使用道路名称，降级使用 ID
             mode_ep = str(item.get("mode", "正常"))
             coords_ep = (item.get("lat"), item.get("lng")) if item.get("lat") and item.get("lng") else None
             if not coords_ep:
@@ -308,7 +357,7 @@ def extract_map_update(
             lat_ep, lng_ep = coords_ep
             markers_ep.append({
                 "position": [lng_ep, lat_ep],
-                "label": sid,
+                "label": name_ep,
                 "icon": _MI2.get(mode_ep, "🚦"),
                 "meta": mode_ep,
                 "color": _MC2.get(mode_ep, "#6b7280"),
@@ -409,17 +458,40 @@ def extract_map_update(
 
     # ── get_fire_stations → 🚒 消防站位置标记 ─────────────────────────────────
     if "get_fire_stations" in tool_name:
-        items_fs: list[dict] = _parse_list_result(result, content)
-        markers_fs = [
-            {
-                "position": [float(r["lng"]), float(r["lat"])],
-                "label": str(r.get("name", r.get("id", "?"))),
-                "icon": "🚒",
-                "meta": f"可用:{r.get('available_trucks',0)}辆 响应:{r.get('response_time_min',0)}min",
-            }
-            for r in items_fs
-            if isinstance(r, dict) and r.get("lat") and r.get("lng")
-        ]
+        # get_fire_stations 返回 {"stations": [...], "total": N}，需从 stations 键提取列表
+        _raw_fs: dict | None = None
+        if isinstance(result, dict):
+            _raw_fs = result
+        elif isinstance(result, list) and result:
+            _first_fs = result[0]
+            _t_fs = (
+                getattr(_first_fs, "text", None)
+                or (_first_fs.get("text") if isinstance(_first_fs, dict) else None)
+            )
+            if _t_fs:
+                try:
+                    _raw_fs = _json.loads(_t_fs)
+                except Exception:
+                    pass
+        if not isinstance(_raw_fs, dict):
+            try:
+                _raw_fs = _json.loads(content)
+            except Exception:
+                pass
+        items_fs: list[dict] = _raw_fs.get("stations", []) if isinstance(_raw_fs, dict) else []
+        markers_fs = _nearby(
+            [
+                {
+                    "position": [float(r["lng"]), float(r["lat"])],
+                    "label": str(r.get("name", r.get("id", "?"))),
+                    "icon": "🚒",
+                    "meta": f"可用:{r.get('available_trucks',0)}辆",
+                }
+                for r in items_fs
+                if isinstance(r, dict) and r.get("lat") and r.get("lng")
+            ],
+            incident_lat, incident_lng,
+        )
         if markers_fs:
             lngs_fs = [m["position"][0] for m in markers_fs]
             lats_fs = [m["position"][1] for m in markers_fs]
@@ -434,17 +506,40 @@ def extract_map_update(
 
     # ── get_water_supplies → 💧 消防水源标记 ─────────────────────────────────
     if "get_water_supplies" in tool_name:
-        items_ws: list[dict] = _parse_list_result(result, content)
-        markers_ws = [
-            {
-                "position": [float(r["lng"]), float(r["lat"])],
-                "label": str(r.get("name", r.get("id", "?"))),
-                "icon": "💧",
-                "meta": f"{r.get('capacity_tons',0)}吨 距{r.get('distance_km',0):.1f}km",
-            }
-            for r in items_ws
-            if isinstance(r, dict) and r.get("lat") and r.get("lng")
-        ]
+        # get_water_supplies 返回 {"supplies": [...], "total": N}，需从 supplies 键提取列表
+        _raw_ws: dict | None = None
+        if isinstance(result, dict):
+            _raw_ws = result
+        elif isinstance(result, list) and result:
+            _first_ws = result[0]
+            _t_ws = (
+                getattr(_first_ws, "text", None)
+                or (_first_ws.get("text") if isinstance(_first_ws, dict) else None)
+            )
+            if _t_ws:
+                try:
+                    _raw_ws = _json.loads(_t_ws)
+                except Exception:
+                    pass
+        if not isinstance(_raw_ws, dict):
+            try:
+                _raw_ws = _json.loads(content)
+            except Exception:
+                pass
+        items_ws: list[dict] = _raw_ws.get("supplies", []) if isinstance(_raw_ws, dict) else []
+        markers_ws = _nearby(
+            [
+                {
+                    "position": [float(r["lng"]), float(r["lat"])],
+                    "label": str(r.get("name", r.get("id", "?"))),
+                    "icon": "💧",
+                    "meta": f"{r.get('capacity_tons',0)}吨 距{r.get('distance_km',0):.1f}km",
+                }
+                for r in items_ws
+                if isinstance(r, dict) and r.get("lat") and r.get("lng")
+            ],
+            incident_lat, incident_lng,
+        )
         if markers_ws:
             lngs_ws = [m["position"][0] for m in markers_ws]
             lats_ws = [m["position"][1] for m in markers_ws]
@@ -481,11 +576,12 @@ def extract_map_update(
         if isinstance(parsed_ft, dict):
             from_lat = parsed_ft.get("from_lat")
             from_lng = parsed_ft.get("from_lng")
-            dest_lat = parsed_ft.get("dest_lat")
-            dest_lng = parsed_ft.get("dest_lng")
+            # fire_station.py 返回 "to_lat"/"to_lng"，兼容两种 key 名
+            dest_lat = parsed_ft.get("dest_lat") or parsed_ft.get("to_lat")
+            dest_lng = parsed_ft.get("dest_lng") or parsed_ft.get("to_lng")
             if from_lat and from_lng and dest_lat and dest_lng:
                 truck_count = parsed_ft.get("truck_count", "?")
-                station_id  = parsed_ft.get("station_id", "?")
+                station_id  = parsed_ft.get("station_id") or parsed_ft.get("station_name", "?")
                 out.append({
                     "title": f"消防车调派：{station_id} → 事故现场（{truck_count}辆）",
                     "center": [

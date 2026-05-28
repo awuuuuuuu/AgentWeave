@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_QUERY_CHARS = 4000
 _KNOWN_NODES = frozenset(
-    {"memory_inject", "supervisor", "researcher", "analyst", "reporter"}
+    {"memory_inject", "supervisor", "researcher", "analyst", "executor", "reporter"}
 )
 
 # Researcher 子图内部步骤名（文案由前端 RESEARCHER_STEP_TEXT 维护）
@@ -243,7 +243,20 @@ async def _process_events(
                         data["mcp_sources"] = mcp_sources
                     # amap 工具调用结果 → 前端地图气泡
                     for mu in output.get("map_updates", []):
-                        yield _sse({"type": "map_update", "data": mu})
+                        yield _sse({"type": "map_update", "node": "analyst", "data": mu})
+                elif ev_name == "executor":
+                    msgs = output.get("messages", [])
+                    for m in reversed(msgs):
+                        if isinstance(m, AIMessage) and m.content:
+                            data["answer_text"] = m.content
+                            break
+                        elif isinstance(m, dict) and m.get("type") == "ai" and m.get("content"):
+                            data["answer_text"] = m["content"]
+                            break
+                    if mcp_sources := output.get("mcp_sources", []):
+                        data["mcp_sources"] = mcp_sources
+                    for mu in output.get("map_updates", []):
+                        yield _sse({"type": "map_update", "node": "executor", "data": mu})
                 # supervisor 携带路由意图说明；超纲降级（无 workers）时以 message_to_user 作最终答案
                 if ev_name == "supervisor":
                     if msg := output.get("message_to_user", ""):
@@ -474,8 +487,8 @@ async def agent_stream(
         has_thread = bool(existing and existing.values)
 
         if has_thread:
-            # 已有线程：追加用户消息（续命令 / 追加指令）
-            graph_input: Any = {"messages": [HumanMessage(content=query)]}
+            # 已有线程：追加用户消息，同步更新 incident 供 classify_intent 判断意图
+            graph_input: Any = {"messages": [HumanMessage(content=query)], "incident": query}
         else:
             # 首轮：query 即事故描述，初始化完整 WeaveState
             # 从 DB 加载各部门 A2A 地址（避免在图节点内访问 DB）

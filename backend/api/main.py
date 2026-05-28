@@ -115,22 +115,27 @@ async def lifespan(app: FastAPI):
 
     pg_url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
-    # 使用连接池代替单一持久连接：
-    #   min_size=0  → 空闲时不保留连接，避免 Windows TCP 层静默断开（error 10053）
-    #   max_idle=60 → 连接超过 60s 未使用自动释放
-    #   keepalives  → 连接 URI 参数，作为双重保障
-    _sep = "&" if "?" in pg_url else "?"
-    pg_url += f"{_sep}keepalives=1&keepalives_idle=20&keepalives_interval=5&keepalives_count=3"
+    # 连接池配置说明：
+    #   min_size=1      → 始终保持 1 个热连接，避免 HITL 检查点写入时因空池重建连接
+    #   max_idle=360    → 连接最长空闲 6 分钟（> HITL 审批超时 5 分钟），防止 HITL 等待期间连接被池释放
+    #   open=True 已删除 → 该参数已废弃，与 `async with` 上下文管理器同时使用会触发双重 open 警告
+    #   keepalives / options 移入 kwargs → 连接创建时通过 libpq 参数注入，比 URL 参数在 Windows 上更可靠
+    #   idle_session_timeout=0 → 禁用 PostgreSQL 服务端空闲会话超时（防止 HITL 等待期间服务端主动断连）
+    #   tcp_keepalives_idle=10 → 服务端 TCP keepalive，10s 无数据即发探针（双重保障）
     async with AsyncConnectionPool(
         conninfo=pg_url,
-        min_size=0,
+        min_size=1,
         max_size=5,
-        max_idle=60.0,
-        open=True,
+        max_idle=360.0,
         kwargs={
             "autocommit": True,
             "prepare_threshold": 0,
             "row_factory": dict_row,
+            "keepalives": 1,
+            "keepalives_idle": 10,
+            "keepalives_interval": 3,
+            "keepalives_count": 5,
+            "options": "-c idle_session_timeout=0 -c tcp_keepalives_idle=10",
         },
     ) as pg_pool:
         checkpointer = AsyncPostgresSaver(conn=pg_pool)

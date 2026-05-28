@@ -38,7 +38,7 @@ class WeaveState(TypedDict):
     # ── 事故地点结构化坐标（由 location_disambig 节点或前端直接传入）──────────
     incident_lat: Optional[float]           # 事故纬度（None = 未确认，仅靠文本描述）
     incident_lng: Optional[float]           # 事故经度
-    incident_location_name: Optional[str]   # 确认后的完整地址（如"上海国际汽车城，嘉定区博园路7565号"）
+    incident_location_name: Optional[str]   # 确认后的完整地址（如"XX路XX号"）
 
     selected_dept_codes: list[str]      # 指挥官选定的参与部门
 
@@ -54,3 +54,10 @@ class WeaveState(TypedDict):
 
     # ── 消息历史（保留用户追加指令通道）──────────────────────────────────────
     messages: Annotated[list[BaseMessage], add_messages]
+
+    # ── 多轮会话扩展字段 ────────────────────────────────────────
+    incident_location: Optional[dict]   # {"name","address","lat","lng"} or None
+    conversation_turn: Optional[int]    # None on first call; classify_intent sets to 1+
+    intent: Optional[str]               # incident_response / direct_command / escalation / follow_up
+    event_scope: Optional[str]          # localized / citywide
+    location_retry_query: Optional[str] # 用户重新搜索关键词（self-loop 传递，确认后清为 None）

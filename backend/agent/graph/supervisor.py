@@ -123,10 +123,13 @@ def build_supervisor(
             )
             _hitl_done = _hitl_msg_idx >= 0
             if _last_analyst and not _hitl_done and "HITL_REQUIRED" in str(_last_analyst.content):
-                _hitl_line = next(
+                _raw_hitl_line = next(
                     (line.strip() for line in str(_last_analyst.content).splitlines() if "HITL_REQUIRED" in line),
                     "待执行写操作需 HITL 审批",
                 )
+                # 剥除 【HITL_REQUIRED】 信号前缀，保留"待执行：<tool>"可读描述
+                import re as _hitl_re
+                _hitl_line = _hitl_re.sub(r'^【HITL_REQUIRED】', '', _raw_hitl_line).strip()
                 # 提取结构化执行意图
                 _intent_line = next(
                     (line.strip() for line in str(_last_analyst.content).splitlines() if "EXECUTION_INTENT" in line),

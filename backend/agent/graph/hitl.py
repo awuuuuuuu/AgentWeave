@@ -28,6 +28,46 @@ AGENT_CARD = {
     "color": "yellow",
 }
 
+_TOOL_CN: dict[str, str] = {
+    "dispatch_fire_trucks":   "调派消防车前往事故现场",
+    "dispatch_ambulance":     "调派救护车前往事故现场",
+    "recall_fire_trucks":     "召回消防车返回站点",
+    "recall_ambulance":       "召回救护车返回待命",
+    "set_mode":               "调整路口信号灯模式",
+    "apply_evacuation_plan":  "启动区域疏散预案",
+    "allocate_custom":        "调拨应急物资",
+    "allocate_standard_pack": "调拨标准物资包",
+    "set_fire_perimeter":     "设置火场警戒范围",
+}
+
+
+def _build_hitl_desc(tool_name: str, params: dict) -> str:
+    """根据工具名和参数构造可读中文描述。"""
+    if tool_name == "dispatch_fire_trucks":
+        count = params.get("truck_count", "")
+        return f"调派 {count} 辆消防车前往事故现场" if count else "调派消防车前往事故现场"
+    if tool_name == "dispatch_ambulance":
+        return "调派救护车前往事故现场"
+    if tool_name == "recall_ambulance":
+        aid = params.get("ambulance_id", "")
+        return f"召回救护车 {aid} 返回待命" if aid and aid != "auto" else "召回救护车返回待命"
+    if tool_name == "recall_fire_trucks":
+        count = params.get("truck_count", "")
+        return f"召回 {count} 辆消防车返回站点" if count else "召回消防车返回站点"
+    if tool_name == "set_mode":
+        mode = params.get("mode", "应急")
+        return f"将路口信号切换为{mode}模式"
+    if tool_name == "apply_evacuation_plan":
+        level = params.get("level", "Ⅲ")
+        return f"启动{level}级区域疏散预案"
+    if tool_name == "allocate_custom":
+        items = params.get("items") or []
+        if items and isinstance(items[0], dict):
+            return f"调拨应急物资（{items[0].get('name', '')}等{len(items)}类）"
+        return "调拨应急物资"
+    return _TOOL_CN.get(tool_name, tool_name)
+
+
 def build_hitl() -> object:
     """构建 HITL 节点函数"""
 
@@ -43,8 +83,21 @@ def build_hitl() -> object:
           - interrupt() 检测到已有 resume 值，直接返回用户决策字符串
           - 根据 "approve" / "reject" 写入对应消息
         """
+        import re as _re
         pending = state.get("pending_approval") or {}
         operation_desc = pending.get("description", state.get("task", "待确认的操作"))
+        # 剥除 Analyst 信号前缀
+        operation_desc = _re.sub(r'^【HITL_REQUIRED】\s*', '', operation_desc)
+        operation_desc = _re.sub(r'^待执行[：:]\s*', '', operation_desc).strip()
+
+        # 优先用 execution_intent 构造更丰富的中文描述
+        execution_intent = state.get("execution_intent") or {}
+        ei_tool = execution_intent.get("tool_name", "")
+        ei_params = execution_intent.get("params") or {}
+        if ei_tool:
+            operation_desc = _build_hitl_desc(ei_tool, ei_params)
+        elif operation_desc in _TOOL_CN:
+            operation_desc = _TOOL_CN[operation_desc]
 
         logger.info("HITL: 触发审批等待 | 操作=%r", operation_desc[:80])
 

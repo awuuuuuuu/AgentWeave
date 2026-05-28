@@ -45,6 +45,16 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
         recent = messages[-ANALYST_CONTEXT_WINDOW:]
         mcp_connections = state.get("org_mcp_connections") or []
 
+        # 从消息历史中提取事故坐标（格式：坐标：31.xxxx, 121.xxxx）
+        _incident_lat: float | None = None
+        _incident_lng: float | None = None
+        for _msg in messages:
+            _content = getattr(_msg, "content", "") or ""
+            _m = _re.search(r'坐标[：:]\s*(\d+\.\d+)\s*[,，]\s*(\d+\.\d+)', _content)
+            if _m:
+                _incident_lat, _incident_lng = float(_m.group(1)), float(_m.group(2))
+                break
+
         # ── MCP 工具加载 ──────────────────────────────────────────────────────
         mcp_client = None
         mcp_tools: list[BaseTool] = []
@@ -164,7 +174,7 @@ def build_analyst(llm_model: str = "gpt-4o") -> object:
                             logger.info("Analyst: MCP 工具 %r 返回 %d 字符", tool_name, len(content))
                             if len(content) > _TOOL_RESULT_LIMIT:
                                 content = content[:_TOOL_RESULT_LIMIT] + f"\n…（结果过长已截断，原始 {len(content)} 字符）"
-                            extract_map_update(tool_name, result, content, _map_updates, dept_code)
+                            extract_map_update(tool_name, result, content, _map_updates, dept_code, _incident_lat, _incident_lng)
                         except Exception as exc:
                             content = f"工具 {tool_name} 调用失败: {exc}"
                             logger.warning("Analyst: MCP 工具 %r 调用失败: %s", tool_name, exc)
