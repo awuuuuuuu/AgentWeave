@@ -123,6 +123,16 @@ ANALYST_SYSTEM = """你是一个专业的实时数据研判分析师（纯只读
 - 如果没有可用工具，明确告知"当前无法查询实时数据"，不要编造查询结果
 - 输出结构清晰，必要时使用列表或表格
 
+**数据相关性：**
+- 根据任务描述的查询范围，只报告与当前任务直接相关的数据，过滤无关项目（无需说明过滤原因）
+
+**结构化指标（metrics）字段规范：**
+- label 必须使用人类可读名称，禁止使用系统内部 ID（INT-xx、A1、FS1 等）
+  - 路口：用完整路名交叉口，如「XX路×YY路」
+  - 救护车：按所属医院分行，每行格式「<医院名> 待命救护车」，value 为该院待命车数
+  - 消防站：用站名，如「XX站」
+  - 传感器/告警：用物理位置描述，如「<地点描述> 烟雾」
+
 **MCP 数据引用标注：**
 - 每次调用 MCP 工具后获得的关键数据，在输出中引用时用 [M数字] 标注来源，数字与工具调用顺序对应（第1次→[M1]，第2次→[M2]，依此类推）
 - 格式示例：「当前氨气浓度 890 ppm[M1]，风速 3.2 m/s[M2]，ERPG-2 疏散半径 890 m[M3]」
@@ -169,6 +179,11 @@ REPORTER_SYSTEM = """\
 - 去除冗余过渡语（如"根据以上分析"、"综上所述"），直接给出结论。
 - 用中文输出，语言简洁专业。
 
+**实时数据优先**
+- 专家分析中凡含 [M数字] 标注的数据均来自 MCP 实时工具，是最权威的当前状态；知识库文档数据仅作规程参考。
+- 若同一指标同时有 MCP 数据和文档数据，以 MCP 数据为准，文档数据可注明"规程要求"加以对比。
+- MCP 工具已返回的每项数据都必须在报告中体现，不得因知识库中无对应条目就省略或写"未知"。
+
 **无法回答时**
 - 若专家分析已说明知识库无相关信息，如实告知用户，不要编造内容。\
 """
@@ -182,7 +197,7 @@ ANALYST_HITL_CONSTRAINT = """\
 
 **研判/评估模式约束**（写操作工具在执行时将被系统阻止）：
 完成只读数据查询后输出评估结果。
-仅当用户任务本身明确要求**立即执行**写操作时（如含「办理调拨出库」「批量设置路口」「派遣救护车」「撤回救护车」「切换信号」「调派消防车」「撤回消防车」等执行动词），才在输出的最后两行写：
+仅当用户任务本身明确要求**立即执行**写操作时（如含「办理调拨出库」「批量设置路口」「派遣救护车」「撤回救护车」「切换信号」「调派消防车」「撤回消防车」「发放物资」「调拨物资」「启动预案」「执行疏散」等执行动词），才在输出的最后两行写：
 【HITL_REQUIRED】待执行：<操作名称和关键参数>
 【EXECUTION_INTENT】{"tool_name": "<工具名>", "params": {<参数JSON>}}
 params 中无法确定的值填 "auto"（executor 会在运行时查询补全）。
@@ -199,8 +214,99 @@ DEPT_WRITE_TOOL_MAP: dict[str, list[str]] = {
     "emergency_supplies": ["allocate_standard_pack", "allocate_custom"],
 }
 
+# 写操作工具参数格式（与 DEPT_WRITE_TOOL_MAP 配套维护，新增工具只需在此追加）
+TOOL_PARAMS_FORMAT: dict[str, str] = {
+    "dispatch_fire_trucks": (
+        '{"station_id":"auto","truck_count":<int>,'
+        '"dest_lat":<事故坐标纬度 float>,"dest_lng":<事故坐标经度 float>}'
+    ),
+    "recall_fire_trucks": (
+        '{"station_id":"auto","truck_count":<int>}'
+        "\n      station_id 填 \"auto\"，executor 运行时查询当前出勤车辆最多的站；"
+        "\n      truck_count 填需召回的辆数（整数）"
+    ),
+    "dispatch_ambulance": (
+        '{"ambulance_id":"<从医疗急救部门报告提取距事故点最近的具体车号，如A5>",'
+        '"dest_lat":<事故坐标纬度 float>,"dest_lng":<事故坐标经度 float>,'
+        '"patient_type":"<伤员类型>"}'
+        "\n      ⚠ ambulance_id 必须填报告中推荐的具体车号（如A5、A3），不得填 auto"
+        "\n      ⚠ dest_lat/dest_lng 必须是浮点数，从「事故坐标」取值，禁止填字符串地址"
+    ),
+    "recall_ambulance": (
+        '{"ambulance_id":"<从部门报告中提取出车中的具体车号，如A4>"}'
+        "\n      若无法确定填 \"auto\"，executor 运行时查询状态为「出车」的救护车"
+    ),
+    "set_mode": (
+        '{"intersection_id":"auto","mode":"<模式>"}'
+        "\n      mode 枚举（禁止英文，必须精确匹配）：正常/全红封闭/应急绿波/单向清空/消防应急"
+        "\n      选择指南：火灾/建筑火灾→消防应急，路口封堵→全红封闭，疏散引导→应急绿波，单向通行→单向清空"
+    ),
+    "apply_evacuation_plan": (
+        '{"level":"<Ⅱ|Ⅲ|Ⅳ>"}'
+    ),
+    "allocate_standard_pack": (
+        '{"level":"<Ⅱ|Ⅲ|Ⅳ>"}'
+    ),
+    "allocate_custom": (
+        '{"items":[{"name":"<物资名>","qty":<int>}]}'
+    ),
+}
+
 # 地图图层 ID 常量
 MAP_LAYER_IDS = "fire_route/ambulance_route/supply_route/signal_update/evacuation_route"
+
+# 场景规则表：keywords=[] 表示部门选中即激活；非空则需事故描述含其中任意关键词才激活。
+# 新增事故类型只需追加条目，不改 prompt 模板和 build_phase_aggregate_system。
+_SCENE_RULES: list[dict] = [
+    {
+        # 只要 medical_ems 参与，就必须有调度救护车的写操作步骤
+        "keywords": [],
+        "dept": "medical_ems",
+        "rule": (
+            '【场景规则】medical_ems 必须包含一个 execution_tool 为 "dispatch_ambulance" 的步骤。'
+        ),
+    },
+    {
+        # 只要 traffic_control 参与，就必须有信号管控写操作步骤
+        "keywords": [],
+        "dept": "traffic_control",
+        "rule": (
+            '【场景规则】traffic_control 必须包含一个 execution_tool 为 "set_mode" 或'
+            ' "apply_evacuation_plan" 的步骤。'
+        ),
+    },
+    {
+        # 只要 fire_brigade 参与，就必须有调派消防车写操作步骤
+        "keywords": [],
+        "dept": "fire_brigade",
+        "rule": (
+            '【场景规则】fire_brigade 必须包含一个 execution_tool 为 "dispatch_fire_trucks" 的步骤'
+            '（execution_tool 不可为 null）。station_id 填 "auto"，'
+            "truck_count 从研判报告建议调派数量中取整数值。"
+        ),
+    },
+    {
+        # 仅危化品/泄漏场景：额外要求防护装备/洗消步骤（task 描述中包含）
+        "keywords": ["危化品", "泄漏", "化工", "有毒气体", "刺激性气味", "HAZMAT"],
+        "dept": "fire_brigade",
+        "rule": (
+            "【场景规则】fire_brigade 任务描述中还须包含：防护装备（SCBA/防化服）佩戴、"
+            "警戒隔离区设立、堵漏处置、洗消作业中的一项或多项操作说明。"
+        ),
+    },
+    {
+        # env_agency 没有写操作工具，execution_tool 必须为 null，任务设为持续监测汇报
+        "keywords": [],
+        "dept": "env_agency",
+        "rule": (
+            "【场景规则】env_agency 无写操作工具，execution_tool 必须填 null（不可填任何工具名）。"
+            "任务描述必须是：持续监测事故点周边传感器数据，根据事故类型选择监测项目"
+            "（火灾→烟雾/CO/温度；洪涝→水位；危化品→气体浓度/风速/扩散范围；交通事故→烟雾/CO），"
+            "发现读数超阈值立即向指挥中心汇报，不发布独立预警。"
+            "is_high_risk 必须为 false。"
+        ),
+    },
+]
 
 _PHASE_AGGREGATE_TEMPLATE = """\
 你是城市应急指挥中心 AI 协调员。根据各部门的评估报告，制定一份结构化的应急执行计划（4-6 个步骤，顺序执行）。
@@ -212,46 +318,90 @@ _PHASE_AGGREGATE_TEMPLATE = """\
 - title: 步骤名称，必须具体可操作（≤30字），必须包含数字、地点或计量单位词；禁止使用「部署救援」「管控交通」「处置事故」「综合分析」等无数量/地点的模糊表述
 - dept_code: 执行部门代码（必须是以下之一）：{dept_codes}
 - task: 执行指令（2-4句），简洁描述该步骤的具体行动
-- is_high_risk: 是否高危（true/false）。**当且仅当该步骤 execution_tool 不为 null 时标 true**；execution_tool 为 null 的评估/研判步骤必须标 false。一个场景中高危步骤通常不超过 2-3 个
+- is_high_risk: 是否高危（true/false）。**当且仅当该步骤 execution_tool 不为 null 时标 true**；execution_tool 为 null 的评估/研判步骤必须标 false
 - map_layer: 涉及地图操作的图层 ID（{map_layer_ids}），否则 null
-- execution_tool: 执行该步骤的 MCP 写操作工具名，从以下枚举精确选择：
+- execution_tool: 执行该步骤的 MCP 写操作工具名，从以下枚举精确选择（含参数格式）：
 {tool_enum}
   纯分析/评估步骤填 null
-- execution_params: 工具调用参数 JSON（工具为 null 时填 null）。从部门报告和事故坐标中提取已知值；无法确定的参数填 "auto"
-  【参数格式规范，必须严格遵守】：
-  · dispatch_ambulance: {{"ambulance_id": "auto", "dest_lat": <事故坐标纬度 float>, "dest_lng": <事故坐标经度 float>, "patient_type": "<伤员类型>"}}
-    dest_lat/dest_lng 必须是浮点数，使用输入中「事故坐标」的值，禁止使用字符串地址
-  · dispatch_fire_trucks: {{"station_id": "auto", "truck_count": <数量 int>, "dest_lat": <事故坐标纬度 float>, "dest_lng": <事故坐标经度 float>}}
-  · set_mode: {{"intersection_id": "auto", "mode": "emergency"}}
-  · apply_evacuation_plan: {{"level": "<等级，如Ⅲ>"}}
-  · allocate_standard_pack: {{"level": "<等级，如Ⅲ>"}}
-
-【伤亡场景规则】事故描述含「受伤」「伤亡」「伤员」「死亡」等词时，medical_ems 必须包含一个 execution_tool 为 "dispatch_ambulance" 的步骤（非纯评估步骤）。
-
-【交通事故场景规则】事故描述含「追尾」「碰撞」「车祸」「拥堵」「撞」等词时，traffic_control 必须包含一个 execution_tool 为 "set_mode" 或 "apply_evacuation_plan" 的步骤。
-
-【危化品/泄漏场景专项规则】当事故描述含「危化品」「泄漏」「化工」「有毒气体」「刺激性气味」等词时，fire_brigade 步骤必须包含：防护装备（SCBA/防化服）、警戒隔离区设立、堵漏处置、洗消作业中的一项或多项。
-
+- execution_params: 工具调用参数 JSON（工具为 null 时填 null）。
+  从部门报告和事故坐标提取已知值；无法确定的填 "auto"，executor 运行时自动查询补全
+{scene_rules}
 以 JSON 数组格式返回，不要包含其他内容.\
 """
 
 
-def build_phase_aggregate_system(selected_depts: list[str]) -> str:
-    """根据参与部门动态生成 phase_aggregate system prompt。"""
+def build_phase_aggregate_system(selected_depts: list[str], incident: str = "") -> str:
+    """根据参与部门和事故描述动态生成 phase_aggregate system prompt。
+
+    tool_enum 从 DEPT_WRITE_TOOL_MAP + TOOL_PARAMS_FORMAT 动态拼接；
+    新增工具只需更新这两个 dict，无需改动模板字符串。
+    场景规则过滤逻辑：keywords=[] 的规则只要部门选中即激活；
+    keywords 非空的规则还需 incident 中含有其中至少一个关键词。
+    """
     tool_lines = []
     for dept in selected_depts:
-        tools = DEPT_WRITE_TOOL_MAP.get(dept)
-        if tools:
-            tool_lines.append(f"  {' / '.join(tools)}（{dept}）")
+        for tool in DEPT_WRITE_TOOL_MAP.get(dept) or []:
+            fmt = TOOL_PARAMS_FORMAT.get(tool, "")
+            tool_lines.append(f"  · {tool}（{dept}）: {fmt}" if fmt else f"  · {tool}（{dept}）")
     if not tool_lines:
         tool_lines = ["  （当前场景无写操作工具）"]
+
+    active_rules = []
+    for r in _SCENE_RULES:
+        if r["dept"] not in selected_depts:
+            continue
+        kws = r.get("keywords", [])
+        if kws and not any(kw in incident for kw in kws):
+            continue  # 关键词规则未命中当前事故描述
+        active_rules.append(r["rule"])
+    scene_rules_block = ("\n" + "\n".join(active_rules) + "\n") if active_rules else ""
 
     return _PHASE_AGGREGATE_TEMPLATE.format(
         selected_depts=selected_depts,
         dept_codes="/".join(selected_depts),
         map_layer_ids=MAP_LAYER_IDS,
         tool_enum="\n".join(tool_lines),
+        scene_rules=scene_rules_block,
     )
+
+# ── Weave: create_single_step_plan ──────────────────────────────────────────
+
+_SINGLE_STEP_PLAN_TEMPLATE = """\
+你是城市应急指挥中心 AI。用户发出直接调度指令，生成单步执行计划。
+以 JSON 对象（单步）格式输出：
+{{
+  "step_id": "step-001",
+  "title": "具体可操作标题（必须含数量或地点，如「从X站调派2辆消防车至事故现场南门」）",
+  "dept_code": "执行部门代码",
+  "task": "具体执行任务描述（2-3句），说明需执行的操作、目标和预期结果",
+  "is_high_risk": <true 当执行不可逆的派遣/调拨/封路/疏散操作；false 当执行撤回/恢复/取消操作或 execution_tool 为 null>,
+  "execution_tool": "MCP写操作工具名（从枚举精确选择；无写操作填 null）",
+  "execution_params": {{"参数名": "参数值 或 auto"}},
+  "map_layer": "fire_route/ambulance_route/supply_route/signal_update/evacuation_route 或 null"
+}}
+
+execution_tool 枚举（按部门）：
+{tool_enum}
+
+execution_params 参数格式（无法确定的值填 "auto"，executor 运行时查询补全）：
+  dispatch_fire_trucks:   {{"station_id":"auto","truck_count":<int>,"dest_lat":<事故纬度 float>,"dest_lng":<事故经度 float>}}
+  dispatch_ambulance:     {{"ambulance_id":"auto","dest_lat":<事故纬度 float>,"dest_lng":<事故经度 float>,"patient_type":"<伤员类型>"}}
+  set_mode:               {{"intersection_id":"auto","mode":"<全红封闭|应急绿波|单向清空|消防应急>"}}
+                          # 选择指南：建筑火灾→消防应急，路口封堵→全红封闭，疏散引导→应急绿波
+  apply_evacuation_plan:  {{"level":"<等级，如Ⅲ>"}}
+  allocate_standard_pack: {{"level":"<等级，如Ⅲ>"}}
+  recall_fire_trucks:     {{"station_id":"auto","truck_count":"auto"}}
+  recall_ambulance:       {{"ambulance_id":"auto"}}
+
+可用部门代码：{dept_list}
+只输出 JSON，不含其他内容。\
+"""
+
+
+def build_single_step_plan_system(tool_enum: str, dept_list: str) -> str:
+    """生成 create_single_step_plan 节点的 system prompt。"""
+    return _SINGLE_STEP_PLAN_TEMPLATE.format(tool_enum=tool_enum, dept_list=dept_list)
+
 
 # ── Weave: _generate_dept_tasks_llm ─────────────────────────────────────────
 
@@ -260,12 +410,21 @@ DEPT_TASKS_LLM_SYSTEM = """\
 
 生成要求：
 1. 每个任务必须以「【研判阶段】」开头
-2. 任务中必须包含「结合知识库规程」四个字，以触发知识库检索
+2. 任务中必须包含「结合知识库规程」四个字（这是部门 Agent 内部 Supervisor 识别并路由到 Researcher 节点的语义触发词，不可省略）
 3. 明确列出应调用的只读 MCP 工具名称（参考下方工具列表，严禁提及写操作工具）；\
 【状态查询优先】优先使用 list_xxx/get_xxx 类工具评估现场状态；\
 geocode/plan_driving_route 是路线规划工具，仅在执行阶段使用，研判阶段不得列入任务
 4. 从事故描述中提取关键参数（地点/物质/风向/中毒人数等），写入任务文本
-5. 任务 2-3 句话，具体可操作
-6. 以 JSON 对象格式输出：{"dept_code": "task_text", ...}
-7. 只输出 JSON，不含任何其他文字\
+5. 【坐标透传】若事故描述含坐标（如「坐标：31.xxxx, 121.xxxx」），必须在调用支持 lat/lng 参数的工具时显式传入，\
+例如：list_ambulances(lat=31.xxxx, lng=121.xxxx)、get_hospital_capacity(lat=31.xxxx, lng=121.xxxx)、\
+get_fire_stations(lat=31.xxxx, lng=121.xxxx)、get_critical_alarms(lat=31.xxxx, lng=121.xxxx)、\
+get_nearby_intersections(lat=31.xxxx, lng=121.xxxx, radius_km=3.0)，以确保只返回事故点附近的资源；\
+交通部门使用 get_nearby_intersections 而非 list_intersections，以确保路口在事故周边而非全市范围
+6. 【事故类型匹配】生成任务时必须明确告知部门：只关注与本次事故类型相关的数据。\
+例如：火灾 → 应急物资部门调用 get_inventory(category="消防器材") 查询当前消防类物资实时库存，\
+调用 check_alerts() 检查低库存告警，只报告与本次事故类型相关的物资；\
+交通管控部门只评估消防/救援车辆通道畅通性，不报告早高峰绿灯延长等常规配时指标
+7. 任务 2-3 句话，具体可操作
+8. 以 JSON 对象格式输出：{"dept_code": "task_text", ...}
+9. 只输出 JSON，不含任何其他文字\
 """
