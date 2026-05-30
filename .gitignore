@@ -25,4 +25,4 @@ debug_*.pdf
 # IDE
 .vscode/
 
-.docs
+docs

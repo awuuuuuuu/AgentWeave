@@ -38,10 +38,18 @@ class TestTrafficAccidentMcpWriteOps:
     def test_write_ops_mcp_called(self, traffic_execution_results):
         failures = []
         for step_id, (step, resp) in traffic_execution_results.items():
-            dept = step["dept_code"]
-            ok, msg = check_mcp_whitelist(dept, resp.get("mcp_sources", []), EXECUTION_MCP_WHITELIST)
-            if not ok:
-                failures.append(f"  {step_id}: {msg}")
+            expected_tool = step.get("execution_tool")
+            if not expected_tool:
+                dept = step["dept_code"]
+                ok, msg = check_mcp_whitelist(dept, resp.get("mcp_sources", []), EXECUTION_MCP_WHITELIST)
+                if not ok:
+                    failures.append(f"  {step_id}: {msg}")
+                continue
+            called = {s["tool_name"] for s in resp.get("mcp_sources", [])}
+            if expected_tool not in called:
+                failures.append(
+                    f"  {step_id}: 期望 {expected_tool!r}，实际调用 {called}"
+                )
         assert not failures, "以下交通事故步骤缺少写操作 MCP 调用：\n" + "\n".join(failures)
 
 

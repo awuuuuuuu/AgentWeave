@@ -139,7 +139,6 @@ async def _run_execution_for(
     返回 {step_id: (step, a2a_response)}。
     """
     from agent.graph.weave_supervisor import _call_dept_a2a
-    from tests.weave.evaluators import EXECUTION_MCP_WHITELIST
 
     steps_to_run = [
         s for s in plan
