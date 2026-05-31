@@ -7,6 +7,8 @@ import { CardRenderer } from "./CardRenderer";
 import { SopStrip } from "./SopStrip";
 import type { CommandCard, HITLNotification, SopStage } from "./types";
 
+import type { LocationCandidate } from "./types";
+
 interface CommandCenterPanelProps {
   sessionId: string;
   sessionTitle?: string;
@@ -18,6 +20,8 @@ interface CommandCenterPanelProps {
   onOpenHitlModal?: () => void;
   activeStepId?: string | null;
   onStepSelect?: (stepId: string) => void;
+  onSelectLocation?: (loc: LocationCandidate) => void;
+  onRetryLocation?: (searchQuery: string) => void;
 }
 
 // ── conv-head ───────────────────────────────────────────────────────────────
@@ -111,7 +115,7 @@ const DEPT_ALIASES: { name: string; code: string; color: string }[] = [
   { name: "医疗急救", code: "ME", color: CC.agMe },
   { name: "交通管控", code: "TR", color: CC.agTr },
   { name: "应急物资", code: "LG", color: CC.agLg },
-  { name: "企业安全", code: "SF", color: CC.agSf },
+  { name: "消防救援", code: "FF", color: CC.agFf },
 ];
 
 /** 从文本里提取最后一个 @部门名，没有则返回 null */
@@ -231,6 +235,8 @@ export function CommandCenterPanel({
   onOpenHitlModal,
   activeStepId = null,
   onStepSelect,
+  onSelectLocation,
+  onRetryLocation,
 }: CommandCenterPanelProps) {
   const streamRef = useRef<HTMLDivElement>(null);
 
@@ -297,7 +303,14 @@ export function CommandCenterPanel({
           </div>
         ) : (
           cards.map((card, i) => (
-            <CardRenderer key={i} card={card} activeStepId={activeStepId} onStepSelect={onStepSelect} />
+            <CardRenderer
+              key={i}
+              card={card}
+              activeStepId={activeStepId}
+              onStepSelect={onStepSelect}
+              onSelectLocation={onSelectLocation}
+              onRetryLocation={onRetryLocation}
+            />
           ))
         )}
       </div>

@@ -34,6 +34,26 @@ import { tokenStorage } from "./api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
+// Token refresh state shared within this module (mirrors api.ts logic for SSE calls)
+let _agentRefreshing = false;
+let _agentRefreshQueue: Array<(token: string | null) => void> = [];
+
+async function _tryAgentRefresh(): Promise<string | null> {
+  const refresh = tokenStorage.getRefresh();
+  if (!refresh) return null;
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refresh }),
+  });
+  if (!res.ok) { tokenStorage.clear(); return null; }
+  const data = await res.json();
+  const newAccess: string = data.access_token;
+  localStorage.setItem("access_token", newAccess);
+  document.cookie = `access_token=${newAccess}; path=/; SameSite=Lax`;
+  return newAccess;
+}
+
 // ── 类型定义 ─────────────────────────────────────────────────────────────────
 
 export type AgentName =
@@ -42,6 +62,7 @@ export type AgentName =
   | "supervisor"
   | "researcher"
   | "analyst"
+  | "executor"
   | "reporter"
   | "hitl"
   | "memory_save";
@@ -96,6 +117,8 @@ export interface MapPayload {
   layer?: string;       // 图层 ID（plume/resources/signals/routes/sensors/warehouse/cordon/incident_source）
   step_id?: string;     // 执行步骤 ID（marker↔执行卡联动）
   dept_code?: string;   // 来源部门代码
+  unit_count?: number;  // 路线动画车辆数
+  clear_routes_for_dept?: string;  // 召回操作：清除该部门的已渲染路线
 }
 
 export interface AgentCard {
@@ -158,7 +181,7 @@ export type AgentSSEEvent =
   | { type: "status"; node: AgentName; data: { step: string; tool_name?: string } }
   | { type: "tool_result"; node: AgentName; data: McpSource }
   | { type: "interrupt"; node: "hitl"; data: HITLData }
-  | { type: "map_update"; data: MapPayload }
+  | { type: "map_update"; node?: AgentName; data: MapPayload }
   | { type: "final_answer"; data: { content: string; citations: Citation[] } }
   | { type: "done"; data: { citations: Citation[] } }
   | { type: "error"; data: { message: string } };
@@ -182,6 +205,7 @@ export interface AgentBubble {
 export const REPLY_TO: Partial<Record<AgentName, { agentName: string; text: string }>> = {
   researcher: { agentName: "Supervisor", text: "收到，开始检索" },
   analyst:    { agentName: "Supervisor", text: "收到，调用工具分析" },
+  executor:   { agentName: "Supervisor", text: "收到，执行写操作" },
   reporter:   { agentName: "Supervisor", text: "收到，整合最终答案" },
   hitl:       { agentName: "Supervisor", text: "需要人工确认" },
 };
@@ -197,6 +221,8 @@ export interface PlanStep {
   status: string;
   map_layer: string | null;
   result_summary: string;
+  execution_tool?: string | null;
+  execution_params?: Record<string, unknown> | null;
 }
 
 export type WeaveSSEEvent =
@@ -206,8 +232,9 @@ export type WeaveSSEEvent =
   | { type: "plan_step";     data: { step_id: string; status: string; summary?: string } }
   | { type: "map_update";    data: MapPayload }
   | { type: "hitl_required"; data: { step_id: string; title: string; dept_code: string; timeout_sec: number } }
+  | { type: "location_candidates"; data: { candidates: Array<{ name: string; address: string; lat: number; lng: number; type?: string }>; query: string } }
   | { type: "final_answer";  data: { content: string } }
-  | { type: "interrupt";     data: { type: "plan_review" | "step_review"; plan?: PlanStep[]; step_id?: string; title?: string; dept_code?: string } }
+  | { type: "interrupt";     data: { type: "plan_review" | "step_review" | "location_select"; plan?: PlanStep[]; step_id?: string; title?: string; dept_code?: string; timeout_sec?: number } }
   | { type: "done";          data: Record<string, never> }
   | { type: "error";         data: { message: string } };
 
@@ -220,18 +247,35 @@ export interface WeaveDept {
   a2a_port: number;
 }
 
-// ── 带鉴权的 fetch（复用 api.ts 的 tokenStorage）────────────────────────────
+// ── 带鉴权的 fetch（含 401 自动续期，供 SSE 流式接口使用）────────────────────
 
 async function authFetch(url: string, init?: RequestInit): Promise<Response> {
-  const token = tokenStorage.getAccess();
-  return fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers ?? {}),
-    },
+  const makeHeaders = (token: string | null) => ({
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(init?.headers ?? {}),
   });
+
+  const res = await fetch(url, { ...init, headers: makeHeaders(tokenStorage.getAccess()) });
+  if (res.status !== 401) return res;
+
+  // 并发请求共用同一次 refresh
+  if (_agentRefreshing) {
+    const newToken = await new Promise<string | null>((resolve) => {
+      _agentRefreshQueue.push(resolve);
+    });
+    if (!newToken) return res;
+    return fetch(url, { ...init, headers: makeHeaders(newToken) });
+  }
+
+  _agentRefreshing = true;
+  const newToken = await _tryAgentRefresh();
+  _agentRefreshing = false;
+  _agentRefreshQueue.forEach((cb) => cb(newToken));
+  _agentRefreshQueue = [];
+
+  if (!newToken) { if (typeof window !== "undefined") window.location.href = "/login"; return res; }
+  return fetch(url, { ...init, headers: makeHeaders(newToken) });
 }
 
 // ── SSE 解析器（泛型，chat 和 weave 共用）─────────────────────────────────────
@@ -340,7 +384,7 @@ export async function* streamWeave(
 /** HITL 审批后恢复 Weave 执行，返回 SSE 事件流 */
 export async function* resumeWeave(
   sessionId: string,
-  decision: string | unknown[],  // "approve" | "reject" | PlanStep[]（HITL-1 修改计划）
+  decision: string | unknown[] | Record<string, unknown>,  // "approve" | "reject" | PlanStep[] | LocationCandidate
   signal?: AbortSignal
 ): AsyncGenerator<WeaveSSEEvent> {
   const res = await authFetch(`${API_BASE}/agent/resume`, {

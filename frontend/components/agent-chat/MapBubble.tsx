@@ -1,8 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { IconMap, IconChartBar, IconRoute, IconMapPin } from "@tabler/icons-react";
+import { IconMap, IconChartBar, IconBolt, IconRoute, IconMapPin } from "@tabler/icons-react";
 import type { AgentBubble } from "@/lib/agent-api";
+
+const MAP_AGENT_META: Record<string, { label: string; icon: JSX.Element; bg: string; color: string; dot: string }> = {
+  analyst:  { label: "Analyst",  icon: <IconChartBar size={12} />, bg: "#EEEDFE", color: "#3C3489", dot: "#7F77DD" },
+  executor: { label: "Executor", icon: <IconBolt size={12} />,    bg: "#FEF3E2", color: "#B45309", dot: "#F59E0B" },
+};
 
 interface MapBubbleProps {
   bubble: AgentBubble;
@@ -112,6 +117,7 @@ export function MapBubble({ bubble }: MapBubbleProps) {
   const route = mapData.route;
   const distKm = route?.distance_m != null ? (route.distance_m / 1000).toFixed(1) : null;
   const mins   = route?.duration_seconds != null ? Math.round(route.duration_seconds / 60) : null;
+  const meta   = MAP_AGENT_META[bubble.agent] ?? MAP_AGENT_META["analyst"];
 
   return (
     <div
@@ -123,7 +129,7 @@ export function MapBubble({ bubble }: MapBubbleProps) {
         boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
       }}
     >
-      {/* 头部：analyst 风格 */}
+      {/* 头部：按来源 agent 动态着色 */}
       <div
         style={{
           display: "flex",
@@ -139,20 +145,20 @@ export function MapBubble({ bubble }: MapBubbleProps) {
             width: 22,
             height: 22,
             borderRadius: 6,
-            background: "#EEEDFE",
-            color: "#3C3489",
+            background: meta.bg,
+            color: meta.color,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             flexShrink: 0,
           }}
         >
-          <IconChartBar size={12} />
+          {meta.icon}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: "#534AB7" }}>Analyst</span>
-          <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#7F77DD", display: "inline-block" }} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: meta.color }}>{meta.label}</span>
+          <span style={{ width: 5, height: 5, borderRadius: "50%", background: meta.dot, display: "inline-block" }} />
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 2 }}>

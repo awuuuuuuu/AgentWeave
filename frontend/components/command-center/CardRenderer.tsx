@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CC, agentColor, DEPT_ICONS } from "./tokens";
-import type { CommandCard, Citation, McpSource, DeptMetric } from "./types";
+import type { CommandCard, Citation, McpSource, DeptMetric, LocationCandidate } from "./types";
 
 // Teal color for MCP citations (distinct from RAG blue)
 const MCP_COLOR = "#0891b2";
@@ -44,7 +44,7 @@ const AGENT_META: Record<string, { name: string; short: string }> = {
   ME: { name: "医疗急救", short: "ME" },
   TR: { name: "交通管控", short: "TR" },
   LG: { name: "应急物资", short: "LG" },
-  SF: { name: "企业安全", short: "SF" },
+  FF: { name: "消防救援", short: "FF" },
 };
 
 // ── 部门 Workflow 步骤（研判阶段 5步 / 执行阶段 3步）──────────────────────────
@@ -81,11 +81,11 @@ const DEPT_RESEARCH_STEPS: Record<string, WorkflowStep[]> = {
     { label: "🔧 Analyst: 物资调配方案计算", call: "logistics.plan(demand, supply_map)" },
     { label: "📝 Reporter: 综合输出评估报告", call: "reporter.compile(findings)" },
   ],
-  SF: [
-    { label: "🎯 Supervisor: 分析研判任务", call: 'supervisor.analyze("企业安全 风险评估")' },
-    { label: "📚 Researcher: RAG检索安全规程", call: 'rag.search("液氨储罐 安全规程")', result: "9篇命中" },
-    { label: "🔧 Analyst: MCP查询传感器数据", call: "mcp.sensor.query(zone='factory_A')" },
-    { label: "🔧 Analyst: 风险评估计算", call: "risk.assess(incident_scale, sensor_data)" },
+  FF: [
+    { label: "🎯 Supervisor: 分析研判任务", call: 'supervisor.analyze("消防救援 现场处置")' },
+    { label: "📚 Researcher: RAG检索消防规程", call: 'rag.search("火灾扑救 消防调度 SOP")', result: "7篇命中" },
+    { label: "🔧 Analyst: MCP查询消防站资源", call: "mcp.fire.stations(area=incident_zone)" },
+    { label: "🔧 Analyst: MCP查询消防水源", call: "mcp.fire.water_supply(radius=1500)" },
     { label: "📝 Reporter: 综合输出评估报告", call: "reporter.compile(findings)" },
   ],
 };
@@ -126,6 +126,21 @@ function buildExecSteps(code: string, task: string): WorkflowStep[] {
 }
 
 // ── 小工具 ───────────────────────────────────────────────────────────────────
+
+/** 清理 LLM 生成的任务文本，去除路由触发词和 MCP 函数调用签名，仅保留用户可读描述。 */
+function cleanTaskDisplay(task: string): string {
+  // 去除【研判阶段】前缀
+  let t = task.replace(/^【研判阶段】\s*/, "");
+  // 去除 "结合知识库规程，" 或 "结合知识库规程" 前缀
+  t = t.replace(/^结合知识库规程[，,]?\s*/, "");
+  // 将 "使用/调用 toolName(arg=val, ...)" 整段替换为空（支持 使用/调用 两种触发词）
+  t = t.replace(/，?\s*(?:使用|调用)\s+\w+\s*\([^)]*\)\s*/g, " ").trim();
+  // 去除开头孤立的 "使用/调用 toolname"（无括号调用）
+  t = t.replace(/^(?:使用|调用)\s+\w+\s*/, "").trim();
+  // 去除开头多余的标点
+  t = t.replace(/^[，,、。\s]+/, "").trim();
+  return t || task;
+}
 
 function Avatar({ code }: { code: string }) {
   const color = agentColor(code);
@@ -367,7 +382,7 @@ function OrchReasoningCard({ think_lines, summary, incident, dept_tasks }: {
                     @{d.name}
                   </div>
                   <div style={{ fontSize: 11.5, color: CC.text2, lineHeight: 1.5 }}>
-                    {d.task.length > 70 ? d.task.slice(0, 70) + "…" : d.task}
+                    {(() => { const t = cleanTaskDisplay(d.task); return t.length > 80 ? t.slice(0, 80) + "…" : t; })()}
                   </div>
                 </div>
               </div>
@@ -436,9 +451,10 @@ function HandoffCard({ from, to, label, payload }: {
 
 // ── 执行计划（顺序甘特）─────────────────────────────────────────────────────
 
-function DispatchPlanCard({ agents, progress, activeStepId, onStepSelect }: {
+function DispatchPlanCard({ agents, progress, hitlMessage, activeStepId, onStepSelect }: {
   agents: { code: string; name: string; task: string; step_id?: string }[];
   progress: ("done" | "running" | "error" | "idle")[];
+  hitlMessage?: string;
   activeStepId?: string | null;
   onStepSelect?: (stepId: string) => void;
 }) {
@@ -554,12 +570,12 @@ function DispatchPlanCard({ agents, progress, activeStepId, onStepSelect }: {
                     fontSize: 10.5,
                     color: isActive ? CC.text2 : isDone ? CC.muted : isPending ? CC.muted : CC.muted2,
                     display: "-webkit-box",
-                    WebkitLineClamp: 2,
+                    WebkitLineClamp: 5,
                     WebkitBoxOrient: "vertical",
                     overflow: "hidden",
                     lineHeight: 1.45,
                   }}>
-                    {agent.task}
+                    {cleanTaskDisplay(agent.task)}
                   </span>
                 </div>
                 {/* 状态文字 */}
@@ -581,6 +597,29 @@ function DispatchPlanCard({ agents, progress, activeStepId, onStepSelect }: {
             background: CC.ok, borderRadius: 2, transition: "width 0.5s ease",
           }} />
         </div>
+
+        {/* HITL 等待审批 banner */}
+        {hitlMessage && (
+          <div style={{
+            marginTop: 10,
+            borderTop: `1px dashed color-mix(in oklab, ${CC.warn} 35%, transparent)`,
+            paddingTop: 8,
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <span style={{
+              width: 18, height: 18, borderRadius: 4, flexShrink: 0,
+              background: `color-mix(in oklab, ${CC.warn} 18%, transparent)`,
+              color: CC.warn, display: "flex", alignItems: "center", justifyContent: "center",
+              fontWeight: 700, fontSize: 11,
+            }}>!</span>
+            <span style={{ flex: 1, fontSize: 11, color: CC.warn, fontWeight: 500 }}>{hitlMessage}</span>
+            <a href="#hitl-bar" style={{
+              fontSize: 10, color: CC.warn, textDecoration: "none",
+              padding: "2px 7px", borderRadius: 4, flexShrink: 0,
+              border: `1px solid color-mix(in oklab, ${CC.warn} 30%, transparent)`,
+            }}>↑ 决策条</a>
+          </div>
+        )}
       </Card>
       <style>{`
         @keyframes gantt-slide {
@@ -933,13 +972,19 @@ function DeptMd({ text, activeRef, onCitationClick, activeMcpRef, onMcpClick }: 
   const isLong = text.length > MD_PREVIEW_LEN;
   const shown = (!isLong || expanded) ? text : text.slice(0, MD_PREVIEW_LEN) + "…";
 
-  // Override p/li to inject inline [N] RAG badges and [MN] MCP badges
+  // Override block + inline elements to inject [N] RAG badges and [MN] MCP badges
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const processInline = (children?: React.ReactNode) =>
+    processChildren(children, activeRef ?? null, onCitationClick, activeMcpRef ?? null, onMcpClick);
   const mdComponents: any = (onCitationClick || onMcpClick) ? {
-    p: ({ children }: { children?: React.ReactNode }) =>
-      <p>{processChildren(children, activeRef ?? null, onCitationClick, activeMcpRef ?? null, onMcpClick)}</p>,
-    li: ({ children }: { children?: React.ReactNode }) =>
-      <li>{processChildren(children, activeRef ?? null, onCitationClick, activeMcpRef ?? null, onMcpClick)}</li>,
+    p:      ({ children }: { children?: React.ReactNode }) => <p>{processInline(children)}</p>,
+    li:     ({ children }: { children?: React.ReactNode }) => <li>{processInline(children)}</li>,
+    strong: ({ children }: { children?: React.ReactNode }) => <strong>{processInline(children)}</strong>,
+    em:     ({ children }: { children?: React.ReactNode }) => <em>{processInline(children)}</em>,
+    h1:     ({ children }: { children?: React.ReactNode }) => <h1>{processInline(children)}</h1>,
+    h2:     ({ children }: { children?: React.ReactNode }) => <h2>{processInline(children)}</h2>,
+    h3:     ({ children }: { children?: React.ReactNode }) => <h3>{processInline(children)}</h3>,
+    h4:     ({ children }: { children?: React.ReactNode }) => <h4>{processInline(children)}</h4>,
   } : undefined;
 
   return (
@@ -1059,7 +1104,7 @@ function MetricTable({ metrics, mcpCount = 0, onSourceClick }: {
         // 仅当 source_idx 落在有效 MCP 来源范围内才渲染角标，避免 LLM 越界编号造成"坏角标"
         const validSrc = m.source_idx != null && m.source_idx >= 1 && m.source_idx <= mcpCount;
         return (
-          <div key={m.label ?? i} style={{
+          <div key={`${m.label ?? ''}-${i}`} style={{
             display: "flex", alignItems: "center", gap: 6,
             padding: "4px 8px", minWidth: 0,
             background: CC.panel,
@@ -1173,7 +1218,7 @@ function DeptReportCard({
   return (
     <TlRow code={code} badge={badge} badgeColor={stripe} elapsed={status === "done" ? elapsed_ms : undefined}>
       <Card stripe={stripe}>
-        <ReplyTo agent="PL" text={`收到，${task}`} />
+        <ReplyTo agent="PL" text={`收到，${cleanTaskDisplay(task)}`} />
 
         {/* ── 工具调用区域 ────────────────────────────────────────────── */}
         {toolSteps.length > 0 && (
@@ -1352,57 +1397,244 @@ function DeptReportCard({
   );
 }
 
-// ── HITL 锚点卡 ──────────────────────────────────────────────────────────────
+// ── 地点消歧卡 ───────────────────────────────────────────────────────────────
 
-function HitlAnchorCard({ message }: { message: string }) {
-  return (
-    <div style={{ padding: "3px 16px" }}>
-      <div style={{
-        borderRadius: 8,
-        border: `1px dashed color-mix(in oklab, ${CC.warn} 40%, transparent)`,
-        background: `color-mix(in oklab, ${CC.warn} 6%, ${CC.panel})`,
-        padding: "8px 12px",
-        display: "flex", alignItems: "center", gap: 10,
-      }}>
-        <span style={{
-          width: 20, height: 20, borderRadius: 5, flexShrink: 0,
-          background: `color-mix(in oklab, ${CC.warn} 20%, transparent)`,
-          color: CC.warn, display: "flex", alignItems: "center", justifyContent: "center",
-          fontWeight: 700, fontSize: 12,
-        }}>!</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 10, color: CC.muted, fontFamily: "monospace", marginBottom: 2 }}>
-            HITL · 人工审批
+function LocationPickerCard({
+  candidates,
+  query,
+  confirmed,
+  onSelect,
+  onRetry,
+}: {
+  candidates: LocationCandidate[];
+  query: string;
+  confirmed?: LocationCandidate;
+  onSelect?: (loc: LocationCandidate) => void;
+  onRetry?: (searchQuery: string) => void;
+}) {
+  const [hovered, setHovered] = React.useState<number | null>(null);
+  const [retryMode, setRetryMode] = React.useState(false);
+  const [retryInput, setRetryInput] = React.useState("");
+  const [searching, setSearching] = React.useState(false);
+
+  // When backend sends new candidates (retry result), clear the searching indicator
+  React.useEffect(() => {
+    setSearching(false);
+  }, [candidates, query]);
+
+  // Confirmed state: show as a compact "location confirmed" record
+  if (confirmed) {
+    return (
+      <TlRow code="PL" badge="地点已确认" badgeColor={CC.ok}>
+        <Card stripe={CC.ok}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 18, lineHeight: 1 }}>📍</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: CC.ok }}>
+                {confirmed.name}
+              </div>
+              {confirmed.address && (
+                <div style={{ fontSize: 11, color: CC.muted, marginTop: 2, lineHeight: 1.4 }}>
+                  {confirmed.address}
+                </div>
+              )}
+            </div>
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+              padding: "2px 7px", borderRadius: 4,
+              background: `color-mix(in oklab, ${CC.ok} 14%, transparent)`,
+              border: `1px solid color-mix(in oklab, ${CC.ok} 28%, transparent)`,
+              color: CC.ok, flexShrink: 0,
+            }}>✓ 已确认</span>
           </div>
-          <div style={{ fontSize: 12, color: CC.text, fontWeight: 500 }}>{message}</div>
+        </Card>
+      </TlRow>
+    );
+  }
+
+  const submitRetry = () => {
+    const q = retryInput.trim();
+    if (!q) return;
+    setSearching(true);
+    setRetryMode(false);
+    setRetryInput("");
+    onRetry?.(q);
+  };
+
+  return (
+    <TlRow code="PL" badge="地点确认">
+      <Card stripe={CC.info}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+          <span style={{ fontSize: 12 }}>📍</span>
+          <span style={{ fontWeight: 600, color: CC.info, fontSize: 12 }}>请确认事发地点</span>
+          <span style={{ fontSize: 11, color: CC.muted }}>「{query}」· {candidates.length} 个结果</span>
+          {onRetry && !retryMode && (
+            <button
+              onClick={() => setRetryMode(true)}
+              style={{
+                marginLeft: "auto", fontSize: 11, cursor: "pointer",
+                padding: "2px 8px", borderRadius: 4,
+                border: `1px solid ${CC.line}`, background: "transparent", color: CC.muted,
+                flexShrink: 0,
+              }}
+            >
+              重新搜索
+            </button>
+          )}
         </div>
-        <a href="#hitl-bar" style={{
-          fontSize: 10, color: CC.warn, textDecoration: "none",
-          padding: "2px 7px", borderRadius: 4,
-          border: `1px solid color-mix(in oklab, ${CC.warn} 30%, transparent)`,
-          flexShrink: 0,
-        }}>↑ 回到决策条</a>
-      </div>
-    </div>
+
+        {retryMode ? (
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              autoFocus
+              value={retryInput}
+              onChange={(e) => setRetryInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitRetry()}
+              placeholder="输入更精确的地点，如「陆家嘴环路1388号」"
+              style={{
+                flex: 1, fontSize: 12, padding: "5px 10px", borderRadius: 5,
+                border: `1px solid color-mix(in oklab, ${CC.info} 40%, transparent)`,
+                outline: "none", background: CC.bg, color: CC.text,
+              }}
+            />
+            <button
+              onClick={submitRetry}
+              disabled={!retryInput.trim()}
+              style={{
+                fontSize: 11, padding: "5px 12px", borderRadius: 5, cursor: "pointer",
+                background: CC.info, color: "#fff", border: "none",
+                opacity: retryInput.trim() ? 1 : 0.4, flexShrink: 0,
+              }}
+            >
+              搜索
+            </button>
+            <button
+              onClick={() => { setRetryMode(false); setRetryInput(""); }}
+              style={{
+                fontSize: 11, padding: "5px 8px", borderRadius: 5, cursor: "pointer",
+                background: "transparent", border: `1px solid ${CC.line}`, color: CC.muted,
+                flexShrink: 0,
+              }}
+            >
+              取消
+            </button>
+          </div>
+        ) : searching ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 2px" }}>
+            <span style={{
+              width: 12, height: 12, borderRadius: "50%", flexShrink: 0,
+              border: `1.5px solid color-mix(in oklab, ${CC.info} 28%, transparent)`,
+              borderTopColor: CC.info,
+              animation: "spin 0.75s linear infinite",
+              display: "inline-block",
+            }} />
+            <span style={{ fontSize: 12, color: CC.muted, fontStyle: "italic" }}>正在重新搜索…</span>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        ) : candidates.length === 0 ? (
+          <div style={{ fontSize: 11, color: CC.muted }}>
+            未找到匹配地点，请点击「重新搜索」提供更详细描述。
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            {candidates.map((c, i) => {
+              // AMap type is semicolon-separated categories; take the first meaningful one,
+              // filtering out generic address labels that carry no useful info for operators
+              const rawType = c.type?.split(";")?.[0]?.trim() || "";
+              const GENERIC_TYPES = ["地名地址信息", "地名", "地址", "普通地名"];
+              const poiType = GENERIC_TYPES.includes(rawType) ? "" : rawType;
+              const isHov = hovered === i;
+              return (
+                <button
+                  key={i}
+                  onClick={() => onSelect?.(c)}
+                  onMouseEnter={() => setHovered(i)}
+                  onMouseLeave={() => setHovered(null)}
+                  style={{
+                    display: "flex", alignItems: "stretch", gap: 0,
+                    borderRadius: 7, cursor: "pointer",
+                    border: `1px solid ${isHov
+                      ? `color-mix(in oklab, ${CC.info} 55%, transparent)`
+                      : CC.line}`,
+                    background: isHov
+                      ? `color-mix(in oklab, ${CC.info} 10%, ${CC.panel})`
+                      : CC.panel,
+                    textAlign: "left", transition: "all 0.12s", width: "100%",
+                    overflow: "hidden",
+                  }}
+                >
+                  {/* 左侧序号条 */}
+                  <div style={{
+                    width: 28, flexShrink: 0,
+                    background: isHov
+                      ? `color-mix(in oklab, ${CC.info} 22%, transparent)`
+                      : `color-mix(in oklab, ${CC.line} 60%, transparent)`,
+                    borderRight: `1px solid ${isHov ? `color-mix(in oklab, ${CC.info} 30%, transparent)` : CC.line}`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 10, fontWeight: 700, fontFamily: "monospace",
+                    color: isHov ? CC.info : CC.muted2,
+                    transition: "all 0.12s",
+                  }}>
+                    {i + 1}
+                  </div>
+                  {/* 右侧内容 */}
+                  <div style={{ flex: 1, minWidth: 0, padding: "8px 10px" }}>
+                    <div style={{
+                      fontSize: 12.5, fontWeight: 600,
+                      color: isHov ? CC.info : CC.text,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      transition: "color 0.12s",
+                    }}>
+                      {c.name}
+                    </div>
+                    {c.address && (
+                      <div style={{
+                        fontSize: 11, color: CC.muted, marginTop: 2, lineHeight: 1.4,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>
+                        📌 {c.address}
+                      </div>
+                    )}
+                    {poiType && (
+                      <span style={{
+                        display: "inline-block", marginTop: 4, fontSize: 9.5,
+                        padding: "1px 6px", borderRadius: 3,
+                        background: `color-mix(in oklab, ${CC.muted2} 12%, transparent)`,
+                        border: `1px solid color-mix(in oklab, ${CC.muted2} 22%, transparent)`,
+                        color: CC.muted2,
+                      }}>
+                        {poiType}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </TlRow>
   );
 }
 
 // ── 主导出 ───────────────────────────────────────────────────────────────────
 
-export function CardRenderer({ card, activeStepId, onStepSelect }: {
+export function CardRenderer({ card, activeStepId, onStepSelect, onSelectLocation, onRetryLocation }: {
   card: CommandCard;
   activeStepId?: string | null;
   onStepSelect?: (stepId: string) => void;
+  onSelectLocation?: (loc: LocationCandidate) => void;
+  onRetryLocation?: (searchQuery: string) => void;
 }) {
   switch (card.type) {
     case "timestamp": return <TimestampCard label={card.label} />;
     case "user_msg": return <UserMsgCard content={card.content} operator={card.operator} />;
     case "pl_thinking": return <PlThinkingCard message={card.message} />;
+    case "location_picker": return <LocationPickerCard candidates={card.candidates} query={card.query} confirmed={card.confirmed} onSelect={onSelectLocation} onRetry={onRetryLocation} />;
     case "orch_reasoning": return <OrchReasoningCard think_lines={card.think_lines} summary={card.summary} incident={card.incident} dept_tasks={card.dept_tasks} />;
     case "handoff": return <HandoffCard from={card.from} to={card.to} label={card.label} payload={card.payload} />;
-    case "dispatch_plan": return <DispatchPlanCard agents={card.agents} progress={card.progress} activeStepId={activeStepId} onStepSelect={onStepSelect} />;
+    case "dispatch_plan": return <DispatchPlanCard agents={card.agents} progress={card.progress} hitlMessage={card.hitl_message} activeStepId={activeStepId} onStepSelect={onStepSelect} />;
     case "dept_report": return <DeptReportCard  {...card} />;
-    case "hitl_anchor": return <HitlAnchorCard message={card.message} />;
     default: return null;
   }
 }

@@ -7,7 +7,7 @@ import {
   IconCrown,
   IconSearch,
   IconChartBar,
-
+  IconBolt,
   IconShieldCheck,
   IconBrain,
   IconArchive,
@@ -16,7 +16,6 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconCheckbox,
-
 } from "@tabler/icons-react";
 import type { AgentBubble, Citation, McpSource } from "@/lib/agent-api";
 
@@ -110,6 +109,14 @@ const AGENT_META: Record<
     dotColor: "#5F5E5A",
     nameColor: "#5F5E5A",
   },
+  executor: {
+    label: "Executor",
+    icon: <IconBolt size={13} />,
+    avatarBg: "#FEF3E2",
+    avatarColor: "#B45309",
+    dotColor: "#F59E0B",
+    nameColor: "#B45309",
+  },
   memory_save: {
     label: "memory_save",
     icon: <IconArchive size={13} />,
@@ -128,6 +135,7 @@ const MENTION_META: Record<
   supervisor: { bg: "#E6F1FB", color: "#185FA5", icon: <IconCrown size={11} />,          label: "Supervisor" },
   researcher: { bg: "#E1F5EE", color: "#0F6E56", icon: <IconSearch size={11} />,         label: "Researcher" },
   analyst:    { bg: "#EEEDFE", color: "#534AB7", icon: <IconChartBar size={11} />,       label: "Analyst"    },
+  executor:   { bg: "#FEF3E2", color: "#B45309", icon: <IconBolt size={11} />,           label: "Executor"   },
   reporter:   { bg: "#E0F7F6", color: "#1A7A74", icon: <IconClipboardList size={11} />, label: "Reporter"   },
   hitl:       { bg: "#FCEBEB", color: "#791F1F", icon: <IconShieldCheck size={11} />,   label: "HITL"       },
 };
@@ -136,6 +144,14 @@ const MENTION_META: Record<
 //
 // remark 把 [5] 解析成 linkReference，拆成三个节点，正则无法匹配。
 // 解法：preprocess 把 [N]/【N】 → ⟦N⟧，remark 不解析 ⟦⟧，文本保持完整。
+
+/** 剥除 analyst 输出末尾的 HITL 控制信号行，避免原始标记裸露在气泡中 */
+function stripHitlSignals(text: string): string {
+  return text
+    .replace(/\n?【HITL_REQUIRED】[^\n]*/g, "")
+    .replace(/\n?【EXECUTION_INTENT】[^\n]*/g, "")
+    .trim();
+}
 
 function preprocess(text: string): string {
   return text
@@ -194,7 +210,7 @@ function makeMarkdownComponents(
   /** 把一段纯文本中的 @mention、⟦N⟧（RAG）和 ⟦MN⟧（MCP）都转为 React 节点 */
   function processStr(text: string): React.ReactNode[] {
     const result: React.ReactNode[] = [];
-    const mentionRe = /(@(?:Supervisor|Researcher|Analyst|Reporter|HITL))/gi;
+    const mentionRe = /(@(?:Supervisor|Researcher|Analyst|Executor|Reporter|HITL))/gi;
     const parts = text.split(mentionRe);
 
     for (let pi = 0; pi < parts.length; pi++) {
@@ -844,7 +860,7 @@ export function AgentMessage({ bubble }: AgentMessageProps) {
                   mcpToShow, handleMcpClick, highlightedMcpRef,
                 )}
               >
-                {preprocess(content)}
+                {preprocess(agent === "analyst" ? stripHitlSignals(content) : content)}
               </ReactMarkdown>
               {status === "streaming" && (
                 <span

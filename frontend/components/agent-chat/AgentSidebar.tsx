@@ -9,6 +9,7 @@ import {
   IconBrain,
   IconArchive,
   IconClipboardList,
+  IconBolt,
 } from "@tabler/icons-react";
 import type { AgentName } from "@/lib/agent-api";
 
@@ -34,7 +35,13 @@ const AGENT_CONFIG: Record<
     icon: <IconChartBar size={15} />,
     dotColor: "#7F77DD",
     iconColor: "#7F77DD",
-    desc: "MCP 工具调用 + 分析",
+    desc: "研判 + 分析",
+  },
+  executor: {
+    icon: <IconBolt size={15} />,
+    dotColor: "#B45309",
+    iconColor: "#B45309",
+    desc: "MCP 工具执行",
   },
   reporter: {
     icon: <IconClipboardList size={15} />,
@@ -67,6 +74,7 @@ const AGENTS_ORDER: AgentName[] = [
   "supervisor",
   "researcher",
   "analyst",
+  "executor",
   "reporter",
   "hitl",
 ];

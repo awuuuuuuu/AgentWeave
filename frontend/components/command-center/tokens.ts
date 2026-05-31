@@ -31,6 +31,7 @@ export const CC = {
   agTr: "oklch(0.52 0.14 65)",    // TR 交通管控 — 琥珀 ~5.5:1
   agLg: "oklch(0.40 0.14 255)",   // LG 应急物资 — 蓝  ~9.2:1
   agFf: "oklch(0.46 0.20 32)",    // FF 消防救援 — 橙红 ~7.5:1
+  agSf: "oklch(0.44 0.10 250)",   // SF 企业安全 — 蓝灰 ~8.0:1
 } as const;
 
 /** 部门 emoji 图标（全局共用） */
@@ -43,11 +44,27 @@ export const DEPT_NAMES: Record<string, string> = {
   PL: "指挥中心", EN: "环保局", ME: "医疗急救", TR: "交通管控", LG: "应急物资", FF: "消防救援",
 };
 
+/** 长格式 dept_code（来自后端 PlanStep）→ 短码映射 */
+const _LONG_TO_SHORT: Record<string, string> = {
+  FIRE_BRIGADE:       "FF",
+  MEDICAL_EMS:        "ME",
+  TRAFFIC_CONTROL:    "TR",
+  EMERGENCY_SUPPLIES: "LG",
+  ENV_AGENCY:         "EN",
+  HEADQUARTERS:       "PL",
+};
+
+/** 将任意格式的 dept_code 规范化为短码（FF/ME/TR/LG/EN/PL） */
+export function normalizeDeptCode(raw: string): string {
+  const upper = raw.toUpperCase().replace(/-/g, "_");
+  return _LONG_TO_SHORT[upper] ?? upper;
+}
+
 /** Agent 代码 → 颜色 */
 export function agentColor(code: string): string {
   const map: Record<string, string> = {
     PL: CC.agPl, EN: CC.agEn, ME: CC.agMe,
     TR: CC.agTr, LG: CC.agLg, FF: CC.agFf,
   };
-  return map[code.toUpperCase()] ?? CC.muted;
+  return map[normalizeDeptCode(code)] ?? CC.muted;
 }

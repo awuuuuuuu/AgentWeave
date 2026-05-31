@@ -14,10 +14,10 @@ interface AMapPanelProps {
   onStepSelect?: (stepId: string | null) => void;     // A5：点击地图对象回传步骤
 }
 
-// 地图初始中心：在事故位置未知前显示滨海新区全局视野
-const MAP_INIT_CENTER: [number, number] = [117.7148, 39.1000];
+// 地图初始中心：在事故位置未知前显示浦东新区全局视野
+const MAP_INIT_CENTER: [number, number] = [121.4970, 31.2380];
 const MAP_INIT_ZOOM = 11;
-const DEFAULT_LABEL = "港城大道 388 号";
+const DEFAULT_LABEL = "浦东新区陆家嘴";
 
 // B2：图层默认列表（与后端 layer 字段对齐）
 const DEFAULT_LAYERS: MapLayer[] = [
@@ -36,7 +36,7 @@ const DEPT_COLORS: Record<string, string> = {
   medical_ems:        "#ef4444",
   traffic_control:    "#3b82f6",
   emergency_supplies: "#f97316",
-  enterprise_safety:  "#a855f7",
+  fire_brigade:       "#f97316",
 };
 
 // A4：路线动画车头图标（按部门）
@@ -44,6 +44,7 @@ const ROUTE_HEAD_ICON: Record<string, string> = {
   medical_ems:        "🚑",
   traffic_control:    "🚓",
   emergency_supplies: "📦",
+  fire_brigade:       "🚒",
 };
 
 // 路线循环动画速度倍率（>1 = 更慢）；物资车队整体慢一倍
@@ -59,7 +60,7 @@ const FOCUS_DEPTS: { code: string; dept_code: string; name: string }[] = [
   { code: "ME", dept_code: "medical_ems",        name: "医疗" },
   { code: "TR", dept_code: "traffic_control",    name: "交通" },
   { code: "LG", dept_code: "emergency_supplies", name: "物资" },
-  { code: "SF", dept_code: "enterprise_safety",  name: "安全" },
+  { code: "FF", dept_code: "fire_brigade",       name: "消防" },
 ];
 
 // 渲染对象的统一包装：携带图层 / 步骤 / 部门 元数据，支撑图层 toggle + 步骤联动
@@ -91,6 +92,8 @@ export function AMapPanel({
   const animRef = useRef<number[]>([]);               // requestAnimationFrame ids（A4 清理用）
   const loopRef = useRef<ReturnType<typeof setInterval>[]>([]); // 路线循环 setInterval ids
   const renderedUpToRef = useRef(0);                  // 已渲染到 mapEvents 的第几个
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const incidentPinRef = useRef<any>(null);           // 事故点 ⚠ 标记（单独管理，不进 mapObjectsRef）
   const [mapReady, setMapReady] = useState(false);   // 地图实例就绪后置 true，触发补渲早期事件
   const [layerState, setLayerState] = useState<MapLayer[]>(layers ?? DEFAULT_LAYERS);
   const layerStateRef = useRef(layerState);           // 供渲染 effect 读取最新启用状态
@@ -144,6 +147,10 @@ export function AMapPanel({
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function addIncidentPin(AMap: any, map: any, center: [number, number]) {
+    // 移除旧的事故标记（避免重复）
+    if (incidentPinRef.current) {
+      try { incidentPinRef.current.setMap(null); } catch { /* ignore */ }
+    }
     const pin = new AMap.Marker({
       position: center,
       content: `<div style="
@@ -158,6 +165,7 @@ export function AMapPanel({
       zIndex: 100,
     });
     pin.setMap(map);
+    incidentPinRef.current = pin;
   }
 
   // 事故坐标由 ERPG 数据派生后，动态渲染 ⚠ 标记并聚焦
@@ -191,6 +199,11 @@ export function AMapPanel({
       mapObjectsRef.current = [];
       renderedUpToRef.current = 0;
       incidentPinAddedRef.current = false;
+      // 清除事故点 ⚠ 标记
+      if (incidentPinRef.current) {
+        try { incidentPinRef.current.setMap(null); } catch { /* ignore */ }
+        incidentPinRef.current = null;
+      }
       return;
     }
 
@@ -212,6 +225,21 @@ export function AMapPanel({
     let hasCircles = false;
 
     for (const event of newEvents) {
+      // ── clear_routes_for_dept（召回操作）──
+      if (event.clear_routes_for_dept) {
+        const deptToRemove = event.clear_routes_for_dept;
+        const remaining: RenderedObj[] = [];
+        for (const o of mapObjectsRef.current) {
+          if (o.deptCode === deptToRemove && (o.layer === "routes" || o.layer === "fire_route" || o.layer === "ambulance_route")) {
+            try { o.obj.setMap(null); } catch { /* ignore */ }
+          } else {
+            remaining.push(o);
+          }
+        }
+        mapObjectsRef.current = remaining;
+        continue;
+      }
+
       const layer = event.layer ?? "resources";
       const stepId = event.step_id;
 
@@ -272,15 +300,22 @@ export function AMapPanel({
         });
         track(progress, "routes", "head", { stepId, deptCode: r.dept_code });  // kind=head：不参与 A5 高亮
 
-        // 车头 marker（完成后停在终点）
+        // 车头 markers（按 unit_count 创建多个，沿起点经纬度微偏错开，车队一起行进）
         const headIcon = ROUTE_HEAD_ICON[r.dept_code ?? ""] ?? "🚗";
-        const head = new AMap.Marker({
-          position: path[0],
-          content: `<div style="font-size:18px;filter:drop-shadow(0 0 4px ${color});">${headIcon}</div>`,
-          offset: new AMap.Pixel(-9, -9),
-          zIndex: 70,
-        });
-        track(head, "routes", "head", { stepId, deptCode: r.dept_code });
+        const unitCount = Math.min(event.unit_count ?? 1, 5);
+        const headMarkers: AMap.Marker[] = [];
+        for (let u = 0; u < unitCount; u++) {
+          const offsetLng = (u % 2 === 0 ? 1 : -1) * Math.ceil(u / 2) * 0.00015;
+          const startPos: [number, number] = [path[0][0] + offsetLng, path[0][1]];
+          const head = new AMap.Marker({
+            position: startPos,
+            content: `<div style="font-size:18px;filter:drop-shadow(0 0 4px ${color});">${headIcon}</div>`,
+            offset: new AMap.Pixel(-9, -9),
+            zIndex: 70,
+          });
+          headMarkers.push(head);
+          track(head, "routes", "head", { stepId, deptCode: r.dept_code });
+        }
 
         // 路线循环动画（按部门减速；持续播放直到会话切换）
         if (path.length > 1) {
@@ -296,7 +331,11 @@ export function AMapPanel({
             const idx = Math.max(1, Math.floor(t * (total - 1)));
             try {
               progress.setPath(path.slice(0, idx + 1));
-              head.setPosition(path[idx]);
+              // 车队整体平移：以当前路径点为基准，各车保持初始偏移
+              headMarkers.forEach((hm, u) => {
+                const offsetLng = (u % 2 === 0 ? 1 : -1) * Math.ceil(u / 2) * 0.00015;
+                hm.setPosition([path[idx][0] + offsetLng, path[idx][1]]);
+              });
             } catch { /* ignore */ }
           }, 50);
           loopRef.current.push(id);
@@ -324,13 +363,22 @@ export function AMapPanel({
 
     }
 
-    // 渲染完成后缩出全局视野（C2：圆圈静止 1.5s 让用户读图例，再 fitView）
-    const fitObjs = mapObjectsRef.current.filter((o) => isLayerEnabled(o.layer)).map((o) => o.obj);
+    // 渲染完成后缩出视野（C2：圆圈静止 1.5s 让用户读图例，再 fitView）
+    // 执行阶段"粘性"：只要历史渲染中存在路线对象，后续所有批次都只 fit 执行层，
+    // 避免 EN 监控等非路线事件触发全局 fitView 把医院 marker 拉入视野。
+    const EXEC_LAYERS = new Set(["routes", "fire_route"]);
+    const hasAnyExecObjs = mapObjectsRef.current.some((o) => EXEC_LAYERS.has(o.layer));
+    const fitObjs = hasAnyExecObjs
+      ? mapObjectsRef.current.filter((o) => isLayerEnabled(o.layer) && EXEC_LAYERS.has(o.layer)).map((o) => o.obj)
+      : mapObjectsRef.current.filter((o) => isLayerEnabled(o.layer)).map((o) => o.obj);
     if (fitObjs.length > 0) {
       const delay = hasCircles ? 1800 : 0;
       setTimeout(() => {
         if (mapRef.current && fitObjs.length > 0) {
-          mapRef.current.setFitView(fitObjs, true, [80, 80, 80, 80], 14);
+          // 执行阶段用更高 zoom；研判阶段包含全部资源点
+          const padding = hasAnyExecObjs ? [80, 100, 80, 100] : [80, 80, 80, 80];
+          const maxZoom = hasAnyExecObjs ? 16 : 14;
+          mapRef.current.setFitView(fitObjs, true, padding, maxZoom);
         }
       }, delay);
     }

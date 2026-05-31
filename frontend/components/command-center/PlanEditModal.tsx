@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { CC, DEPT_ICONS, DEPT_NAMES, agentColor } from "./tokens";
+import { CC, DEPT_ICONS, DEPT_NAMES, agentColor, normalizeDeptCode } from "./tokens";
 import type { PlanStep } from "@/lib/agent-api";
 
 interface PlanEditModalProps {
@@ -110,7 +110,7 @@ export function PlanEditModal({ steps, onConfirm, onReject, onClose }: PlanEditM
         {/* ── 步骤列表 ── */}
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
           {draft.map((step, idx) => {
-            const code      = step.dept_code.toUpperCase();
+            const code      = normalizeDeptCode(step.dept_code);
             const deptColor = agentColor(code);
             const isOn      = enabled[step.step_id] ?? true;
             return (
@@ -260,7 +260,7 @@ export function PlanEditModal({ steps, onConfirm, onReject, onClose }: PlanEditM
 
           <div style={{ flex: 1 }} />
 
-          {!allEnabled && enabledCount > 0 && (
+          {!allEnabled && enabledCount > 0 ? (
             <button
               onClick={handleApproveSelected}
               style={{
@@ -272,19 +272,21 @@ export function PlanEditModal({ steps, onConfirm, onReject, onClose }: PlanEditM
             >
               批准选中 {enabledCount} 步
             </button>
+          ) : (
+            <button
+              onClick={handleApproveAll}
+              disabled={enabledCount === 0}
+              style={{
+                padding: "5px 16px", borderRadius: 5, fontSize: 11, fontWeight: 700,
+                cursor: enabledCount === 0 ? "not-allowed" : "pointer",
+                border: `1px solid color-mix(in oklab, ${CC.ok} 50%, transparent)`,
+                background: `color-mix(in oklab, ${CC.ok} 18%, transparent)`,
+                color: CC.ok, opacity: enabledCount === 0 ? 0.4 : 1,
+              }}
+            >
+              批准全部方案
+            </button>
           )}
-
-          <button
-            onClick={handleApproveAll}
-            style={{
-              padding: "5px 16px", borderRadius: 5, fontSize: 11, fontWeight: 700, cursor: "pointer",
-              border: `1px solid color-mix(in oklab, ${CC.ok} 50%, transparent)`,
-              background: `color-mix(in oklab, ${CC.ok} 18%, transparent)`,
-              color: CC.ok,
-            }}
-          >
-            批准全部方案
-          </button>
         </div>
       </div>
     </div>

@@ -321,11 +321,12 @@ export function AgentChatWindow({
 
       else if (event.type === "map_update") {
         const mapId = makeBubbleId();
+        const mapAgent = (event.node ?? "analyst") as AgentName;
         setBubbles((prev) => [
           ...prev,
           {
             id: mapId,
-            agent: "analyst" as AgentName,
+            agent: mapAgent,
             content: "",
             status: "done",
             citations: [],

@@ -6,6 +6,7 @@ import { CommandCenterPanel } from "./CommandCenterPanel";
 import { AMapPanel } from "./AMapPanel";
 import { KanbanDrawer } from "./KanbanDrawer";
 import { PlanEditModal } from "./PlanEditModal";
+import { LocationPickerBar, type LocationCandidate } from "./LocationPickerBar";
 import type {
   CommandCard,
   HITLNotification,
@@ -91,6 +92,10 @@ export function CommandCenterLayout({
   const [showPlanEdit, setShowPlanEdit] = useState(false);
   const [title, setTitle] = useState(sessionTitle ?? "新 Weave 会话");
   const [activeStepId, setActiveStepId] = useState<string | null>(null);  // A5：地图↔执行卡联动
+  const [locationCandidates, setLocationCandidates] = useState<{
+    candidates: LocationCandidate[];
+    query: string;
+  } | null>(null);
 
   const abortRef               = useRef<AbortController | null>(null);
   const streamSettleRef        = useRef<Promise<void>>(Promise.resolve()); // 当前流结束后 resolve
@@ -130,6 +135,7 @@ export function CommandCenterLayout({
     setIsRunning(false);
     setPendingInterrupt(null);
     setActiveStepId(null);
+    setLocationCandidates(null);
     setTitle(sessionTitle ?? "新 Weave 会话");
   }, [sessionId, sessionTitle]);
 
@@ -179,7 +185,7 @@ export function CommandCenterLayout({
         setCards((prev) => {
           // 按内容过滤移除初始 pl_thinking 卡（不依赖 index，规避 async 时序问题）
           const prefix = prev.filter(
-            (c) => !(c.type === "pl_thinking" && c.message === "正在分析事故，制定应急响应计划...")
+            (c) => !(c.type === "pl_thinking" && (c.message === "正在分析事故，制定应急响应计划..." || c.message === "正在分析指令..."))
           );
           const base   = prefix.length; // orch=base, handoff=base+1, depts=base+2..
 
@@ -315,9 +321,9 @@ export function CommandCenterLayout({
           )
         );
         setCards((prev) => {
-          // 按内容过滤移除聚合 pl_thinking 卡
+          // 移除所有 pl_thinking 卡（含初始「正在分析指令...」和聚合「汇总研判数据...」）
           const prefix = prev.filter(
-            (c) => !(c.type === "pl_thinking" && c.message === "汇总研判数据，制定执行计划...")
+            (c) => !(c.type === "pl_thinking")
           );
           const base   = prefix.length; // handoff=base, dispatch_plan=base+1
 
@@ -435,8 +441,44 @@ export function CommandCenterLayout({
         // Pre-interrupt push; actual pause handled by "interrupt" event
         break;
 
+      case "location_candidates": {
+        const cands = event.data.candidates ?? [];
+        const q = event.data.query ?? "";
+        setLocationCandidates({ candidates: cands, query: q });
+        setCards((prev) => {
+          // LangGraph replays location_disambig node on resume → backend re-sends
+          // location_candidates. Ignore if we already have a confirmed location.
+          if (prev.some((c) => c.type === "location_picker" && c.confirmed)) {
+            return prev;
+          }
+          // Retry flow: update existing unconfirmed picker in-place, but only
+          // when the query changed. Replay re-dispatches the PREVIOUS query —
+          // skipping it keeps the searching indicator alive until real results arrive.
+          if (prev.some((c) => c.type === "location_picker" && !c.confirmed)) {
+            return prev.map((c) =>
+              c.type === "location_picker" && !c.confirmed && c.query !== q
+                ? { ...c, candidates: cands, query: q }
+                : c
+            );
+          }
+          // First time: remove "正在分析指令..." spinner, add location_picker bubble
+          const filtered = prev.filter(
+            (c) => !(c.type === "pl_thinking" && c.message === "正在分析指令...")
+          );
+          return [...filtered, { type: "location_picker" as const, candidates: cands, query: q }];
+        });
+        break;
+      }
+
       case "interrupt": {
         const payload = event.data;
+        if (payload.type === "location_select") {
+          // LocationPickerBar already shown by location_candidates event
+          setPendingInterrupt(payload);
+          setIsRunning(false);
+          break;
+        }
+        // plan_review HITL (original logic)
         hitlPendingRef.current = true;
         setPendingInterrupt(payload);
         setIsRunning(false);
@@ -447,10 +489,14 @@ export function CommandCenterLayout({
           detail: `共 ${(payload.plan ?? []).length} 步 · 可编辑、部分批准或拒绝`,
         });
         setSopStages((prev) => prev.map((s) => (s.id === "s3" ? { ...s, status: "active" } : s)));
-        setCards((prev) => [
-          ...prev,
-          { type: "hitl_anchor" as const, message: "等待指挥长批准执行计划" },
-        ]);
+        // 把 HITL 等待提示注入 dispatch_plan 卡底部 banner，不额外生成锚点卡
+        setCards((prev) => {
+          const planIdx = dispatchPlanCardIdxRef.current;
+          if (planIdx < 0 || prev[planIdx]?.type !== "dispatch_plan") return prev;
+          const next = [...prev];
+          next[planIdx] = { ...next[planIdx] as Extract<CommandCard, { type: "dispatch_plan" }>, hitl_message: "等待指挥长批准执行计划" };
+          return next;
+        });
         setShowPlanEdit(true);
         break;
       }
@@ -459,10 +505,6 @@ export function CommandCenterLayout({
         setSopStages((prev) =>
           prev.map((s) => (s.id === "s5" ? { ...s, status: "active" } : s.id === "s4" ? { ...s, status: "done" } : s))
         );
-        setCards((prev) => [
-          ...prev,
-          { type: "timestamp" as const, label: "综合报告：" + event.data.content.slice(0, 120) },
-        ]);
         break;
 
       case "done":
@@ -526,15 +568,20 @@ export function CommandCenterLayout({
       execCardIdxRef.current        = {};
 
       setIsRunning(true);
-      setTitle(query.slice(0, 60));
       setSopStages(INITIAL_SOP.map((s) => (s.id === "s1" ? { ...s, status: "active" } : s)));
 
-      // 立即插入用户消息 + PL 思考卡（研判计划生成中）
+      // 立即插入用户消息 + PL 思考卡（收到 location_candidates 时会自动移除）
       setCards((prev) => {
+        // On first message: reset map and set title
+        if (prev.length === 0) {
+          setTitle(query.slice(0, 60));
+          setMapEvents([]);
+          setIncidentCenter(null);
+        }
         const next: CommandCard[] = [
           ...prev,
           { type: "user_msg" as const, content: query },
-          { type: "pl_thinking" as const, message: "正在分析事故，制定应急响应计划..." },
+          { type: "pl_thinking" as const, message: "正在分析指令..." },
         ];
         plThinkingCardIdxRef.current = next.length - 1;
         return next;
@@ -557,13 +604,24 @@ export function CommandCenterLayout({
     setHitl((prev) => prev ? { ...prev, isProcessing: true } : null);
     setPendingInterrupt(null);
     setShowPlanEdit(false);
+    // 清除 dispatch_plan 卡上的 HITL banner
+    setCards((prev) => {
+      const planIdx = dispatchPlanCardIdxRef.current;
+      if (planIdx < 0 || prev[planIdx]?.type !== "dispatch_plan") return prev;
+      const next = [...prev];
+      const { hitl_message: _, ...rest } = next[planIdx] as Extract<CommandCard, { type: "dispatch_plan" }>;
+      next[planIdx] = rest as Extract<CommandCard, { type: "dispatch_plan" }>;
+      return next;
+    });
     setIsRunning(true);
     // 等旧流自然结束后再发 resume：interrupt 事件到达时服务端仍在排水（drain）以完成
     // checkpoint 落盘，若此时立即调用 /agent/resume 会读到空 state.next → 409。
     await streamSettleRef.current;
+    // 额外等待确保 LangGraph checkpoint 写入磁盘（SQLite WAL 刷新通常需要 ~100ms）
+    await new Promise<void>((r) => setTimeout(r, 300));
     const ac = new AbortController();
     abortRef.current = ac;
-    streamSettleRef.current = runStream(resumeWeave(sessionId, decision, ac.signal), ac);
+    streamSettleRef.current = runStream(resumeWeave(sessionId, decision as string | unknown[] | Record<string, unknown>, ac.signal), ac);
     await streamSettleRef.current;
   }
   // 每次渲染后同步最新的 _resume，供 timeout callback 调用（不进 deps 避免无限重建）
@@ -595,13 +653,61 @@ export function CommandCenterLayout({
   }, [pendingInterrupt, sessionId]);
 
   const handlePlanConfirm = useCallback(
-    (steps: PlanStep[]) => _resume(steps),
+    (steps: PlanStep[]) => {
+      // 将用户编辑后的步骤文字同步到 DispatchPlanCard（原始卡片在 HITL 前已渲染）
+      setCards((prev) => {
+        const planIdx = dispatchPlanCardIdxRef.current;
+        if (planIdx < 0 || prev[planIdx]?.type !== "dispatch_plan") return prev;
+        const next = [...prev];
+        const pc = next[planIdx] as Extract<CommandCard, { type: "dispatch_plan" }>;
+        next[planIdx] = {
+          ...pc,
+          agents: steps.map((s) => {
+            const m = deptMeta(s.dept_code);
+            return { code: m.code, name: m.name, task: s.task || s.title, step_id: s.step_id };
+          }),
+        };
+        return next;
+      });
+      _resume(steps);
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId],
   );
 
   const handlePlanReject = useCallback(
     () => _resume("reject"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId],
+  );
+
+  const handleSelectLocation = useCallback(
+    async (location: LocationCandidate) => {
+      setLocationCandidates(null);
+      // 立即渲染事故坐标标注，无需等待后端推送 map_update
+      setIncidentCenter([location.lng, location.lat]);
+      // Mark picker as confirmed and immediately show a planner thinking indicator
+      setCards((prev) => {
+        const withConfirmed = prev.map((c) =>
+          c.type === "location_picker" ? { ...c, confirmed: location } : c
+        );
+        return [
+          ...withConfirmed,
+          { type: "pl_thinking" as const, message: "正在分析事故，制定应急响应计划..." },
+        ];
+      });
+      await _resume(location);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId],
+  );
+
+  const handleRetryLocation = useCallback(
+    async (searchQuery: string) => {
+      // Don't clear the location_picker card here — backend will send a new
+      // location_candidates event which updates it in place
+      await _resume("search:" + searchQuery);
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sessionId],
   );
@@ -633,6 +739,8 @@ export function CommandCenterLayout({
             position: "relative",
             borderRight: `1px solid ${CC.line}`,
             overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
           <CommandCenterPanel
@@ -646,6 +754,8 @@ export function CommandCenterLayout({
             onOpenHitlModal={handleOpenHitlModal}
             activeStepId={activeStepId}
             onStepSelect={(id) => setActiveStepId((prev) => (prev === id ? null : id))}
+            onSelectLocation={handleSelectLocation}
+            onRetryLocation={handleRetryLocation}
           />
           {showPlanEdit && pendingInterrupt?.plan && (
             <PlanEditModal

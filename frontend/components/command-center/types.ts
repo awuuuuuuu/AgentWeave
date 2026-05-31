@@ -1,6 +1,10 @@
 import type { Citation, DeptMetric, MapPayload } from "@/lib/agent-api";
 export type { Citation, DeptMetric, MapPayload };
 
+export interface LocationCandidate {
+  name: string; address: string; lat: number; lng: number; type?: string;
+}
+
 export interface McpSource {
   idx: number;
   tool_name: string;
@@ -20,28 +24,29 @@ export interface AgentFleetEntry {
 // ── Card Stream ────────────────────────────────────────────────────────────
 
 export type CommandCard =
-  | { type: "user_msg";       content: string; operator?: string }
-  | { type: "pl_thinking";    message: string }
-  | { type: "orch_reasoning"; think_lines: string[]; summary: string;
+  | { type: "user_msg";        content: string; operator?: string }
+  | { type: "pl_thinking";     message: string }
+  | { type: "location_picker"; candidates: LocationCandidate[]; query: string; confirmed?: LocationCandidate }
+  | { type: "orch_reasoning";  think_lines: string[]; summary: string;
       incident?: string;
       dept_tasks?: Array<{ code: string; name: string; task: string }> }
-  | { type: "handoff";        from: string[]; to: string[]; label?: string; payload?: string }
-  | { type: "dispatch_plan";  agents: { code: string; name: string; task: string; step_id?: string }[];
-                               progress: ("done" | "running" | "error" | "idle")[] }
-  | { type: "dept_report";    code: string; name: string; task: string;
-                               status: "done" | "running" | "error";
-                               phase?: "research" | "exec";
-                               elapsed_ms?: number;
-                               summary?: string;
-                               facts?: string[];
-                               metrics?: DeptMetric[];
-                               map_events?: MapPayload[];
-                               kvs?: { k: string; v: string }[];
-                               citations?: Citation[];
-                               mcp_sources?: McpSource[];
-                               err_detail?: string }
-  | { type: "hitl_anchor";   message: string }
-  | { type: "timestamp";     label: string };
+  | { type: "handoff";         from: string[]; to: string[]; label?: string; payload?: string }
+  | { type: "dispatch_plan";   agents: { code: string; name: string; task: string; step_id?: string }[];
+                                progress: ("done" | "running" | "error" | "idle")[];
+                                hitl_message?: string }
+  | { type: "dept_report";     code: string; name: string; task: string;
+                                status: "done" | "running" | "error";
+                                phase?: "research" | "exec";
+                                elapsed_ms?: number;
+                                summary?: string;
+                                facts?: string[];
+                                metrics?: DeptMetric[];
+                                map_events?: MapPayload[];
+                                kvs?: { k: string; v: string }[];
+                                citations?: Citation[];
+                                mcp_sources?: McpSource[];
+                                err_detail?: string }
+  | { type: "timestamp";      label: string };
 
 // ── HITL Bar（流外固定区域）─────────────────────────────────────────────────
 
