@@ -90,37 +90,43 @@ const DEPT_RESEARCH_STEPS: Record<string, WorkflowStep[]> = {
   ],
 };
 
-/** 执行阶段：3步，Analyst 调用根据实际任务文本动态推导 */
+/** 执行阶段：3步，Executor 调用根据实际任务文本动态推导 */
 function buildExecSteps(code: string, task: string): WorkflowStep[] {
   const t = task ?? "";
   const short = t.length > 18 ? t.slice(0, 18) + "…" : t;
 
-  let analystLabel: string;
-  let analystCall: string;
+  let execLabel: string;
+  let execCall: string;
 
   if (/救护|医疗|伤员|病人|急救/.test(t)) {
-    analystLabel = "🔧 Analyst: 调度急救资源";
-    analystCall = `mcp.ems.dispatch(task="${short}")`;
+    execLabel = "⚡ Executor: 调度急救资源";
+    execCall = `mcp.ems.dispatch(task="${short}")`;
   } else if (/封路|管控|封锁|疏散|交通|路口|信号/.test(t)) {
-    analystLabel = "🔧 Analyst: 推送交通管控指令";
-    analystCall = `mcp.traffic.control(task="${short}")`;
+    execLabel = "⚡ Executor: 推送交通管控指令";
+    execCall = `mcp.traffic.control(task="${short}")`;
   } else if (/物资|调配|防护|设备|器材/.test(t)) {
-    analystLabel = "🔧 Analyst: 下发物资调配单";
-    analystCall = `mcp.logistics.dispatch(task="${short}")`;
+    execLabel = "⚡ Executor: 下发物资调配单";
+    execCall = `mcp.logistics.dispatch(task="${short}")`;
   } else if (/停机|停产|工厂|储罐|阀门|关闭/.test(t)) {
-    analystLabel = "🔧 Analyst: 触发应急处置";
-    analystCall = `mcp.factory.control(task="${short}")`;
+    execLabel = "⚡ Executor: 触发应急处置";
+    execCall = `mcp.factory.control(task="${short}")`;
   } else if (/预警|发布|通报|扩散|警报/.test(t)) {
-    analystLabel = "🔧 Analyst: 发布预警通报";
-    analystCall = `mcp.alert.publish(task="${short}")`;
+    execLabel = "⚡ Executor: 发布预警通报";
+    execCall = `mcp.alert.publish(task="${short}")`;
+  } else if (/消防|灭火|火灾|消防车|出动/.test(t)) {
+    execLabel = "⚡ Executor: 调派消防资源";
+    execCall = `mcp.fire.dispatch(task="${short}")`;
+  } else if (/召回|撤回|返回|撤离/.test(t)) {
+    execLabel = "⚡ Executor: 执行召回指令";
+    execCall = `mcp.recall(dept=${code.toLowerCase()}, task="${short}")`;
   } else {
-    analystLabel = "🔧 Analyst: 执行任务指令";
-    analystCall = `mcp.execute(dept=${code.toLowerCase()}, task="${short}")`;
+    execLabel = "⚡ Executor: 执行调度指令";
+    execCall = `mcp.execute(dept=${code.toLowerCase()}, task="${short}")`;
   }
 
   return [
     { label: "🎯 Supervisor: 解析执行指令", call: "supervisor.parse_directive(step)" },
-    { label: analystLabel, call: analystCall },
+    { label: execLabel, call: execCall },
     { label: "📝 Reporter: 汇报执行结果", call: "reporter.report_result()" },
   ];
 }
@@ -1157,7 +1163,7 @@ function MetricTable({ metrics, mcpCount = 0, onSourceClick }: {
 // ── 部门报告卡 ───────────────────────────────────────────────────────────────
 
 function DeptReportCard({
-  code, name: _name, task, status, phase, elapsed_ms, summary, facts, metrics, kvs, citations, mcp_sources, err_detail,
+  code, name: _name, task, status, phase, direct, elapsed_ms, summary, facts, metrics, kvs, citations, mcp_sources, err_detail,
 }: Extract<CommandCard, { type: "dept_report" }>) {
   const toolSteps = phase === "exec"
     ? buildExecSteps(code, task)
@@ -1218,7 +1224,7 @@ function DeptReportCard({
   return (
     <TlRow code={code} badge={badge} badgeColor={stripe} elapsed={status === "done" ? elapsed_ms : undefined}>
       <Card stripe={stripe}>
-        <ReplyTo agent="PL" text={`收到，${cleanTaskDisplay(task)}`} />
+        {!direct && <ReplyTo agent="PL" text={`收到，${cleanTaskDisplay(task)}`} />}
 
         {/* ── 工具调用区域 ────────────────────────────────────────────── */}
         {toolSteps.length > 0 && (

@@ -229,6 +229,7 @@ export type WeaveSSEEvent =
   | { type: "research_dispatch"; data: { incident?: string; tasks: Array<{ dept_code: string; task: string }> } }
   | { type: "dept_report";   data: { dept_code: string; status: string; summary: string; key_facts: string[]; metrics?: DeptMetric[]; map_events: MapPayload[]; citations?: Citation[]; mcp_sources?: McpSource[] } }
   | { type: "dispatch_plan"; data: { steps: PlanStep[] } }
+  | { type: "direct_dispatch"; data: { dept_code: string; step_id: string; task: string; title: string } }
   | { type: "plan_step";     data: { step_id: string; status: string; summary?: string } }
   | { type: "map_update";    data: MapPayload }
   | { type: "hitl_required"; data: { step_id: string; title: string; dept_code: string; timeout_sec: number } }

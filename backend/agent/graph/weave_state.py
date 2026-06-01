@@ -61,3 +61,4 @@ class WeaveState(TypedDict):
     intent: Optional[str]               # incident_response / direct_command / escalation / follow_up
     event_scope: Optional[str]          # localized / citywide
     location_retry_query: Optional[str] # 用户重新搜索关键词（self-loop 传递，确认后清为 None）
+    is_direct_mention: Optional[bool]   # True when user @mentioned a dept → skip HITL

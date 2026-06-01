@@ -37,6 +37,7 @@ export type CommandCard =
   | { type: "dept_report";     code: string; name: string; task: string;
                                 status: "done" | "running" | "error";
                                 phase?: "research" | "exec";
+                                direct?: boolean;
                                 elapsed_ms?: number;
                                 summary?: string;
                                 facts?: string[];

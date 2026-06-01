@@ -111,6 +111,7 @@ export function CommandCenterLayout({
   const dispatchPlanCardIdxRef = useRef<number>(-1);                   // 甘特卡位置
   const planStepIdxMapRef      = useRef<Record<string, number>>({});   // step_id→甘特索引
   const execCardIdxRef         = useRef<Record<string, number>>({});   // step_id→执行卡位置
+  const directDispatchStepsRef = useRef<Set<string>>(new Set());       // @mention直发步骤，跳过plan_step(running)卡插入
   const hitlPendingRef         = useRef<boolean>(false);               // 阻止 done 清除 hitl
 
   // Reset state when switching sessions
@@ -125,6 +126,7 @@ export function CommandCenterLayout({
     dispatchPlanCardIdxRef.current = -1;
     planStepIdxMapRef.current     = {};
     execCardIdxRef.current        = {};
+    directDispatchStepsRef.current = new Set();
     hitlPendingRef.current        = false;
     setCards([]);
     setMapEvents([]);
@@ -359,6 +361,35 @@ export function CommandCenterLayout({
         break;
       }
 
+      case "direct_dispatch": {
+        const { dept_code, step_id, task, title } = event.data;
+        const m = deptMeta(dept_code);
+        directDispatchStepsRef.current.add(step_id);
+
+        setSopStages((prev) =>
+          prev.map((s) =>
+            s.id === "s1" ? { ...s, status: "done" }
+            : s.id === "s2" ? { ...s, status: "done" }
+            : s.id === "s3" ? { ...s, status: "done" }
+            : s.id === "s4" ? { ...s, status: "active" }
+            : s
+          )
+        );
+
+        const displayTitle = title ?? task;
+        setCards((prev) => {
+          const prefix = prev.filter((c) => !(c.type === "pl_thinking"));
+          const insertCards: CommandCard[] = [
+            { type: "handoff" as const, from: ["PL"], to: [m.code], label: "direct", payload: displayTitle },
+            { type: "dept_report" as const, code: m.code, name: m.name, task: displayTitle, status: "running", phase: "exec", direct: true },
+          ];
+          const next = [...prefix, ...insertCards];
+          execCardIdxRef.current[step_id] = next.length - 1;
+          return next;
+        });
+        break;
+      }
+
       case "plan_step": {
         const { step_id, status, summary } = event.data;
         const taskStatus: TaskEntry["status"] =
@@ -382,8 +413,10 @@ export function CommandCenterLayout({
           );
           // 执行已启动，清除审批条（approval 已处理完，spinner 不应继续显示）
           setHitl(null);
-          // Insert handoff + exec dept card, update Gantt to running
-          const step = planStepsRef.current.find((s) => s.step_id === step_id);
+          // direct_dispatch 已预先插入卡，跳过重复插入
+          const step = directDispatchStepsRef.current.has(step_id)
+            ? null
+            : planStepsRef.current.find((s) => s.step_id === step_id);
           if (step) {
             const m = deptMeta(step.dept_code);
             setCards((prev) => {
@@ -564,13 +597,20 @@ export function CommandCenterLayout({
       aggThinkingCardIdxRef.current = -1;
       planStepsRef.current          = [];
       dispatchPlanCardIdxRef.current = -1;
-      planStepIdxMapRef.current     = {};
-      execCardIdxRef.current        = {};
+      planStepIdxMapRef.current      = {};
+      execCardIdxRef.current         = {};
+      directDispatchStepsRef.current = new Set();
+
+      const isDirectMention = /@[一-龥A-Za-z_]+/.test(query);
 
       setIsRunning(true);
-      setSopStages(INITIAL_SOP.map((s) => (s.id === "s1" ? { ...s, status: "active" } : s)));
+      setSopStages(
+        isDirectMention
+          ? INITIAL_SOP  // direct_dispatch 会立刻推送 s1~s4 更新，无需预设 active
+          : INITIAL_SOP.map((s) => (s.id === "s1" ? { ...s, status: "active" } : s))
+      );
 
-      // 立即插入用户消息 + PL 思考卡（收到 location_candidates 时会自动移除）
+      // 插入用户消息；@mention 直接指令跳过 pl_thinking 卡（不走指挥中心）
       setCards((prev) => {
         // On first message: reset map and set title
         if (prev.length === 0) {
@@ -581,9 +621,11 @@ export function CommandCenterLayout({
         const next: CommandCard[] = [
           ...prev,
           { type: "user_msg" as const, content: query },
-          { type: "pl_thinking" as const, message: "正在分析指令..." },
+          ...(!isDirectMention
+            ? [{ type: "pl_thinking" as const, message: "正在分析指令..." }]
+            : []),
         ];
-        plThinkingCardIdxRef.current = next.length - 1;
+        plThinkingCardIdxRef.current = isDirectMention ? -1 : next.length - 1;
         return next;
       });
 

@@ -447,14 +447,20 @@ async def classify_intent(state: WeaveState, config: RunnableConfig) -> dict:
     turn = state.get("conversation_turn") or 0
     incident = state.get("incident", "")
 
+    # @部门名 mention → direct A2A, bypass HITL
+    has_at_mention = bool(re.search(r"@([一-龥A-Za-z_]+)", incident))
+
     if turn == 0:
         _CITYWIDE_KEYWORDS = (
             "台风", "暴雨", "预警", "全市", "全区", "全域",
             "寒潮", "大风蓝色", "大风橙色", "黄色预警", "橙色预警",
         )
         scope = "citywide" if any(kw in incident for kw in _CITYWIDE_KEYWORDS) else "localized"
+        if has_at_mention:
+            logger.info("Weave: classify_intent turn=0 @mention → direct_command, is_direct_mention=True")
+            return {"intent": "direct_command", "conversation_turn": 1, "event_scope": scope, "is_direct_mention": True}
         logger.info("Weave: classify_intent turn=0 → incident_response, scope=%s", scope)
-        return {"intent": "incident_response", "conversation_turn": 1, "event_scope": scope}
+        return {"intent": "incident_response", "conversation_turn": 1, "event_scope": scope, "is_direct_mention": False}
 
     llm = ChatOpenAI(model=settings.llm_model, temperature=0)
     system = SystemMessage(content=(
@@ -476,8 +482,12 @@ async def classify_intent(state: WeaveState, config: RunnableConfig) -> dict:
         logger.warning("Weave: classify_intent LLM 失败，默认 direct_command")
         intent = "direct_command"
 
-    logger.info("Weave: classify_intent turn=%d → %s", turn, intent)
-    return {"intent": intent, "conversation_turn": turn + 1, "event_scope": "localized"}
+    # @mention 强制 direct_command
+    if has_at_mention:
+        intent = "direct_command"
+
+    logger.info("Weave: classify_intent turn=%d → %s, is_direct_mention=%s", turn, intent, has_at_mention)
+    return {"intent": intent, "conversation_turn": turn + 1, "event_scope": "localized", "is_direct_mention": has_at_mention}
 
 
 # ── 节点：阶段 1 — 并发调用各部门 ────────────────────────────────────────────
@@ -629,6 +639,28 @@ async def create_single_step_plan(state: WeaveState, config: RunnableConfig) -> 
     dept_codes = state.get("selected_dept_codes") or list(a2a_urls.keys())
     dept_list = "、".join(dept_codes)
 
+    # 解析 @部门名 mention，强制指定 dept_code（绕过 LLM 路由歧义）
+    _AT_DEPT_MAP: dict[str, str] = {
+        "医疗急救": "medical_ems",
+        "消防救援": "fire_brigade",
+        "交通管控": "traffic_control",
+        "应急物资": "emergency_supplies",
+        "环保局":   "env_agency",
+    }
+    forced_dept: str | None = None
+    _at_m = re.search(r"@([一-龥A-Za-z_]+)", incident)
+    if _at_m:
+        mentioned = _at_m.group(1)
+        # 精确匹配优先；否则前缀匹配（@医疗 → 医疗急救，@消防 → 消防救援）
+        forced_dept = _AT_DEPT_MAP.get(mentioned)
+        if not forced_dept:
+            for key, code in _AT_DEPT_MAP.items():
+                if key.startswith(mentioned):
+                    forced_dept = code
+                    break
+        if forced_dept:
+            logger.info("Weave: @mention=%r → dept_code 强制为 %r", mentioned, forced_dept)
+
     tool_enum_lines = [
         f"  {' / '.join(tools)}（{dept}）"
         for dept, tools in DEPT_WRITE_TOOL_MAP.items()
@@ -657,13 +689,14 @@ async def create_single_step_plan(state: WeaveState, config: RunnableConfig) -> 
         logger.exception("Weave: create_single_step_plan LLM 失败，使用默认步骤")
         raw = {}
 
+    is_direct_mention = bool(state.get("is_direct_mention"))
     fallback_dept = dept_codes[0] if dept_codes else "fire_brigade"
     step = PlanStep(
         step_id=raw.get("step_id", "step-001"),
         title=_ensure_specific_title(raw.get("title", incident[:30]), incident),
-        dept_code=raw.get("dept_code", fallback_dept),
+        dept_code=forced_dept or raw.get("dept_code", fallback_dept),
         task=raw.get("task") or f"立即执行：{incident}",
-        is_high_risk=bool(raw.get("is_high_risk", True)),
+        is_high_risk=False if is_direct_mention else bool(raw.get("is_high_risk", True)),
         status="pending",
         map_layer=raw.get("map_layer") or None,
         result_summary="",
@@ -671,15 +704,31 @@ async def create_single_step_plan(state: WeaveState, config: RunnableConfig) -> 
         execution_params=raw.get("execution_params") or None,
     )
 
-    await adispatch_custom_event(
-        "em_event",
-        {"type": "dispatch_plan", "data": {"steps": [step]}},
-        config=config,
-    )
-    logger.info(
-        "Weave: 单步直接指令计划已生成: %s | execution_tool=%s",
-        step["title"], step.get("execution_tool"),
-    )
+    if is_direct_mention:
+        await adispatch_custom_event(
+            "em_event",
+            {"type": "direct_dispatch", "data": {
+                "dept_code": step["dept_code"],
+                "step_id": step["step_id"],
+                "task": step["task"],
+                "title": step["title"],
+            }},
+            config=config,
+        )
+        logger.info(
+            "Weave: @mention 直接指令，跳过 HITL: %s → %s | execution_tool=%s",
+            step["dept_code"], step["title"], step.get("execution_tool"),
+        )
+    else:
+        await adispatch_custom_event(
+            "em_event",
+            {"type": "dispatch_plan", "data": {"steps": [step]}},
+            config=config,
+        )
+        logger.info(
+            "Weave: 单步直接指令计划已生成: %s | execution_tool=%s",
+            step["title"], step.get("execution_tool"),
+        )
     return {"dispatch_plan": [step]}
 
 
@@ -1228,6 +1277,13 @@ def _route_after_classify(state: WeaveState) -> str:
     return "location_disambig" if not has_location else "phase_dispatch"
 
 
+def _route_after_single_step(state: WeaveState) -> str:
+    """@mention 直接指令跳过 HITL，普通单步指令保留 HITL 审批。"""
+    if state.get("is_direct_mention"):
+        return "execute_all_parallel"
+    return "hitl_plan_review"
+
+
 def _route_after_location(state: WeaveState) -> str:
     # 用户要求重新搜索地点 → self-loop 回到 location_disambig
     if state.get("location_retry_query"):
@@ -1248,7 +1304,7 @@ def build_weave_graph(checkpointer: Any) -> Any:
         START → classify_intent → (条件边)
           → location_disambig → (条件边) → phase_dispatch | create_single_step_plan
           → phase_dispatch → phase_aggregate → hitl_plan_review
-          → create_single_step_plan → hitl_plan_review
+          → create_single_step_plan → (条件边) → hitl_plan_review | execute_all_parallel
           → hitl_plan_review → execute_all_parallel → final_report → END
     """
     graph = StateGraph(WeaveState)
@@ -1283,7 +1339,14 @@ def build_weave_graph(checkpointer: Any) -> Any:
         },
     )
 
-    graph.add_edge("create_single_step_plan", "hitl_plan_review")
+    graph.add_conditional_edges(
+        "create_single_step_plan",
+        _route_after_single_step,
+        {
+            "hitl_plan_review":     "hitl_plan_review",
+            "execute_all_parallel": "execute_all_parallel",
+        },
+    )
     graph.add_edge("phase_dispatch",           "phase_aggregate")
     graph.add_edge("phase_aggregate",          "hitl_plan_review")
     graph.add_edge("hitl_plan_review",         "execute_all_parallel")

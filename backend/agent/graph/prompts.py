@@ -393,6 +393,14 @@ execution_params 参数格式（无法确定的值填 "auto"，executor 运行�
   recall_fire_trucks:     {{"station_id":"auto","truck_count":"auto"}}
   recall_ambulance:       {{"ambulance_id":"auto"}}
 
+⚠️ dept_code 强制映射（必须严格遵守，不得替换）：
+  dispatch_ambulance / recall_ambulance   → dept_code 必须为 medical_ems
+  dispatch_fire_trucks / recall_fire_trucks → dept_code 必须为 fire_brigade
+  set_mode / apply_evacuation_plan        → dept_code 必须为 traffic_control
+  allocate_standard_pack / allocate_custom → dept_code 必须为 emergency_supplies
+  「撤销救护车」「召回救护车」「救护车回撤」等含「救护车」的召回指令 → execution_tool=recall_ambulance，dept_code=medical_ems
+  「撤回消防车」「消防车回撤」等含「消防车」的召回指令             → execution_tool=recall_fire_trucks，dept_code=fire_brigade
+
 可用部门代码：{dept_list}
 只输出 JSON，不含其他内容。\
 """
