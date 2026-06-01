@@ -114,6 +114,18 @@ def build_executor() -> object:
                     "executor_count": state.get("executor_count", 0) + 1,
                 }
 
+        # ── 召回类工具：ambulance_id 仍为 auto 说明无出车救护车，提前返回友好提示 ──
+        if tool_name == "recall_ambulance" and params.get("ambulance_id") == "auto":
+            logger.warning("Executor [%s]: recall_ambulance 无出车救护车可召回，跳过执行", dept_code)
+            return {
+                "messages": [AIMessage(
+                    content="⚠️ 查询结果显示当前无救护车处于出车状态，召回操作已跳过。"
+                            "若刚执行了派遣指令，可能存在短暂时延，请稍后重试此召回操作。",
+                    name="executor",
+                )],
+                "executor_count": state.get("executor_count", 0) + 1,
+            }
+
         # ── 直接调用写操作工具（无 LLM） ─────────────────────────────────────
         _map_updates: list[dict] = []
         _mcp_sources: list[dict] = []
@@ -298,25 +310,27 @@ def _normalize_params(tool_name: str, params: dict) -> dict:
 def _parse_mcp_result(data) -> dict | list | None:
     """MCP ainvoke 可能返回原始数据或 content block 列表，统一解析为 Python 对象。
 
-    content block 格式：[{"type":"text","text":"...json..."}]
-    对象格式：getattr(obj, "text", None) 用于 LangChain TextContent 对象
+    FastMCP 将 list[dict] 序列化为多个独立 TextContent block（每项一个），
+    因此必须解析所有 block 再合并，而非只取第一个。
     """
     import json as _json
 
     if isinstance(data, dict):
         return data
     if isinstance(data, list) and data:
-        first = data[0]
-        # 尝试从 content block 提取 text（dict 或 TextContent 对象）
-        text = (
-            getattr(first, "text", None)
-            or (first.get("text") if isinstance(first, dict) else None)
-        )
-        if text:
-            try:
-                return _json.loads(text)
-            except Exception:
-                pass
+        parsed_items = []
+        for item in data:
+            text = (
+                getattr(item, "text", None)
+                or (item.get("text") if isinstance(item, dict) else None)
+            )
+            if text:
+                try:
+                    parsed_items.append(_json.loads(text))
+                except Exception:
+                    pass
+        if parsed_items:
+            return parsed_items[0] if len(parsed_items) == 1 else parsed_items
     return data
 
 
@@ -470,13 +484,9 @@ async def _resolve_auto_params(
                     dispatched = [a for a in ambulances if a.get("status") == "出车"]
                     if dispatched:
                         resolved["ambulance_id"] = dispatched[0]["id"]
-                        logger.info(
-                            "Executor: recall_ambulance ambulance_id resolved → %r",
-                            dispatched[0]["id"],
-                        )
+                        logger.info("Executor: recall_ambulance ambulance_id resolved → %r", dispatched[0]["id"])
                 except Exception as e:
                     logger.warning("Executor: list_ambulances (recall) 解析失败: %s", e)
-            # 无出车救护车可召回：记录 warning，让工具以自然错误响应，不使用硬编码 Demo ID
             if resolved.get("ambulance_id") == "auto":
                 logger.warning("Executor: recall_ambulance 无出车救护车可召回，ambulance_id 未解析")
 
