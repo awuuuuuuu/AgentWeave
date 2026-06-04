@@ -1,9 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { BookOpen, Building2, MessageSquare, LogOut, User, Users } from "lucide-react";
-import { tokenStorage } from "@/lib/api";
+import { BookOpen, Bot, Building2, MessageSquare, LogOut, User, Siren } from "lucide-react";
+import { tokenStorage, apiGetMyOrg } from "@/lib/api";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,17 +12,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const navItems = [
-  { href: "/knowledge", label: "知识库", icon: BookOpen },
-  { href: "/chat", label: "对话", icon: MessageSquare },
-  { href: "/agent", label: "协同", icon: Users },
-  { href: "/org", label: "部门", icon: Building2 },
-];
-
 export default function NavHeader() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const [isCommandOrg, setIsCommandOrg] = useState(false);
+
+  useEffect(() => {
+    apiGetMyOrg()
+      .then((org) => setIsCommandOrg(org.type === "command"))
+      .catch(() => {});
+  }, []);
 
   const isKbDetail = /^\/knowledge\/[^/]+/.test(pathname);
   const kbName = searchParams.get("name");
@@ -31,10 +32,22 @@ export default function NavHeader() {
     router.push("/login");
   }
 
+  const navItems = isCommandOrg
+    ? [
+        { href: "/agent", label: "指挥台", icon: Siren },
+        { href: "/org", label: "部门", icon: Building2 },
+      ]
+    : [
+        { href: "/knowledge", label: "知识库", icon: BookOpen },
+        { href: "/chat", label: "对话", icon: MessageSquare },
+        { href: "/agent", label: "智能体", icon: Bot },
+        { href: "/org", label: "部门", icon: Building2 },
+      ];
+
   return (
     <header className="h-14 border-b flex items-center px-6 shrink-0 bg-background z-10">
       {/* Logo */}
-      <Link href="/knowledge" className="flex items-center gap-2 mr-8">
+      <Link href={isCommandOrg ? "/agent" : "/knowledge"} className="flex items-center gap-2 mr-8">
         <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
           <span className="text-primary-foreground text-xs font-bold">R</span>
         </div>

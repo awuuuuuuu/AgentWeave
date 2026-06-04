@@ -18,6 +18,8 @@ import type {
 import {
   streamWeave,
   resumeWeave,
+  retryWeaveStep,
+  retryWeaveResearch,
   type WeaveSSEEvent,
   type MapPayload,
   type PlanStep,
@@ -244,6 +246,30 @@ export function CommandCenterLayout({
       case "dept_report": {
         const d = event.data;
         const meta = deptMeta(d.dept_code);
+
+        // Research retry: reset card back to running state
+        if (d.status === "running") {
+          setCards((prev) => {
+            const updated = [...prev];
+            const di = deptCardIdxRef.current[d.dept_code];
+            if (di != null && updated[di]?.type === "dept_report") {
+              updated[di] = {
+                ...(updated[di] as Extract<CommandCard, { type: "dept_report" }>),
+                status: "running",
+                summary: undefined,
+                err_detail: undefined,
+                facts: undefined,
+                metrics: undefined,
+              };
+            }
+            return updated;
+          });
+          setTasks((prev) => prev.map((t) =>
+            t.id === d.dept_code ? { ...t, status: "running" as const } : t
+          ));
+          break;
+        }
+
         const isErr = d.status === "failed" || d.status === "timeout";
         const cardStatus: "done" | "error" = isErr ? "error" : "done";
 
@@ -511,6 +537,24 @@ export function CommandCenterLayout({
           setIsRunning(false);
           break;
         }
+        if (payload.type === "research_failure") {
+          // 研判失败 HITL：内联按钮，无需弹出模态框
+          hitlPendingRef.current = true;
+          setPendingInterrupt(payload);
+          setIsRunning(false);
+          const failedNames = (payload.failed_depts ?? [])
+            .map((c: string) => deptMeta(c).name)
+            .join("、");
+          setHitl({
+            id: "hitl-research-failure",
+            message: `${(payload.failed_depts ?? []).length} 个部门研判失败`,
+            detail: `${failedNames} — 报告缺失，执行计划可能不完整。是否继续？`,
+            isInline: true,
+            confirmLabel: "继续制定计划",
+            rejectLabel: "中止",
+          });
+          break;
+        }
         // plan_review HITL (original logic)
         hitlPendingRef.current = true;
         setPendingInterrupt(payload);
@@ -754,7 +798,82 @@ export function CommandCenterLayout({
     [sessionId],
   );
 
+  const handleRetryStep = useCallback(
+    async (stepId: string) => {
+      const step = planStepsRef.current.find((s) => s.step_id === stepId);
+      if (!step) return;
+      try {
+        for await (const event of retryWeaveStep({
+          session_id: sessionId,
+          step_id: stepId,
+          title: step.title,
+          dept_code: step.dept_code,
+          execution_tool: step.execution_tool ?? null,
+          execution_params: step.execution_params ?? null,
+        })) {
+          processEvent(event);
+        }
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === "AbortError")) {
+          processEvent({ type: "plan_step", data: { step_id: stepId, status: "failed", summary: "重试连接失败" } });
+        }
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId],
+  );
+
+  const handleRetryDept = useCallback(
+    async (shortCode: string, phase: string | undefined, task: string) => {
+      // Find the full A2A dept_code from the display short code (e.g. "LG" → "emergency_supplies")
+      const orig = RESEARCH_DEPTS.find((d) => d.code === shortCode);
+      const origDeptCode = orig?.dept_code ?? shortCode;
+
+      if (phase === "research" || phase == null) {
+        // Research phase retry: call the research retry endpoint
+        try {
+          for await (const event of retryWeaveResearch({
+            session_id: sessionId,
+            dept_code: origDeptCode,
+            task,
+          })) {
+            processEvent(event);
+          }
+        } catch (e) {
+          if (!(e instanceof DOMException && e.name === "AbortError")) {
+            processEvent({
+              type: "dept_report",
+              data: {
+                dept_code: origDeptCode,
+                status: "failed",
+                summary: "重试连接失败",
+                key_facts: [], map_events: [], citations: [],
+              },
+            });
+          }
+        }
+      } else {
+        // Execution phase retry: match by short code against planStepsRef
+        const step = planStepsRef.current.find((s) => deptMeta(s.dept_code).code === shortCode);
+        if (!step?.step_id) return;
+        handleRetryStep(step.step_id);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId, handleRetryStep],
+  );
+
   const handleOpenHitlModal = useCallback(() => setShowPlanEdit(true), []);
+
+  // 研判失败 HITL 内联按钮
+  const handleApproveInline = useCallback(
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => _resume("approve"), [sessionId],
+  );
+  const handleRejectInline = useCallback(
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => _resume("reject"), [sessionId],
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
@@ -798,6 +917,10 @@ export function CommandCenterLayout({
             onStepSelect={(id) => setActiveStepId((prev) => (prev === id ? null : id))}
             onSelectLocation={handleSelectLocation}
             onRetryLocation={handleRetryLocation}
+            onRetryStep={handleRetryStep}
+            onRetryDept={handleRetryDept}
+            onApprove={handleApproveInline}
+            onReject={handleRejectInline}
           />
           {showPlanEdit && pendingInterrupt?.plan && (
             <PlanEditModal

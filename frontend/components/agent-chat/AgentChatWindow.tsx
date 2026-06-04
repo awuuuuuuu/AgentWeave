@@ -84,6 +84,10 @@ export function AgentChatWindow({
 
   // 追踪首条用户消息（用于生成 session title）
   const firstUserMsgRef = useRef<string | null>(null);
+  // 最近一次发送的用户消息（用于错误时提供重试）
+  const lastQueryRef = useRef<string>("");
+  // 镜像 selectedKbIds，供重试回调读取最新值（避免 stale closure）
+  const selectedKbIdsRef = useRef<Set<string>>(new Set());
 
   const abortRef = useRef<AbortController | null>(null);
   const msgsRef = useRef<HTMLDivElement>(null);
@@ -119,6 +123,9 @@ export function AgentChatWindow({
       closeSession(sessionId).catch(() => {});
     };
   }, [sessionId]);
+
+  // 同步 selectedKbIds → ref，供重试回调读取最新值
+  useEffect(() => { selectedKbIdsRef.current = selectedKbIds; }, [selectedKbIds]);
 
   // 点击 KB 弹层外部时关闭
   useEffect(() => {
@@ -406,7 +413,9 @@ export function AgentChatWindow({
       }
 
       else if (event.type === "error") {
-        toast.error(event.data.message || "Agent 执行出错");
+        toast.error(event.data.message || "Agent 执行出错", {
+          action: { label: "重试", onClick: () => retryLast() },
+        });
         setIsRunning(false);
         setActiveAgent(null);
       }
@@ -415,6 +424,26 @@ export function AgentChatWindow({
     setIsRunning(false);
     setActiveAgent(null);
   }
+
+  // ── 重试上一条 ──────────────────────────────────────────────────────────────
+
+  const retryLast = useCallback(async () => {
+    const q = lastQueryRef.current;
+    if (!q || isRunning) return;
+    setIsRunning(true);
+    abortRef.current = new AbortController();
+    try {
+      const gen = streamAgent(q, sessionId, Array.from(selectedKbIdsRef.current), abortRef.current.signal);
+      await runStream(gen);
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name !== "AbortError") {
+        toast.error(e.message || "连接失败");
+      }
+      setIsRunning(false);
+      setActiveAgent(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRunning, sessionId]);
 
   // ── 发送消息 ────────────────────────────────────────────────────────────────
 
@@ -428,6 +457,7 @@ export function AgentChatWindow({
     if (!firstUserMsgRef.current) {
       firstUserMsgRef.current = q;
     }
+    lastQueryRef.current = q;
 
 
     setBubbles((prev) => [
@@ -453,12 +483,14 @@ export function AgentChatWindow({
       await runStream(gen);
     } catch (e: unknown) {
       if (e instanceof Error && e.name !== "AbortError") {
-        toast.error(e.message || "连接失败");
+        toast.error(e.message || "连接失败", {
+          action: { label: "重试", onClick: () => retryLast() },
+        });
       }
       setIsRunning(false);
       setActiveAgent(null);
     }
-  }, [input, isRunning, hitlPending, kbsLoading, sessionId, selectedKbIds]);
+  }, [input, isRunning, hitlPending, kbsLoading, sessionId, selectedKbIds, retryLast]);
 
   // ── HITL 审批 ───────────────────────────────────────────────────────────────
 

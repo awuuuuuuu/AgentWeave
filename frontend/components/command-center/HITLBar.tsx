@@ -6,9 +6,11 @@ import type { HITLNotification } from "./types";
 interface HITLBarProps {
   hitl: HITLNotification | null;
   onOpenModal: () => void;
+  onApprove?: () => void;
+  onReject?: () => void;
 }
 
-export function HITLBar({ hitl, onOpenModal }: HITLBarProps) {
+export function HITLBar({ hitl, onOpenModal, onApprove, onReject }: HITLBarProps) {
   if (!hitl) return null;
 
   return (
@@ -73,6 +75,31 @@ export function HITLBar({ hitl, onOpenModal }: HITLBarProps) {
           }} />
           执行中…
           <style>{`@keyframes hitl-spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      ) : hitl.isInline ? (
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <button
+            onClick={onReject}
+            style={{
+              padding: "6px 14px", borderRadius: 5,
+              border: `1px solid color-mix(in oklab, ${CC.muted} 40%, transparent)`,
+              background: "transparent",
+              color: CC.muted2, fontSize: 12, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {hitl.rejectLabel ?? "中止"}
+          </button>
+          <button
+            onClick={onApprove}
+            style={{
+              padding: "6px 14px", borderRadius: 5,
+              border: `1px solid color-mix(in oklab, ${CC.warn} 55%, transparent)`,
+              background: `color-mix(in oklab, ${CC.warn} 18%, transparent)`,
+              color: CC.warn, fontSize: 12, fontWeight: 700, cursor: "pointer",
+            }}
+          >
+            {hitl.confirmLabel ?? "继续"}
+          </button>
         </div>
       ) : (
         <button

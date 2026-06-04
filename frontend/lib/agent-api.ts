@@ -236,6 +236,7 @@ export type WeaveSSEEvent =
   | { type: "location_candidates"; data: { candidates: Array<{ name: string; address: string; lat: number; lng: number; type?: string }>; query: string } }
   | { type: "final_answer";  data: { content: string } }
   | { type: "interrupt";     data: { type: "plan_review" | "step_review" | "location_select"; plan?: PlanStep[]; step_id?: string; title?: string; dept_code?: string; timeout_sec?: number } }
+  | { type: "interrupt";     data: { type: "research_failure"; message: string; failed_depts: string[]; timeout_sec?: number } }
   | { type: "done";          data: Record<string, never> }
   | { type: "error";         data: { message: string } };
 
@@ -396,6 +397,55 @@ export async function* resumeWeave(
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "审批请求失败" }));
     throw new Error(err.detail ?? "Weave 审批失败");
+  }
+  yield* parseSSE<WeaveSSEEvent>(res, signal);
+}
+
+export interface RetryWeaveStepParams {
+  session_id: string;
+  step_id: string;
+  title: string;
+  dept_code: string;
+  execution_tool?: string | null;
+  execution_params?: Record<string, unknown> | null;
+}
+
+/** 重试单个失败的 Weave 执行步骤，返回 SSE 事件流（plan_step running → done/failed） */
+export async function* retryWeaveStep(
+  params: RetryWeaveStepParams,
+  signal?: AbortSignal,
+): AsyncGenerator<WeaveSSEEvent> {
+  const res = await authFetch(`${API_BASE}/agent/weave/retry-step`, {
+    method: "POST",
+    body: JSON.stringify(params),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "重试请求失败" }));
+    throw new Error(err.detail ?? "重试步骤失败");
+  }
+  yield* parseSSE<WeaveSSEEvent>(res, signal);
+}
+
+export interface RetryWeaveResearchParams {
+  session_id: string;
+  dept_code: string;  // A2A key, e.g. "emergency_supplies"
+  task: string;
+}
+
+/** 重试单个失败的研判阶段部门任务，返回 SSE 事件流（dept_report running → done/failed） */
+export async function* retryWeaveResearch(
+  params: RetryWeaveResearchParams,
+  signal?: AbortSignal,
+): AsyncGenerator<WeaveSSEEvent> {
+  const res = await authFetch(`${API_BASE}/agent/weave/retry-research`, {
+    method: "POST",
+    body: JSON.stringify(params),
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "重试请求失败" }));
+    throw new Error(err.detail ?? "重试研判失败");
   }
   yield* parseSSE<WeaveSSEEvent>(res, signal);
 }

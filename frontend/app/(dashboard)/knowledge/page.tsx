@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Plus, Trash2, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,7 +24,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiListKBs, apiCreateKB, apiDeleteKB, type KnowledgeBase } from "@/lib/api";
+import { apiListKBs, apiCreateKB, apiDeleteKB, apiGetMyOrg, type KnowledgeBase } from "@/lib/api";
 import Link from "next/link";
 
 // 根据名称生成固定颜色
@@ -41,6 +42,7 @@ function getColor(name: string) {
 }
 
 export default function KnowledgePage() {
+  const router = useRouter();
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +55,14 @@ export default function KnowledgePage() {
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeBase | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  useEffect(() => { loadKBs(); }, []);
+  useEffect(() => {
+    // 指挥中心 org 无需知识库，重定向到指挥台
+    apiGetMyOrg()
+      .then((org) => { if (org.type === "command") router.replace("/agent"); })
+      .catch(() => {});
+    loadKBs();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function loadKBs() {
     setLoading(true);

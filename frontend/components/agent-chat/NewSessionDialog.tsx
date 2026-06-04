@@ -31,6 +31,8 @@ interface NewSessionDialogProps {
   ) => Promise<void>;
   /** 是否显示 Weave 指挥台选项（仅 command 类型机构可用） */
   showWeave?: boolean;
+  /** 打开时默认激活的会话类型 */
+  defaultType?: "chat" | "weave";
 }
 
 export function NewSessionDialog({
@@ -38,8 +40,9 @@ export function NewSessionDialog({
   onOpenChange,
   onConfirm,
   showWeave = false,
+  defaultType,
 }: NewSessionDialogProps) {
-  const [sessionType, setSessionType] = useState<"chat" | "weave">("chat");
+  const [sessionType, setSessionType] = useState<"chat" | "weave">(defaultType ?? "chat");
 
   // chat mode
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
@@ -55,8 +58,8 @@ export function NewSessionDialog({
 
   useEffect(() => {
     if (!open) return;
-    // 非 command 机构打开弹窗时重置为 chat
-    if (!showWeave) setSessionType("chat");
+    // 打开时重置为指定默认类型
+    setSessionType(defaultType ?? (showWeave ? "weave" : "chat"));
     // Load KB list for chat mode
     setKbLoading(true);
     apiListKBs()

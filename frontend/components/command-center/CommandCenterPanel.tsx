@@ -22,6 +22,10 @@ interface CommandCenterPanelProps {
   onStepSelect?: (stepId: string) => void;
   onSelectLocation?: (loc: LocationCandidate) => void;
   onRetryLocation?: (searchQuery: string) => void;
+  onRetryStep?: (stepId: string) => void;
+  onRetryDept?: (deptCode: string, phase: string | undefined, task: string) => void;
+  onApprove?: () => void;
+  onReject?: () => void;
 }
 
 // ── conv-head ───────────────────────────────────────────────────────────────
@@ -382,6 +386,10 @@ export function CommandCenterPanel({
   onStepSelect,
   onSelectLocation,
   onRetryLocation,
+  onRetryStep,
+  onRetryDept,
+  onApprove,
+  onReject,
 }: CommandCenterPanelProps) {
   const streamRef = useRef<HTMLDivElement>(null);
 
@@ -455,6 +463,8 @@ export function CommandCenterPanel({
               onStepSelect={onStepSelect}
               onSelectLocation={onSelectLocation}
               onRetryLocation={onRetryLocation}
+              onRetryStep={onRetryStep}
+              onRetryDept={onRetryDept}
             />
           ))
         )}
@@ -464,6 +474,8 @@ export function CommandCenterPanel({
       <HITLBar
         hitl={hitl}
         onOpenModal={onOpenHitlModal ?? (() => {})}
+        onApprove={onApprove}
+        onReject={onReject}
       />
 
       {/* Row 5: composer */}

@@ -57,6 +57,9 @@ export interface HITLNotification {
   detail?: string;
   dept_code?: string;   // step_review 时指明执行部门
   isProcessing?: boolean; // approve/reject 后等待后端响应期间
+  isInline?: boolean;   // 内联按钮（不弹模态框）
+  confirmLabel?: string; // 内联确认按钮文字
+  rejectLabel?: string;  // 内联拒绝按钮文字
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────

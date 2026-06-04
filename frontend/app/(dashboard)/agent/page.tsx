@@ -124,7 +124,8 @@ export default function AgentPage() {
   ) {
     setIsCreating(true);
     try {
-      const s = await createSession(kbIds, sessionType);
+      // weave session 不使用 KB，传空数组避免写入无效数据
+      const s = await createSession(sessionType === "weave" ? [] : kbIds, sessionType);
       if (deptCodes.length > 0) sessionDeptCodesRef.current[s.id] = deptCodes;
       setSessions((prev) => [s, ...(prev ?? [])]);
       router.push(`/agent?session=${s.id}`);
@@ -197,6 +198,7 @@ export default function AgentPage() {
         onOpenChange={setDialogOpen}
         onConfirm={handleDialogConfirm}
         showWeave={isCommandOrg}
+        defaultType={isCommandOrg ? "weave" : "chat"}
       />
     </div>
   );

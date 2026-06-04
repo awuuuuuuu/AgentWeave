@@ -193,14 +193,16 @@ function Badge({ label, color }: { label: string; color?: string }) {
 
 function ReplyTo({ agent, text }: { agent: string; text: string }) {
   const color = agentColor(agent);
+  const display = text.length > 80 ? text.slice(0, 80) + "…" : text;
   return (
     <div style={{
       borderLeft: `2px solid color-mix(in oklab, ${color} 50%, transparent)`,
       paddingLeft: 8, marginBottom: 8,
       fontSize: 11, color: CC.muted,
+      overflowWrap: "break-word", wordBreak: "break-word",
     }}>
       <span style={{ fontWeight: 600, color }}>@{AGENT_META[agent]?.name ?? agent}</span>
-      {" · "}{text}
+      {" · "}{display}
     </div>
   );
 }
@@ -457,12 +459,13 @@ function HandoffCard({ from, to, label, payload }: {
 
 // ── 执行计划（顺序甘特）─────────────────────────────────────────────────────
 
-function DispatchPlanCard({ agents, progress, hitlMessage, activeStepId, onStepSelect }: {
+function DispatchPlanCard({ agents, progress, hitlMessage, activeStepId, onStepSelect, onRetryStep }: {
   agents: { code: string; name: string; task: string; step_id?: string }[];
   progress: ("done" | "running" | "error" | "idle")[];
   hitlMessage?: string;
   activeStepId?: string | null;
   onStepSelect?: (stepId: string) => void;
+  onRetryStep?: (stepId: string) => void;
 }) {
   const done = progress.filter((s) => s === "done").length;
   const total = agents.length;
@@ -584,13 +587,28 @@ function DispatchPlanCard({ agents, progress, hitlMessage, activeStepId, onStepS
                     {cleanTaskDisplay(agent.task)}
                   </span>
                 </div>
-                {/* 状态文字 */}
-                <span style={{
-                  flex: "0 0 52px", textAlign: "right", fontSize: 10, marginTop: 2,
-                  color: isDone ? CC.ok : isActive ? CC.warn : isError ? CC.emerg : CC.muted2,
-                }}>
-                  {isDone ? "✓ 完成" : isActive ? "⟳ 执行中" : isError ? "✕ 错误" : "待命"}
-                </span>
+                {/* 状态文字 / 重试按钮 */}
+                {isError && agent.step_id && onRetryStep ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRetryStep(agent.step_id!); }}
+                    style={{
+                      flex: "0 0 auto", fontSize: 10, marginTop: 2, cursor: "pointer",
+                      padding: "2px 7px", borderRadius: 4, fontWeight: 600,
+                      color: CC.warn,
+                      background: `color-mix(in oklab, ${CC.warn} 10%, transparent)`,
+                      border: `1px solid color-mix(in oklab, ${CC.warn} 35%, transparent)`,
+                    }}
+                  >
+                    ↺ 重试
+                  </button>
+                ) : (
+                  <span style={{
+                    flex: "0 0 52px", textAlign: "right", fontSize: 10, marginTop: 2,
+                    color: isDone ? CC.ok : isActive ? CC.warn : isError ? CC.emerg : CC.muted2,
+                  }}>
+                    {isDone ? "✓ 完成" : isActive ? "⟳ 执行中" : isError ? "✕ 错误" : "待命"}
+                  </span>
+                )}
               </div>
             );
           })}
@@ -1164,7 +1182,8 @@ function MetricTable({ metrics, mcpCount = 0, onSourceClick }: {
 
 function DeptReportCard({
   code, name: _name, task, status, phase, direct, elapsed_ms, summary, facts, metrics, kvs, citations, mcp_sources, err_detail,
-}: Extract<CommandCard, { type: "dept_report" }>) {
+  onRetryDept,
+}: Extract<CommandCard, { type: "dept_report" }> & { onRetryDept?: (deptCode: string, phase: string | undefined, task: string) => void }) {
   const toolSteps = phase === "exec"
     ? buildExecSteps(code, task)
     : (DEPT_RESEARCH_STEPS[code] ?? []);
@@ -1386,15 +1405,34 @@ function DeptReportCard({
         {/* 引用来源（KB 文献引用卡，与普通对话 CitationList 一致） */}
         {isDone && <DeptCitationList citations={citations ?? []} activeRef={activeRef} onCitationClick={handleCitationClick} />}
 
-        {/* 错误详情 */}
-        {status === "error" && err_detail && (
-          <div style={{
-            marginTop: 8, padding: "6px 9px",
-            background: `color-mix(in oklab, ${CC.emerg} 8%, transparent)`,
-            border: `1px solid color-mix(in oklab, ${CC.emerg} 22%, transparent)`,
-            borderRadius: 5, fontSize: 11, color: CC.emerg, lineHeight: 1.5,
-          }}>
-            {formatErrDetail(err_detail)}
+        {/* 错误详情 + 重试按钮 */}
+        {status === "error" && (
+          <div style={{ marginTop: 8 }}>
+            {err_detail && (
+              <div style={{
+                padding: "6px 9px",
+                background: `color-mix(in oklab, ${CC.emerg} 8%, transparent)`,
+                border: `1px solid color-mix(in oklab, ${CC.emerg} 22%, transparent)`,
+                borderRadius: 5, fontSize: 11, color: CC.emerg, lineHeight: 1.5,
+                marginBottom: onRetryDept ? 6 : 0,
+              }}>
+                {formatErrDetail(err_detail)}
+              </div>
+            )}
+            {onRetryDept && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onRetryDept(code, phase, task); }}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  padding: "3px 10px", borderRadius: 5, fontSize: 11, fontWeight: 600,
+                  background: `color-mix(in oklab, ${CC.emerg} 10%, transparent)`,
+                  border: `1px solid color-mix(in oklab, ${CC.emerg} 30%, transparent)`,
+                  color: CC.emerg, cursor: "pointer",
+                }}
+              >
+                ↺ 重试
+              </button>
+            )}
           </div>
         )}
       </Card>
@@ -1625,12 +1663,14 @@ function LocationPickerCard({
 
 // ── 主导出 ───────────────────────────────────────────────────────────────────
 
-export function CardRenderer({ card, activeStepId, onStepSelect, onSelectLocation, onRetryLocation }: {
+export function CardRenderer({ card, activeStepId, onStepSelect, onSelectLocation, onRetryLocation, onRetryStep, onRetryDept }: {
   card: CommandCard;
   activeStepId?: string | null;
   onStepSelect?: (stepId: string) => void;
   onSelectLocation?: (loc: LocationCandidate) => void;
   onRetryLocation?: (searchQuery: string) => void;
+  onRetryStep?: (stepId: string) => void;
+  onRetryDept?: (deptCode: string, phase: string | undefined, task: string) => void;
 }) {
   switch (card.type) {
     case "timestamp": return <TimestampCard label={card.label} />;
@@ -1639,8 +1679,8 @@ export function CardRenderer({ card, activeStepId, onStepSelect, onSelectLocatio
     case "location_picker": return <LocationPickerCard candidates={card.candidates} query={card.query} confirmed={card.confirmed} onSelect={onSelectLocation} onRetry={onRetryLocation} />;
     case "orch_reasoning": return <OrchReasoningCard think_lines={card.think_lines} summary={card.summary} incident={card.incident} dept_tasks={card.dept_tasks} />;
     case "handoff": return <HandoffCard from={card.from} to={card.to} label={card.label} payload={card.payload} />;
-    case "dispatch_plan": return <DispatchPlanCard agents={card.agents} progress={card.progress} hitlMessage={card.hitl_message} activeStepId={activeStepId} onStepSelect={onStepSelect} />;
-    case "dept_report": return <DeptReportCard  {...card} />;
+    case "dispatch_plan": return <DispatchPlanCard agents={card.agents} progress={card.progress} hitlMessage={card.hitl_message} activeStepId={activeStepId} onStepSelect={onStepSelect} onRetryStep={onRetryStep} />;
+    case "dept_report": return <DeptReportCard {...card} onRetryDept={onRetryDept} />;
     default: return null;
   }
 }
