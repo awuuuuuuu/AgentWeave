@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent.graph.agent_graph import get_agent_cards
 from agent.graph.memory_nodes import run_on_session_end
+from agent.graph.weave_supervisor import _call_dept_a2a
 from auth.dependencies import get_current_user
 from db.models import ConversationSession, Organization, User
 from db.session import get_session
@@ -72,6 +73,22 @@ class AgentChatRequest(BaseModel):
 class AgentResumeRequest(BaseModel):
     session_id: str
     decision: Any  # HITL: "approve" | "reject" | list[PlanStep]（HITL-1 修改计划）
+
+
+class WeaveRetryStepRequest(BaseModel):
+    session_id: str
+    step_id: str
+    title: str
+    task: str          # 完整任务描述（非展示用的 title），传给部门 A2A agent
+    dept_code: str
+    execution_tool: str | None = None
+    execution_params: dict | None = None
+
+
+class WeaveRetryResearchRequest(BaseModel):
+    session_id: str
+    dept_code: str  # A2A key, e.g. "emergency_supplies"
+    task: str
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
@@ -651,6 +668,107 @@ async def close_agent_session(
         task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
         logger.info("close_session: memory_save 已调度 session=%s", session_id)
     return {"status": "ok"}
+
+
+@router.post("/weave/retry-step")
+async def weave_retry_step(
+    request: Request,
+    body: WeaveRetryStepRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """重试单个失败的 Weave 执行步骤，SSE 流式返回 plan_step 状态变更。"""
+    a2a_urls = await _load_a2a_urls(db)
+    graph = _get_graph_by_type(request, "weave")
+    config = _make_config(body.session_id, current_user.id)
+    context = {"execution_intent": {"tool_name": body.execution_tool, "params": body.execution_params or {}}} \
+        if body.execution_tool else None
+
+    async def stream():
+        try:
+            yield _sse({"type": "plan_step", "data": {"step_id": body.step_id, "status": "running"}})
+            result = await _call_dept_a2a(
+                body.dept_code,
+                body.task,
+                a2a_urls=a2a_urls,
+                context=context,
+                timeout=30,
+            )
+            status = result.get("status", "failed")
+            summary = result.get("summary", "")
+
+            # 成功：将步骤状态写回 LangGraph checkpoint
+            if status == "completed":
+                yield _sse({"type": "plan_step", "data": {
+                    "step_id": body.step_id, "status": "done", "summary": summary,
+                }})
+                # 将执行步骤中返回的地图事件逐一推送
+                for me in result.get("map_events", []):
+                    yield _sse({"type": "map_update", "data": me})
+                # 回写 checkpoint：将对应 step 标记为 done
+                try:
+                    state = await graph.aget_state(config)
+                    if state and state.values:
+                        plan: list = list(state.values.get("dispatch_plan") or [])
+                        updated = [
+                            {**s, "status": "done", "summary": summary} if s.get("step_id") == body.step_id else s
+                            for s in plan
+                        ]
+                        await graph.aupdate_state(config, {"dispatch_plan": updated})
+                except Exception:
+                    logger.exception("retry-step: 回写 checkpoint 失败（不影响前端）")
+            else:
+                yield _sse({"type": "plan_step", "data": {
+                    "step_id": body.step_id, "status": "failed",
+                    "summary": summary or f"步骤执行失败（{status}）",
+                }})
+            yield _sse({"type": "done", "data": {}})
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.post("/weave/retry-research")
+async def weave_retry_research(
+    request: Request,
+    body: WeaveRetryResearchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """重试单个失败的研判阶段部门任务，SSE 流式返回 dept_report 状态变更。"""
+    a2a_urls = await _load_a2a_urls(db)
+    graph = _get_graph_by_type(request, "weave")
+    config = _make_config(body.session_id, current_user.id)
+
+    async def stream():
+        try:
+            yield _sse({"type": "dept_report", "data": {
+                "dept_code": body.dept_code,
+                "status": "running",
+                "summary": "",
+                "key_facts": [],
+                "map_events": [],
+                "citations": [],
+            }})
+            result = await _call_dept_a2a(body.dept_code, body.task, a2a_urls=a2a_urls, timeout=30)
+            yield _sse({"type": "dept_report", "data": result})
+            # 回写 checkpoint：用最新研判结果覆盖旧的 failed 记录
+            try:
+                state = await graph.aget_state(config)
+                if state and state.values:
+                    existing = dict(state.values.get("dept_reports") or {})
+                    existing[body.dept_code] = result
+                    await graph.aupdate_state(config, {"dept_reports": existing})
+            except Exception:
+                logger.exception("retry-research: 回写 checkpoint 失败（不影响前端）")
+            yield _sse({"type": "done", "data": {}})
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/state/{session_id}")

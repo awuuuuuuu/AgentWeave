@@ -28,24 +28,39 @@ RESET  = "\033[0m"
 BOLD   = "\033[1m"
 
 
-async def _check_mcp_ports() -> None:
-    """Print a warning if any MCP server port is not yet reachable."""
-    mcp_ports = [8102, 8103, 8104, 8105, 8106, 8107]
-    missing = []
-    for port in mcp_ports:
-        try:
-            _, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", port), timeout=1.0
-            )
-            writer.close()
-            await writer.wait_closed()
-        except Exception:
-            missing.append(port)
-    if missing:
-        print(
-            f"{BOLD}\033[33m[警告] MCP Server 端口未就绪: {missing}，"
-            f"A2A 工具调用可能失败。请先启动 MCP Server。{RESET}"
+async def _probe_port(port: int) -> int | None:
+    """尝试连接端口，成功返回 None，失败返回端口号。"""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", port), timeout=1.0
         )
+        writer.close()
+        await writer.wait_closed()
+        return None
+    except Exception:
+        return port
+
+
+async def _wait_for_mcp_ports(timeout: float = 120.0) -> None:
+    """并行探测所有 MCP 端口，全部就绪后返回；超时后打印警告并继续启动。"""
+    import time
+    mcp_ports = [8102, 8103, 8104, 8105, 8106, 8107]
+    print(f"{BOLD}等待 MCP Server 就绪 {mcp_ports} ...{RESET}")
+    deadline = time.monotonic() + timeout
+    while True:
+        results = await asyncio.gather(*(_probe_port(p) for p in mcp_ports))
+        missing = [p for p in results if p is not None]
+        if not missing:
+            print(f"{BOLD}\033[32m[OK] 所有 MCP Server 已就绪{RESET}\n")
+            return
+        remaining = max(0, int(deadline - time.monotonic()))
+        if remaining == 0:
+            break
+        print(f"\033[33m  未就绪端口: {missing}  剩余 {remaining}s ...{RESET}")
+        await asyncio.sleep(3.0)
+        if time.monotonic() >= deadline:
+            break
+    print(f"{BOLD}\033[31m[错误] MCP Server 在 {timeout:.0f}s 内未全部就绪，继续启动 A2A（工具调用可能失败）{RESET}\n")
 
 
 async def _stream(name: str, color: str, stream: asyncio.StreamReader) -> None:
@@ -81,7 +96,7 @@ async def run(servers: list[dict] | None = None) -> None:
         print(f"  {s['port']}  {s['name']}")
     print()
 
-    await _check_mcp_ports()
+    await _wait_for_mcp_ports()
 
     procs: list[asyncio.subprocess.Process] = []
     for i, server in enumerate(targets):

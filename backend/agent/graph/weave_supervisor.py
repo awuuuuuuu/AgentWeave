@@ -56,6 +56,8 @@ logger = logging.getLogger(__name__)
 # emergency_supplies:9104  fire_brigade:9105
 
 _A2A_TIMEOUT = 120
+# ConnectError 重试延迟（秒）：最多重试 2 次，Timeout 和业务失败不重试
+_A2A_CONNECT_RETRY_DELAYS = (1.0, 2.0)
 
 # title 特异性检查：与 evaluators._SPECIFIC_TITLE_RE 保持同步
 _VAGUE_TITLE_RE = re.compile(
@@ -115,25 +117,40 @@ async def _call_dept_a2a(
         "context": context or {},
         "timeout_sec": timeout - 5,
     }
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.post(f"{base_url}/a2a/tasks/send", json=payload)
-            r.raise_for_status()
-            return r.json()
-    except httpx.TimeoutException:
-        logger.warning("A2A[%s]: 请求超时", dept_code)
-        return {
-            "dept_code": dept_code, "status": "timeout",
-            "summary": f"部门 {dept_code} 响应超时，无法获取报告",
-            "key_facts": [], "map_events": [], "citations": [],
-        }
-    except Exception as exc:
-        logger.exception("A2A[%s]: 请求失败", dept_code)
-        return {
-            "dept_code": dept_code, "status": "failed",
-            "summary": f"部门 {dept_code} 通信错误: {exc}",
-            "key_facts": [], "map_events": [], "citations": [],
-        }
+    last_exc: Exception | None = None
+    for attempt in range(len(_A2A_CONNECT_RETRY_DELAYS) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.post(f"{base_url}/a2a/tasks/send", json=payload)
+                r.raise_for_status()
+                return r.json()
+        except httpx.TimeoutException:
+            logger.warning("A2A[%s]: 请求超时", dept_code)
+            return {
+                "dept_code": dept_code, "status": "timeout",
+                "summary": f"部门 {dept_code} 响应超时，无法获取报告",
+                "key_facts": [], "map_events": [], "citations": [],
+            }
+        except httpx.ConnectError as exc:
+            last_exc = exc
+            if attempt < len(_A2A_CONNECT_RETRY_DELAYS):
+                delay = _A2A_CONNECT_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "A2A[%s]: 连接失败，%.0fs 后重试（第 %d/%d 次）",
+                    dept_code, delay, attempt + 1, len(_A2A_CONNECT_RETRY_DELAYS),
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.warning("A2A[%s]: 连接失败，已重试 %d 次，放弃", dept_code, attempt)
+        except Exception as exc:
+            last_exc = exc
+            logger.exception("A2A[%s]: 请求失败", dept_code)
+            break
+    return {
+        "dept_code": dept_code, "status": "failed",
+        "summary": f"部门 {dept_code} 通信错误: {last_exc}",
+        "key_facts": [], "map_events": [], "citations": [],
+    }
 
 
 def _infer_layer(me: dict) -> str:
@@ -788,6 +805,54 @@ async def phase_dispatch(state: WeaveState, config: RunnableConfig) -> dict:
     return {"dept_reports": dept_reports, "phase": "plan_review"}
 
 
+# ── 节点：研判结果审查（HITL：有失败时暂停，让指挥长决定是否继续）──────────────
+
+async def research_review(state: WeaveState, config: RunnableConfig) -> dict:
+    """
+    研判阶段完成后检查失败部门数。
+    - dept_reports 为空：所有部门均未返回数据，直接中止（无法制定有效计划）。
+    - 无失败：直接透传，不产生 interrupt。
+    - 有失败：interrupt 暂停，由指挥长决定继续还是中止。
+      resume 值约定：
+        "approve"                 → 继续制定计划
+        "reject" / falsy / 其他  → 中止，路由到 END
+    """
+    dept_reports: dict = state.get("dept_reports") or {}
+
+    # 所有部门均无数据：无法制定计划，直接中止
+    if not dept_reports:
+        logger.error("Weave: research_review — dept_reports 为空，自动中止")
+        return {"phase": "aborted"}
+
+    failed = [code for code, r in dept_reports.items()
+              if r.get("status") in ("failed", "timeout")]
+
+    if not failed:
+        return {}
+
+    failed_names = "、".join(failed)
+    decision = interrupt({
+        "type": "research_failure",
+        "message": f"{len(failed)} 个部门研判失败（{failed_names}），是否继续制定执行计划？",
+        "failed_depts": failed,
+        "timeout_sec": 120,
+    })
+
+    # 只有明确的 "approve" 才继续；null / falsy / "reject" / 任何其他值均中止
+    if not decision or decision != "approve":
+        logger.info("Weave: 指挥长中止 — decision=%r failed=%s", decision, failed)
+        return {"phase": "aborted"}
+
+    logger.info("Weave: 指挥长确认继续 — 带部分失败报告制定计划 failed=%s", failed)
+    return {}
+
+
+def _route_after_research_review(state: WeaveState) -> str:
+    if state.get("phase") == "aborted":
+        return "end"
+    return "phase_aggregate"
+
+
 # ── 节点：阶段 2 — LLM 聚合，生成执行计划 ────────────────────────────────────
 
 async def phase_aggregate(state: WeaveState, config: RunnableConfig) -> dict:
@@ -1313,6 +1378,7 @@ def build_weave_graph(checkpointer: Any) -> Any:
     graph.add_node("location_disambig",       location_disambig)
     graph.add_node("create_single_step_plan", create_single_step_plan)
     graph.add_node("phase_dispatch",          phase_dispatch)
+    graph.add_node("research_review",         research_review)
     graph.add_node("phase_aggregate",         phase_aggregate)
     graph.add_node("hitl_plan_review",        hitl_plan_review)
     graph.add_node("execute_all_parallel",    execute_all_parallel)
@@ -1347,7 +1413,12 @@ def build_weave_graph(checkpointer: Any) -> Any:
             "execute_all_parallel": "execute_all_parallel",
         },
     )
-    graph.add_edge("phase_dispatch",           "phase_aggregate")
+    graph.add_edge("phase_dispatch",           "research_review")
+    graph.add_conditional_edges(
+        "research_review",
+        _route_after_research_review,
+        {"phase_aggregate": "phase_aggregate", "end": END},
+    )
     graph.add_edge("phase_aggregate",          "hitl_plan_review")
     graph.add_edge("hitl_plan_review",         "execute_all_parallel")
     graph.add_edge("execute_all_parallel",     "final_report")
