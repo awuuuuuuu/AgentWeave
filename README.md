@@ -1,101 +1,72 @@
-# AgentWeave
+# AgentWeave 层级 Agent 跨域并行推理与私域知识隔离系统
 
-企业级 Agent RAG 平台——单机有记忆有监督，联网可跨组织协作。
+> 让每个部门拥有自己的 AI 大脑，再让这些大脑协同工作。
 
-每个 AgentWeave 实例既可作为独立的多 Agent 知识助手运行，也可通过 A2A 协议暴露自身能力、接入上层编排者，构成**层级 Agent 网络**：不同组织的 AI 大脑可以临时组成专家委员会协作解决复杂问题，数据不出域，结论通过标准接口流动。
+AgentWeave 的核心是**层级 Agent 网络**：多个 AgentWeave 实例通过 A2A 协议互联，由 Weave Supervisor 并行调度各部门 Agent 同步推理——各部门的私有知识库和 MCP 工具集完全不出域，只有推理结论通过标准接口向上汇聚，再由指挥层整合决策、人工审批、落地执行，全程以高德地图实时渲染态势可视化。
 
-**核心差异化：**
-- **Agentic RAG**：Researcher 自校正检索（CRAG 思路），信息不足时自动改写查询词重试
-- **三层记忆**：短期消息 + 长期语义摘要 + 用户画像，跨会话持续学习
-- **Human-in-the-Loop**：高风险操作 `interrupt()` 暂停等待审批，Critic 质量门控
-- **层级 Agent 网络**：A2A 协议，任意 AgentWeave 实例可注册为外部 Agent 加入群组（Step 9）
+这在现有开源框架（Dify / CrewAI / AutoGen）中是空白：它们要么只做单机 Agent，要么靠共享数据库协作，无法做到数据隔离与跨域推理并存。
 
-## 本地运行
+每个 AgentWeave 实例本身也是一个完整的部门级知识助手：Agentic RAG 自校正检索、三层跨会话记忆、HITL 高风险操作拦截——这些能力既服务于单部门日常使用，也是组成层级网络时每个节点的推理基础。
 
-### 前置依赖
+---
 
-- Python 3.11+、[uv](https://github.com/astral-sh/uv)
-- Node.js 18+
-- Docker（运行 Milvus、Redis）
-- PostgreSQL（Supabase 或本地）
-- MinIO（本地或云端）
+## 两种使用模式
 
-### 后端
+### 普通对话（Chat）
 
-```bash
-# 在项目根目录执行（不要在 backend/ 内执行）
+部门内部的 Agent 群聊。Supervisor 动态路由到 Researcher（Agentic RAG 检索）或 Analyst（MCP 工具调用）；Analyst 检测到写操作后触发 HITL 等待人工审批，审批通过由 Supervisor 路由到 Executor 确定性执行；Reporter 汇总答案。记忆系统在会话间持续积累。
 
-# 安装依赖
-uv sync
-
-# 启动 FastAPI
-PYTHONPATH=backend uv run uvicorn api.main:app --reload --port 8000
-
-# 启动 Celery Worker（Windows 用 --pool=solo，Linux/Mac 可去掉）
-PYTHONPATH=backend uv run celery -A tasks.celery_app worker --loglevel=info --pool=solo
-
-# 数据库迁移
-PYTHONPATH=backend uv run alembic upgrade head
+```
+用户 → Supervisor → Researcher（CRAG 自校正检索）
+                  → Analyst（ReAct + MCP 工具）→ [HITL 审批] → Executor
+                  → Reporter（引用汇总）
 ```
 
-### 前端
+### 应急指挥（Weave）
 
-```bash
-cd frontend
+跨部门的层级编排。Weave Supervisor 并行调用多个部门的 A2A Agent，聚合研判报告，生成执行计划，关键节点双级 HITL 审批，执行结果实时渲染到高德地图。
 
-# 安装依赖
-npm install
-
-# 启动开发服务器（默认 http://localhost:3000）
-npm run dev
+```
+Weave Supervisor
+  ├─ 环保局 A2A Agent → 扩散预测报告
+  ├─ 医疗急救 A2A Agent → 医疗资源方案
+  ├─ 消防救援 A2A Agent → 处置建议
+  ├─ 交通管控 A2A Agent → 道路管控方案
+  └─ 应急物资 A2A Agent → 物资调拨清单
+         ↓
+  HITL-1 计划审批 → 并行执行 → HITL-2 高危步骤逐一审批
+         ↓
+  高德地图实时图层渲染
 ```
 
-### 环境变量
+---
 
-后端在项目根目录创建 `.env`：
+## 核心能力
 
-```env
-# OpenAI
-OPENAI_API_KEY=sk-...
+| 能力 | 实现 |
+|------|------|
+| **Agentic RAG** | CRAG 思路：score ≥ 0.72 快速通道；低于阈值走 LLM 评估；自动改写查询词重试最多 3 次；best_retrieved_docs 跨迭代保留 |
+| **混合检索** | BM25（Milvus 内置 Function）+ 向量双路并发，Weighted Sum 融合（保留四路原始分数），qwen3-rerank 重排 |
+| **三层记忆** | 短期（AsyncPostgresSaver）+ 长期语义（Milvus）+ 用户画像（PostgreSQL + Redis），MemoryManager 统一协调 |
+| **Multi-Agent** | Supervisor `with_structured_output` 四字段路由（next / current_task / message_to_user / reasoning）；三重防幻觉（上下文窗口 + 内容截断 + 硬路由防火墙）；@mention 直接调度 |
+| **HITL** | LangGraph `interrupt()` 持久化到 PostgreSQL，跨重启恢复；Weave 场景三级审批（位置确认 / 计划审批 / 高危步骤逐一）|
+| **A2A 协议** | AgentCard 自描述（`/.well-known/agent.json`）；`/a2a/tasks/send` 标准推理接口；下游自动代批 HITL |
+| **MCP 工具集成** | 部门专属 MCP Server（传感器 / 调度 / 信号灯）；Analyst read-only 拦截写操作；Executor 确定性执行 |
+| **SSE 全驱动 UI** | 20+ 类 SSE 事件，指挥中心无轮询；in-place 卡片更新；高德地图 10+ 图层按事件 key 增量渲染 |
 
-# PostgreSQL
-DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+---
 
-# JWT
-JWT_SECRET_KEY=your-secret-key
+## 技术差异化
 
-# MinIO
-MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET=ragent
-MINIO_SECURE=false
-
-# Redis / Celery
-CELERY_BROKER_URL=redis://localhost:6379/0
-CELERY_RESULT_BACKEND=redis://localhost:6379/1
-
-# 工具体系
-TAVILY_API_KEY=tvly-...                    # 联网搜索（留空则跳过 WebSearchTool）
-TOOL_CACHE_REDIS_URL=redis://localhost:6379/2  # 工具结果缓存（与 Celery 隔离）
-
-# 记忆系统
-MEMORY_REDIS_URL=redis://localhost:6379/3  # 用户画像缓存（留空则复用 tool cache）
-
-# Agent 图持久化（HITL interrupt/resume 跨重启持久化）
-# 与主数据库共用同一 PostgreSQL 实例，LangGraph 自动建表（幂等）
-# DATABASE_URL 已包含连接信息，无需额外配置
-MEMORY_LLM_MODEL=gpt-4o-mini              # 摘要压缩 / 画像提取使用的 LLM
-
-# Milvus
-MILVUS_URI=http://localhost:19530
-```
-
-前端在 `frontend/` 目录创建 `.env.local`：
-
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-```
+| 能力 | Dify | CrewAI | AutoGen | AgentWeave |
+|------|------|--------|---------|------------|
+| 私有 RAG | ✅ | ❌ | ❌ | ✅ Agentic RAG（自校正） |
+| 跨会话记忆 | ❌ | ❌ | 部分 | ✅ 三层记忆 |
+| Multi-Agent 路由 | 固定工作流 | 代码定义 | 代码定义 | Supervisor 动态路由 |
+| HITL | ❌ | ❌ | ❌ | ✅ interrupt()，持久化 |
+| 多租户 | ✅ | ❌ | ❌ | ✅ org_id 隔离 |
+| A2A 外部 Agent | ❌ | ❌ | ❌ | ✅ |
+| **层级 Agent 网络** | ❌ | ❌ | ❌ | **✅（市场空白）** |
 
 ---
 
@@ -109,316 +80,195 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 | 4 | Auth + 知识库管理 + 文件上传 + 召回测试 | ✅ |
 | 5 | 工具体系（kb_search / web_search / calculator） | ✅ |
 | 6 | 三层记忆系统（短期 / 长期语义 / 用户画像） | ✅ |
-| 7 | Multi-Agent 群聊 + Agentic RAG + HITL + Critic 门控 | 🚧 后端完成，前端进行中 |
-| 8 | 多租户（org_id 隔离）+ 私聊模式 + 会话管理 | 🔜 |
-| 9 | 层级 Agent 网络：AgentRegistry + A2A 自我暴露 + Coordinator 账号 | 🔜 |
+| 7 | Multi-Agent 群聊 + Agentic RAG + HITL + Critic 门控 | ✅ |
+| 8 | 多租户（org_id 隔离）+ 会话管理 + 前端群聊 UI | ✅ |
+| 9 | 层级 Agent 网络：A2A + Weave Supervisor + 应急指挥中心 UI | ✅ |
 | 10 | LangSmith 全链路追踪 + 自动评估 + `/analytics` 仪表盘 | 🔜 |
-
-**Step 9 核心场景（城市应急响应）：**
-
-```
-应急指挥 Coordinator
-  ├─ 环保局 AgentWeave (A2A)  → 大气扩散预测报告
-  ├─ 医疗急救 AgentWeave (A2A) → 医疗资源调配方案
-  ├─ 企业安全 AgentWeave (A2A) → 泄漏源处置建议
-  ├─ 内部 Analyst           → 整合三份报告
-  └─ HITL                  → 指挥长审批后发布
-```
-
-每个部门 AgentWeave 有自己的知识库和 Agent 群组，只通过 A2A 标准接口暴露推理结论——数据不出域，能力可组合。
-
-## 技术债 / TODO
-
-| 优先级 | 所属模块 | 描述 | 计划在哪步解决 |
-|--------|---------|------|--------------|
-| 中 | `ParentChildSplitter` | `parent_text` 直接存入子块 metadata，导致每个父块被复制 N 次写入向量库。重构方案：为父块生成 UUID `parent_id`，将 `{parent_id: parent_text}` 存入 Redis，子块只存 `parent_id`，检索时再查 KV | Step 3（Redis 引入后） |
-| 低 | `OpenAIEmbedder` | 无向量缓存，相同文本重复入库时仍调用 OpenAI API，产生重复 Token 费用。改造方案：用 `CachedEmbedder` 包装，按文本哈希查 Redis，命中直接返回向量 | Step 3（Redis 引入后） |
-| 低 | `OpenAIEmbedder` | `_embed_batch_with_retry` 使用 `time.sleep()` 同步阻塞。FastAPI 路由须用普通 `def`（非 `async def`）避免阻塞事件循环。全异步改造需替换为 `AsyncOpenAI` + `await asyncio.sleep()` | Step 3（API 层引入后） |
-| 高 | `IngestionPipeline` | 当前为同步串行处理，单文件阻塞整个 pipeline。改造方案：引入 Celery 异步任务队列，每个文件作为独立 Celery task，支持多 worker 并发摄入 | Step 3（API 层引入后） |
-| 中 | `IngestionPipeline` | 无进度追踪，无法从外部感知"已处理 N/M 个文件"。改造方案：在 DB 增加摄入任务表，记录文件级状态（PENDING / PROCESSING / DONE / FAILED）和 0~1 数值进度，前端轮询 | Step 3（API 层引入后） |
-| 低 | `IngestionPipeline` | 无并发控制，多用户同时触发摄入时会争抢 Embedder / Milvus 连接。改造方案：asyncio semaphore 或 ThreadPoolExecutor 限制同时处理文件数 | Step 3（API 层引入后） |
-| 中 | `auth/jwt.py` | JWT 无法主动失效（登出/改密场景）。改造方案：在 `create_refresh_token` 加 `jti` 字段（`uuid4()`），`POST /auth/logout` 将 jti 写入 Redis 黑名单（TTL = token 剩余有效期），`decode_token` 查黑名单命中则拒绝。实现位置：`session/tenant_isolation.py` + `auth/jwt.py` | Step 8（Redis 会话管理引入后） |
 
 ---
 
-## 模块文档
+## 本地运行
 
-- [RAG Chain](backend/rag/README.md) — 数据流、引用溯源、Context token 预算、SSE 流式
-- [混合检索系统](backend/retrieval/README.md) — 数据流、双路并发融合、Reranker、Milvus BM25
-- [文档摄入系统总览](backend/ingestion/README.md) — 数据流、模块结构、层间契约
-  - [Parser 层](backend/ingestion/parsers/README.md) — PDF / Word / HTML / Markdown / TXT / Fallback
-  - [Splitter 层](backend/ingestion/splitter/README.md) — Recursive / Semantic / ParentChild
-  - [Embedder 层](backend/ingestion/embedder/README.md) — OpenAIEmbedder，token 截断、批处理、指数退避重试
-  - [Store 层](backend/ingestion/store/README.md) — MilvusStore，HNSW 索引、幂等写入、多租户分区
+### 前置依赖
+
+- Python 3.11+、[uv](https://github.com/astral-sh/uv)
+- Node.js 18+
+- Docker（Milvus、Redis）
+- PostgreSQL（Supabase 或本地）
+- MinIO（本地或云端）
+
+### 后端
+
+```bash
+# 在项目根目录执行（不要在 backend/ 内执行）
+uv sync
+PYTHONPATH=backend uv run uvicorn api.main:app --reload --port 8000
+
+# Celery Worker（Windows 用 --pool=solo）
+PYTHONPATH=backend uv run celery -A tasks.celery_app worker --loglevel=info --pool=solo
+
+# 数据库迁移
+PYTHONPATH=backend uv run alembic upgrade head
+```
+
+### Demo A2A 服务（Step 9 应急场景）
+
+```bash
+# 启动 5 个部门 A2A 服务器（端口 9001–9005）
+PYTHONPATH=backend uv run python demo/scripts/a2a_servers.py
+
+# 初始化浦东氨气泄漏场景数据
+PYTHONPATH=backend uv run python demo/scripts/seed_departments.py
+```
+
+### 前端
+
+```bash
+cd frontend
+npm install
+npm run dev   # http://localhost:3000
+```
+
+### 环境变量
+
+后端 `.env`（项目根目录）：
+
+```env
+# LLM
+OPENAI_API_KEY=sk-...
+
+# PostgreSQL（主库 + LangGraph checkpointer 共用）
+DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+
+# JWT
+JWT_SECRET_KEY=your-secret-key
+
+# MinIO
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=ragent
+MINIO_SECURE=false
+
+# Redis
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+TOOL_CACHE_REDIS_URL=redis://localhost:6379/2
+MEMORY_REDIS_URL=redis://localhost:6379/3
+
+# 检索 & 记忆
+MILVUS_URI=http://localhost:19530
+MEMORY_LLM_MODEL=gpt-4o-mini
+
+# 工具（留空则跳过对应工具）
+TAVILY_API_KEY=tvly-...
+
+# 高德地图（Weave 位置消歧 + 路径规划）
+AMAP_API_KEY=your-amap-key
+```
+
+前端 `frontend/.env.local`：
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_AMAP_KEY=your-amap-key
+```
+
+---
+
+## 项目结构
+
+```
+AgentWeave/
+├── backend/
+│   ├── agent/
+│   │   ├── graph/              # Agent 图节点
+│   │   │   ├── agent_graph.py      # Chat 图编译（Supervisor 中心拓扑）
+│   │   │   ├── supervisor.py       # 路由决策（with_structured_output）
+│   │   │   ├── researcher.py       # Agentic RAG 子图（CRAG 自校正）
+│   │   │   ├── analyst.py          # ReAct + MCP 工具（read-only 拦截）
+│   │   │   ├── executor.py         # 确定性写操作执行
+│   │   │   ├── hitl.py             # interrupt/resume 节点
+│   │   │   ├── reporter.py         # 答案汇总 + 引用整合
+│   │   │   ├── memory_nodes.py     # 记忆注入节点
+│   │   │   ├── weave_supervisor.py # Weave 图（多部门编排，~1400 行）
+│   │   │   ├── weave_state.py      # WeaveState TypedDict
+│   │   │   └── state.py            # AgentState + ResearcherState
+│   │   ├── a2a/
+│   │   │   └── base.py             # A2A Server 基类 + AgentCard 端点
+│   │   ├── memory/                 # 三层记忆实现
+│   │   └── tools/                  # 工具注册表 + 执行引擎
+│   ├── api/routes/
+│   │   └── agent.py               # /stream、/resume、/state SSE 端点
+│   ├── ingestion/                  # 文档摄入流水线
+│   ├── retrieval/                  # 混合检索 + 重排序
+│   └── config.py                   # 统一全局配置（Settings）
+├── demo/
+│   ├── city_state.db               # 浦东场景地理数据（SQLite）
+│   ├── mock_servers/               # 5 个部门 MCP Server 实现
+│   ├── scripts/                    # 启动脚本 + 种子数据
+│   └── */knowledge/                # 各部门知识库 Markdown 文档
+└── frontend/
+    ├── components/
+    │   ├── command-center/         # 应急指挥中心 UI（双栏 + 高德地图）
+    │   └── agent-chat/             # 普通对话 UI（群聊气泡）
+    └── app/(dashboard)/
+        ├── agent/                  # Agent 群组管理
+        ├── knowledge/              # 知识库管理
+        └── command-center/         # Weave 会话入口
+```
+
+---
 
 ## 技术亮点
 
-### 1. 分层架构：结构感知 vs. token 约束
-
-文档处理的核心分层决策：**Parser 层负责结构感知，Splitter 层只做 token 约束**，两层职责边界清晰。
-
-Parser 层为每种格式单独实现结构提取逻辑：
-- **Word / HTML / Markdown**：递归遍历标题层级（`<h1>`、`## `、`Heading 1` 样式），每个标题节点对应一个 chunk，`section_path` 动态拼接为 `"第三章 > 3.2节"` 的层级路径
-- **PDF**：提供三档模式——`fast`（PyMuPDF 按页提取，速度优先）、`smart`（逐页智能路由，见下方）、`hi_res`（全页走远端 Unstructured API，最高精度）
-- **Excel**：按 Sheet 独立切块，表头单独作为 `content_type=title` 的 chunk，每行或分块作为 `content_type=table`
-
-Splitter 层不感知文档结构，之所以能保证不跨章节/页面边界，不是因为 Splitter 知道结构，而是 Parser 输出的每个 chunk 已在一个语义单元内。这一分层使两层可以完全独立演进。
-
-### 2. PDF smart 模式：按页三重降级路由
-
-`smart` 模式解决 PDF 解析的核心矛盾：**本地提取速度快但无法处理图表/扫描页，远端 OCR 精度高但费时且收费**。
-
-`smart` 模式逐页分析，只对真正需要的页面调用远端 Unstructured API：
-
-```
-第 1 页：纯文字 → fitz 本地提取（< 1ms，零成本）
-第 3 页：含图表 → 单页截图 → 远端 hi_res OCR
-第 5 页：空白/扫描 → 单页截图 → 远端 hi_res OCR
-```
-
-触发远端调用的三重条件（任一满足）：
-
-| 条件 | 判断逻辑 | 典型场景 |
-|------|---------|---------|
-| `page_has_image` | 光栅图面积 > 页面 10%（排除 logo 等小图） | 含图表的研报、PPT 转 PDF |
-| `not page_text` | 全页无可提取文字 | 扫描件、图片型 PDF |
-| `_is_garbled(text)` | 不可打印字符比例 > 25% | 字体层编码损坏、CID 字体乱码 |
-
-远端调用失败时自动退回本地 fitz 结果，不丢页、不中断 pipeline。相比 `fast`（全本地）和 `hi_res`（全远端），`smart` 在成本和精度之间取得最优平衡。
-
-### 3. content_type 驱动的全链路路由
-
-`content_type` 字段由 Parser 层写入，贯穿 Splitter → Embedder → Store 整条链路，每层按此字段做差异化处理：
-
-| content_type | Parser 产出 | Splitter 策略 | Embedder 策略 | Store 策略 |
-|---|---|---|---|---|
-| `title` | 章节标题 | 恒定透传，不切分（标题极短，切分无意义） | 正常 embed | 正常写入 |
-| `table` | 结构化表格 | ≤ 2048 token 透传；超限强制切分（防 TokenLimitExceeded） | 正常 embed | 正常写入 |
-| `text` | 正文段落 | 超出 chunk_size 时切分，保留 overlap | 正常 embed | 正常写入 |
-| `error` | 解析失败 | 透传 | 短路，返回空向量，不调用 API | 跳过写入 |
-
-路由逻辑集中在 `BaseSplitter.split()` 中，三种切分策略（Recursive / Semantic / ParentChild）继承后无需各自重复实现。`error` chunk 的隔离语义从 Parser 一路传递到 Store，无需各层单独判断"这个文件坏了怎么办"。
-
-### 4. Error Chunk 错误隔离：失败不中断
-
-传统做法在解析失败时抛出异常，导致批量任务中一个损坏文件就中断整个 pipeline。AgentWeave 的设计是：解析失败时返回 `content_type="error"` 的占位 chunk，携带 `error` 字段记录原因，之后的层自动跳过它。
-
-- Parser 层：捕获所有异常，返回 error chunk，不向上抛出
-- Splitter 层：error chunk 直接透传（`content_type` 路由）
-- Embedder 层：识别 `skipped=True`，不调用 OpenAI API
-- Store 层：识别 `skipped=True`，不写入 Milvus
-
-批量处理 1000 个文件时，即使其中 5 个损坏，其余 995 个正常完成，损坏文件的 error chunk 可在 pipeline 末尾统一收集上报。
-
-### 5. ParsedChunk 契约式 metadata 校验
-
-所有 Parser 输出的 chunk 在 `ParsedChunk.__post_init__` 中强制校验三个必填字段（`source_file`、`content_type`、`section_path`），缺失字段在对象构造时立即报错，而非在下游运行时才发现 `KeyError`。
-
-这将"数据完整性保障"从运行时下沉到对象构造阶段：下游 Splitter 和 Embedder 无需任何 `if metadata.get("source_file") is None` 防御性判断，向量库入库时字段也始终完整。这是一种**契约式编程（Design by Contract）**思想的体现。
-
-### 6. RecursiveSplitter 的分隔符保留与 overlap 自适应
-
-RecursiveSplitter 在实现时处理了两个容易被忽略的边界问题：
-
-**分隔符保留**：按 `\n\n` 切分后，若直接丢弃分隔符，相邻段落文本会粘连，LLM 和向量模型失去段落边界感知。通过 `[p + sep for p in parts[:-1]] + [parts[-1]]` 将分隔符保留在片段末尾，而非丢弃。
-
-**overlap 自适应裁剪**：当 `chunk_overlap ≥ chunk_size` 时，overlap 片段本身超过限制，会导致合并后的 chunk 越来越大，产生死循环。通过 `overlap_size = min(chunk_overlap, max(0, chunk_size - len(new)))` 自适应裁剪，保证 overlap 部分加上新片段始终不超过 chunk_size。
-
-### 7. ParentChild 两阶段检索架构
-
-参考 Dify Parent-Child Retrieval 设计，解决"检索精度"与"上下文质量"之间的内在矛盾：chunk 越小，向量检索越精准；chunk 越大，LLM 获得的上下文越完整。两者无法兼得。
-
-```
-文档
-  └─ 父块（512 token）→ 喂给 LLM，提供完整上下文
-        └─ 子块（128 token）→ 向量化入库，精准定位
-
-查询 → 向量检索子块（精准匹配） → 取出对应 parent_text → 送给 LLM
-```
-
-子块只入向量库，父块文本以 `parent_text` 字段存在子块的 metadata 中，检索阶段命中子块后直接取出父块上下文。兼顾精度和质量，无需在向量库中存两份独立索引。
-
-### 8. Embedder 两级批处理设计
-
-面对"批量文档 + 超大 table chunk"的场景，单层批处理无法同时满足"条数"和"token 总量"两个限制：
-
-- **BaseEmbedder**（count 级）：按 `batch_size` 条数分批，保证单次 API 调用不超过 OpenAI 的条数上限
-- **OpenAIEmbedder**（token 级）：在每批内再按累计 token 数（≤ 300K/次）二次分批，防止超大 table chunk 撑爆单次请求
-
-同时，单条文本超过模型 token 上限（8191）时自动截断而非报错，整个批次仍正常完成。
-
-### 9. 精细化重试策略
-
-重试逻辑区分四种情况，避免过度重试或漏重试：
-
-| 异常类型 | 处理方式 |
-|---|---|
-| `RateLimitError`（HTTP 429） | 指数退避重试 |
-| `APIStatusError`（HTTP 5xx） | 指数退避重试 |
-| `APIConnectionError`（网络异常） | 指数退避重试 |
-| `APIStatusError`（HTTP 4xx，非 429） | 直接抛出，不重试 |
-
-关键细节：`RateLimitError` 在 OpenAI SDK 中是 `APIStatusError` 的子类，需在 4xx 直接抛出的判断中显式排除，否则 429 会被误判为客户端错误而跳过重试。最后一次重试失败后直接抛出，不再执行无意义的 sleep 等待。
-
-### 10. Milvus Schema：顶层字段 + Partition Key 多租户隔离
-
-不同于 Dify 把所有 metadata 打包进单个 JSON 字段（无法建标量索引）、也不同于 RAGflow 给每个字段单独建索引（维护成本高），AgentWeave 采用中间路线：高频过滤字段（`source_file`、`content_type`）提升为顶层 VARCHAR 字段并建 INVERTED 索引，其余非结构化 metadata 存入 `extra_meta` JSON。按 `knowledge_base_id` 作为 Partition Key 分区，天然支持多知识库数据隔离，同时规避 Dify 的 Collection-per-dataset 方案在 Milvus 10K collection 上限的扩展瓶颈。
-
-### 11. 混合检索：Weighted Sum 而非 RRF，保留双路原始分数
-
-业界常用 Reciprocal Rank Fusion（RRF）做多路融合，但 RRF 只使用排名、丢弃原始分数，无法反映"某路完全没命中"的情况。AgentWeave 选择 **Weighted Sum**：
-
-```
-fusion_score = α × norm(vector_score) + (1-α) × norm(bm25_score)
-```
-
-`RetrievedChunk` 同时携带 `vector_score`、`bm25_score`、`fusion_score`、`rerank_score` 四个字段，无需重查库即可在日志和调试界面中定位问题。
-
-归一化采用 **Query-level min-max**（在本次查询候选集内部计算），而非全局归一化——BM25 分数无上界，全局 min/max 无意义。
-
-### 12. 双路检索并发，不串行等待
-
-向量检索和 BM25 检索完全独立，串行执行纯属浪费。`HybridRetriever._fuse()` 同时发起两路：
-
-- **同步路径**：模块级 `ThreadPoolExecutor(max_workers=2)`，一个 worker 跑 Vector，一个跑 BM25，总耗时降至较慢一路
-- **异步路径**：`aretrieve()` 用 `asyncio.gather` 并发两路，FastAPI 路由无阻塞
-
-线程池为模块级常量，不在每次调用时重建，避免线程池创建开销。
-
-### 13. Milvus 内置 BM25 Function，零摄入改造
-
-BM25 使用 Milvus 2.5 的内置 Function，在 insert 时自动将 `text` 转为稀疏向量存入 `sparse_vector`，查询时同样自动转换。Python 侧只传原始字符串，摄入 pipeline 完全不动。
-
-对比 Python 侧 `BM25EmbeddingFunction`：需要预计算稀疏向量并修改摄入 pipeline，且线上/线下模型不一致时会产生检索偏差。内置 Function 从根本上消除了这一风险。
-
-### 14. 单次 LangGraph 执行同时流式输出 token 和引用（Step 3）
-
-RAG Chain 的 SSE 流式响应需要同时产出逐字 token 和最终引用元数据。朴素实现会调用两次 LangGraph（一次 stream tokens，一次 invoke 取引用），消耗双倍 LLM 费用。
-
-AgentWeave 的 `astream_full()` 使用 `astream_events(version="v2")` 在单次 graph 执行中：
-- 捕获 `on_chat_model_stream` 事件 → 产出 `("token", str)` 给前端逐字渲染
-- 捕获 `on_chain_end` 事件（含完整 GraphState）→ 产出 `("result", dict)` 含引用元数据
-
-SSE 路由消费此 async generator，每次 yield 前 `await request.is_disconnected()` 检测断线，`asyncio.CancelledError` 显式 re-raise，异常时发送 `{"type":"error"}` 事件，`[DONE]` 在 `finally` 块保证必达。
-
-无文档命中时，LangGraph 条件边直接路由到 `fallback_node` 返回硬编码回复，不调用 LLM，避免 `NO_CONTEXT` 占位字符串混入 data 标签造成 data/instruction 污染。
-
-### 15. 引用格式选型：`[N]` + regex 提取，借鉴 RAGflow
-
-RAGflow 使用 `[ID:N]` 引用格式，并在 LLM 零引用时用嵌入相似度做 fallback 修复。AgentWeave 简化为 `[N]`，System prompt 约束引用编号必须放在**句号之前**（"…内容 [1]。"格式），regex 提取 + 出界编号过滤已足够可靠。`has_context=True` 但答案无引用时记录 warning 便于可观测性追踪。fallback 嵌入修复留作 Step 9 改进项。
-
-ContextBuilder 采用 Dify 的 `<context>` XML 标签隔离注入内容，并在其中嵌入 RAGflow 风格的 `[N] 来源：file | section` 前缀，兼顾结构清晰与引用追踪。
-
-### 16. fetch + ReadableStream 替代 EventSource，支持 POST + 主动取消（Step 3）
-
-浏览器原生 `EventSource` 只支持 GET 请求，无法携带 JSON body（query + kb_id），且不支持 `AbortController` 取消。`@microsoft/fetch-event-source` 虽然解决了这些问题，但引入了额外依赖和复杂的重连配置。
-
-AgentWeave 直接使用 `fetch` + `ReadableStream`：`resp.body!.getReader()` 逐块读取字节流，`TextDecoder` 解码，按 `\n\n` 切割事件块，取 `data:` 行解析 JSON。整体实现约 40 行，零额外依赖。停止生成时调用 `AbortController.abort()`，`fetch` 立即中断，后端 SSE 路由通过 `await request.is_disconnected()` 检测断线停止 LLM 流式输出。
-
-### 17. requestAnimationFrame 批量 token 合并，避免每 token 触发 setState（Step 3）
-
-流式输出时，LLM 可能以极高频率（每 5~20ms）产出一个 token。若每个 token 直接调用 `setState`，会触发等量次数的 React re-render，在长文回答中导致明显卡顿。
-
-AgentWeave 使用 `tokenBufRef`（`useRef<string>`）暂存收到的 token，配合 `rafRef`（`useRef<number>`）做 `requestAnimationFrame` 调度：只在浏览器下一帧渲染前才将缓冲区 flush 到 `setState`。同一帧内收到的多个 token 合并为一次 render，将 setState 调用次数从 O(token数) 降至 O(帧数，约 60fps)。
-
-### 18. 智能自动滚动：用户上翻时停止跟随，回到底部按钮（Step 3）
-
-朴素实现在每个 token 到来时无条件调用 `scrollIntoView`，若用户向上翻看历史内容，会被强制拉回底部，体验极差（参考 Open-WebUI 的滚动管理设计）。
-
-AgentWeave 的方案：`onScroll` 事件实时计算 `scrollHeight - scrollTop - clientHeight`，距底部 `< 120px` 时标记 `isNearBottom=true`。只有 `isNearBottom` 时才执行自动滚动，流式输出期间使用 `behavior: "instant"` 避免平滑滚动动画造成视觉抖动。用户主动上翻后（`isNearBottom=false`），显示"回到底部"悬浮按钮，点击后重置标记并滚到底。
-
-### 20. 文件上传竞态条件修复：先建记录再入队（Step 4）
-
-上传接口的朴素实现是先 `ingest_document.delay()` 再 `create_document()`，但 Celery Worker 在高并发下会在数据库记录创建前就开始执行任务，通过 `task_id` 反查文档时得到 `None`，导致 PROCESSING/READY/ERROR 状态更新全部变成 no-op，文档永远停在 pending。
-
-AgentWeave 反转执行顺序：`create_document()` 先写入 DB 拿到 `doc_id`，再将 `doc_id` 直接作为参数传入 `ingest_document.delay(doc_id=...)`，Worker 无需反查数据库，从根本上消除竞态。
-
-### 19. ReactMarkdown 自定义渲染器实现内联引用跳转，不引入 rehype-raw（Step 3）
-
-将 `[N]` 文本转为可点击的上标引用按钮，常见做法是用 `rehype-raw` 允许 HTML 字符串注入，但这引入了 XSS 风险，且需要后端输出 HTML。
-
-AgentWeave 在 ReactMarkdown 的 `components` 中自定义 `p` 和 `li` 的渲染函数，递归遍历 React children，将匹配 `/\[(\d+)\]/g` 的文本节点拆分为普通文本 + `<sup><button>` 引用元素。引用编号和来源存储在组件 state（`activeRef`），点击后高亮 `CitationList` 中对应的引用卡片。全程纯 React 节点操作，无 HTML 字符串注入，无额外依赖。
-
-### 21. Celery 摄入重试：仅末次失败标 ERROR，重试中保持 PROCESSING（Step 4）
-
-网络抖动或外部 API 临时故障时，朴素实现在每次异常后立即将文档状态写为 ERROR，随后触发 retry。前端轮询到的状态是 ERROR，但任务实际还在重试中，状态语义混乱。
-
-AgentWeave 通过 `self.request.retries >= self.max_retries` 判断是否为最终失败，中间重试保持 PROCESSING 状态不变，仅在用尽所有重试次数后才写 ERROR。前端看到的状态始终与任务生命周期语义一致。
-
-### 22. 软删除 + 幂等异步清理，保证外部数据源最终一致（Step 4）
-
-硬删除知识库时若同步清理 Milvus，一旦 Milvus 超时，整个 HTTP 请求失败，但 PostgreSQL 记录已删，产生孤立的向量数据。
-
-AgentWeave 对 `KnowledgeBase` 和 `Document` 使用软删除（`is_deleted=True`），API 立即返回，异步 Celery 任务 `cleanup_kb` 负责清理 MinIO 对象和 Milvus chunks。`_delete_minio_objects` 对 `NoSuchKey` 静默跳过，`MilvusStore.delete_by_kb` 查不到数据时直接结束循环，整个清理流程幂等——Celery retry 重跑时不产生虚假报错。
-
-### 23. TOCTOU 竞态修复：register 依赖 DB 唯一约束而非先查后写（Step 4）
-
-先 `SELECT` 邮箱是否存在再 `INSERT` 的经典模式在高并发下存在 TOCTOU（Time-of-Check-Time-of-Use）竞态：两个请求同时通过存在性检查，都尝试插入，第二条在数据库层报 `IntegrityError`，但业务层已无法感知。
-
-AgentWeave 直接 `INSERT`，捕获 SQLAlchemy `IntegrityError` 后 `rollback()` 并转换为 `ValueError`，依赖数据库 UNIQUE 约束作为唯一事实来源，彻底消除竞态。
-
-### 24. 工具 Schema 单一来源：BaseTool.to_function_schema() 统一生成（Step 5）
-
-工具参数描述在两个地方都需要用到：① 发给 LLM 的 Function Calling JSON；② `/api/tools/` 调试接口返回的参数文档。朴素实现在两处分别调用 `model_json_schema()` 并各自手动清理字段，后续若清理逻辑变更则需同步两处。
-
-AgentWeave 的 `BaseTool.to_function_schema()` 是唯一的 schema 生成入口，API 路由直接取 `["function"]["parameters"]` 节点复用。关键细节：只移除顶层 `title/description`（Pydantic 自动生成，会污染外层结构），**保留 `$defs`**——嵌套模型和 Enum 的 `$ref` 引用依赖它，OpenAI 能正确解析复杂参数结构。
-
-### 25. 工具执行引擎：参数校验 → Redis 缓存 → asyncio 超时三级保护（Step 5）
-
-`ToolExecutor.execute()` 实现了三级保护链：
-
-1. **参数校验**：通过工具自身的 Pydantic args_schema 校验，类型错误立即返回 `ToolResult(is_error=True)`，不到达执行层
-2. **Redis 缓存**：key = `tool:{name}:{sha256(sorted_json(args))[:16]}`，命中直接返回，错误结果不写缓存（避免缓存错误状态）
-3. **asyncio 超时**：`asyncio.wait_for(tool._arun(), timeout=tool.timeout)` 保护，超时返回结构化错误而非抛异常
-
-工具缓存使用 Redis DB=2，与 Celery 的 DB=0（broker）和 DB=1（backend）逻辑隔离，互不干扰。
-
-### 26. 统一全局配置：单文件 Settings 替代分散的 os.environ（Step 6）
-
-原先各模块分别 `os.getenv()` 或各自实例化 `RAGChainSettings` / `APISettings`，导致两个问题：① `load_dotenv()` 必须在 import 前调用，调用顺序脆弱；② 同一个 key（如 `MILVUS_URI`）在多处硬编码，改名时容易遗漏。
-
-`backend/config.py` 将全部配置合并为单个 `Settings(BaseSettings)` 类，模块级 `settings = Settings()` 作为全局单例，`load_dotenv()` 在 import 时调用（优先于 `Settings` 实例化）。`AliasChoices` 兼容旧 `RAG_*` / `API_*` 前缀，存量 `.env` 无需改动即可直接升级。
-
-### 27. 三层记忆分离：InMemorySaver / Milvus / PostgreSQL+Redis 各司其职（Step 6）
-
-| 层 | 存什么 | 技术 | 读写时机 |
-|---|--------|------|---------|
-| 短期（Working） | 当前会话消息 | LangGraph InMemorySaver | 实时读写 |
-| 长期（Episodic） | 历史对话摘要向量 | Milvus `memory_summaries` | 会话结束后异步写，新对话开始时语义检索读 |
-| 语义（Semantic） | 用户偏好 / 常用话题 | PostgreSQL + Redis 缓存 | 会话结束后异步提取，对话开始时读取注入 |
-
-三层职责清晰：短期记忆做快速消息存取，长期记忆做跨会话语义索引，用户画像做个性化上下文注入。MemoryManager 统一协调，对 Agent 暴露两个接口：`build_context()`（对话开始）和 `on_session_end()`（对话结束）。
-
-### 28. 摘要压缩 + 原地裁剪：InMemorySaver checkpoint 直接改写（Step 6）
-
-会话消息超过 20 条时，`ShortTermMemory.compress()` 完成两件事：① 调用 LLM 生成 150–300 字摘要（返回给调用方写入 LongTermMemory）；② 将 InMemorySaver 中的旧消息**原地替换**为 `[SystemMessage("[历史摘要] …")] + 最近 6 条`，防止上下文无限膨胀。
-
-直接修改 checkpoint 绕过了 LangGraph 的正常 put 路径，存在版本兼容风险，但避免了重建整个 graph 状态的开销。`WeakValueDictionary[str, asyncio.Lock]` 保证同一会话的并发 compress 调用串行执行，Lock 在会话不再被引用时自动回收，无需手动清理。
-
-### 29. Recency Bias + 分数过滤：历史记忆按时间升序注入（Step 6）
-
-LongTermMemory 语义检索后，对结果做两道后处理：
-
-1. **分数过滤**（默认阈值 0.5）：过滤掉余弦相似度低的结果，防止低相关记忆污染上下文
-2. **时间升序排列**：按 `created_at` 从旧到新排序后注入 system prompt，利用 LLM 对上下文尾部的 **Recency Bias**——最近的记忆距当前问题最近，LLM 更容易优先参考
-
-Milvus query 不保证按时间排序，排序在 Python 侧完成（结果集通常 ≤ 5 条，Python 排序开销可忽略）。超出配额（100 条/用户）时通过完整拉取 + Python 排序确定淘汰目标，删除最旧的超额部分。
-
-### 30. with_structured_output 替代手动 JSON 解析：LLM 结构化提取用户画像（Step 6）
-
-`UserProfileManager.extract_and_update()` 需要从对话文本中提取结构化的用户偏好（语言、专业水平、话题等）。朴素实现在 prompt 中要求 LLM 输出 JSON，再手动 `json.loads()` + markdown 代码块剥离，脆弱且难以测试。
-
-AgentWeave 用 `ChatOpenAI.with_structured_output(_ExtractedProfile)` 直接获得 Pydantic 对象，所有字段均为 `Optional`（无法判断时返回 `None`，不猜测），再用 `model_dump(exclude_none=True)` 提取有效字段做 upsert。`preferences` 字段做 dict merge（不整体覆盖），`frequent_topics` 去重追加保留最近 20 个，保证画像随使用持续积累而非被覆盖。
+详细实现决策记录见 [技术亮点.md](技术亮点.md)，共 49 条，覆盖从文档摄入到层级 Agent 网络的完整技术故事。
+
+代表性亮点：
+
+- **摄入层**：PDF smart 模式按页三重降级路由；content_type 驱动全链路；Error Chunk 错误隔离
+- **检索层**：Weighted Sum 融合保留四路原始分数；Milvus 内置 BM25 Function；双路并发检索
+- **RAG 链**：单次 LangGraph 执行同时流出 token + 引用；`[N]` 引用格式 + ReactMarkdown 自定义渲染
+- **记忆系统**：AsyncPostgresSaver checkpoint 原地裁剪；Recency Bias 时序注入；with_structured_output 画像提取
+- **Multi-Agent**：Supervisor 三重防幻觉；with_structured_output 三字段路由（非 tool_calls）；Researcher 评分快速通道 + 跨迭代最优保留；Analyst 写操作信令协议；Executor 确定性执行
+- **层级网络**：A2A AgentCard 自描述动态任务生成；四类意图分类多路快速通道；位置消歧 HITL-0；计划场景规则代码层兜底；事故中心三级推断；A2A 差异化重试；路线合成兜底；三级 HITL 审批；20+ 类 SSE 事件体系；AMap 10+ 图层增量渲染
 
 ---
 
 ## 技术栈
 
-- **LLM**：gpt-4o / gpt-4o-mini（OpenAI）
-- **Embedding**：text-embedding-3-small（OpenAI）
-- **向量库**：Milvus（Docker 本地）
-- **关系库**：PostgreSQL（Supabase）
-- **缓存**：Redis（Docker 本地）
-- **前端**：Next.js 16 + shadcn/ui + Tailwind CSS
-- **运行时**：Python 3.11+、uv
-- **测试**：pytest 8+
+| 层 | 技术 |
+|----|------|
+| LLM | gpt-4o / gpt-4o-mini（OpenAI） |
+| Embedding | text-embedding-3-small（OpenAI） |
+| Reranker | qwen3-rerank（硅基流动） |
+| Agent 编排 | LangGraph（AsyncPostgresSaver checkpointer） |
+| 向量库 | Milvus 2.5（内置 BM25 Function） |
+| 关系库 | PostgreSQL（Supabase） |
+| 缓存 | Redis |
+| 对象存储 | MinIO |
+| 任务队列 | Celery + Redis |
+| A2A / MCP | 自实现 HTTP 协议 + MultiServerMCPClient |
+| 地图 | 高德地图 JS API（指挥中心） |
+| 前端 | Next.js 15 + shadcn/ui + Tailwind CSS |
+| 运行时 | Python 3.11+、uv |
+| 测试 | pytest 8+ |
+
+---
+
+## 模块文档
+
+- [技术亮点详解](技术亮点.md) — 49 条实现决策，含 Why & How
+- [RAG Chain](backend/rag/README.md) — 数据流、引用溯源、SSE 流式
+- [混合检索系统](backend/retrieval/README.md) — 双路并发、Weighted Sum、Reranker
+- [文档摄入系统](backend/ingestion/README.md) — Parser / Splitter / Embedder / Store 层间契约
+
+---
+
+## 技术债
+
+| 优先级 | 模块 | 描述 |
+|--------|------|------|
+| 中 | `ParentChildSplitter` | `parent_text` 直接存入子块 metadata，每个父块被复制 N 次写入向量库。重构方案：父块生成 UUID `parent_id` 存 Redis，子块只存 `parent_id`，检索时查 KV |
+| 低 | `OpenAIEmbedder` | 无向量缓存，相同文本重复入库仍调用 OpenAI API。改造：`CachedEmbedder` 按文本哈希查 Redis |
+| 中 | `auth/jwt.py` | JWT 无法主动失效（登出/改密场景）。改造：`jti` 字段 + Redis 黑名单，TTL = token 剩余有效期 |
